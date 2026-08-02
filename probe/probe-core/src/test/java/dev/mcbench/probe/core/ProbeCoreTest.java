@@ -274,6 +274,54 @@ class ProbeCoreTest {
             q.enterWorkload();
             assertNull(q.poll());
         }
+
+        @Test
+        void waitDirectiveConsumesPollsWithoutIssuingCommands() {
+            // Adapters poll once per server tick, so a wait of N spans N ticks —
+            // making pacing a function of game time rather than frame rate.
+            CommandQueue q = new CommandQueue(List.of("a", "@wait 3", "b"), List.of());
+            assertEquals("a", q.poll());
+            assertNull(q.poll(), "the directive itself consumes the first tick");
+            assertNull(q.poll());
+            assertNull(q.poll());
+            assertEquals("b", q.poll());
+        }
+
+        @Test
+        void setupIsNotCompleteWhileAWaitIsPending() {
+            // Otherwise warmup would begin while a trailing settle-time wait was
+            // still counting down, timing world settling as though it were warmup.
+            CommandQueue q = new CommandQueue(List.of("a", "@wait 2"), List.of());
+            assertEquals("a", q.poll());
+            q.poll();
+            assertFalse(q.setupComplete());
+            q.poll();
+            assertTrue(q.setupComplete());
+        }
+
+        @Test
+        void waitPacesTheCyclingWorkload() {
+            CommandQueue q = new CommandQueue(List.of(), List.of("tick", "@wait 2"));
+            q.enterWorkload();
+            assertEquals("tick", q.poll());
+            assertNull(q.poll());
+            assertNull(q.poll());
+            assertEquals("tick", q.poll(), "workload must cycle back around");
+        }
+
+        @Test
+        void malformedWaitDegradesToASingleTickRatherThanKillingTheRun() {
+            CommandQueue q = new CommandQueue(List.of("@wait banana", "a"), List.of());
+            assertNull(q.poll());
+            assertEquals("a", q.poll());
+        }
+
+        @Test
+        void zeroWaitDoesNotStall() {
+            CommandQueue q = new CommandQueue(List.of("@wait 0", "a"), List.of());
+            assertNull(q.poll());
+            assertEquals("a", q.poll());
+        }
     }
 
     @Nested

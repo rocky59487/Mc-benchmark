@@ -27,6 +27,7 @@ from ..metrics import RunFlag, RunMetrics, reduce_client_run, reduce_server_run
 from ..planner import PlannedRun, RunPlan, plan_runs
 from ..providers import ModrinthClient, ModrinthError, ResolvedMod
 from ..scenario import Preset, Scenario, Side
+from .plan import write_plan
 from .preflight import Check, Preflight, Severity, run_preflight
 from .protocol import ProbeError, ProbeStream, parse_probe_stream
 
@@ -289,27 +290,98 @@ class Harness:
         for jar in resolved.jars:
             shutil.copy2(jar, mods_dir / jar.name)
 
-        (instance / "mcbench").mkdir(parents=True, exist_ok=True)
-        (instance / "mcbench" / "scenario.json").write_text(
+        probe_dir = instance / "mcbench"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+
+        # Compile the scenario into commands the probe can execute. This is where
+        # scenario interpretation lives: the probe receives a flat properties file
+        # and two command lists, and needs no parser, no dependency, and no
+        # knowledge of the methodology it is enforcing.
+        _, plan = write_plan(
+            scenario,
+            probe_dir,
+            preset=self.suite.preset,
+            probe_output="mcbench/probe.jsonl",
+        )
+
+        # Render and simulation distance are not commands in vanilla, so they are
+        # applied as instance configuration rather than silently dropped.
+        self._apply_instance_settings(instance, scenario, plan.instance_settings)
+
+        # Kept for provenance and debugging: the plan is generated, and being able
+        # to see what it was generated from is what makes a surprising result
+        # diagnosable.
+        (probe_dir / "scenario.json").write_text(
             json.dumps(
                 {
                     "id": scenario.id,
                     "version": scenario.version,
                     "content_hash": scenario.content_hash,
+                    "pool_key": scenario.pool_key,
                     "side": scenario.side.value,
                     "world": scenario.world,
                     "setup": list(scenario.setup),
                     "workload": list(scenario.workload),
                     "measurement": scenario.measurement,
                     "preset": self.suite.preset.value,
-                    "duration": scenario.duration(self.suite.preset),
-                    "probe_output": "mcbench/probe.jsonl",
                 },
                 indent=2,
             ),
             encoding="utf-8",
         )
         return instance
+
+    def _apply_instance_settings(
+        self, instance: Path, scenario: Scenario, settings: dict[str, Any]
+    ) -> None:
+        """Write settings that have no command equivalent into the instance's config."""
+        if not settings:
+            return
+
+        if scenario.side in (Side.SERVER, Side.BOTH):
+            simulation = settings.get("simulation_distance")
+            view = settings.get("render_distance")
+            lines = [
+                f"level-seed={scenario.seed}",
+                "online-mode=false",
+                "sync-chunk-writes=true",
+            ]
+            if simulation is not None:
+                lines.append(f"simulation-distance={simulation}")
+            if view is not None:
+                lines.append(f"view-distance={view}")
+            (instance / "server.properties").write_text(
+                "\n".join(lines) + "\n", encoding="utf-8"
+            )
+            (instance / "eula.txt").write_text(
+                "# The operator accepts the Minecraft EULA by running mcbench with a\n"
+                "# licensed account; see docs/LICENSING.md.\neula=true\n",
+                encoding="utf-8",
+            )
+
+        if scenario.side in (Side.CLIENT, Side.BOTH):
+            render = settings.get("render_distance")
+            if render is None:
+                return
+            options = instance / "options.txt"
+            # Frame rate is left uncapped and vsync off: a capped or vsync-locked
+            # client measures the display, not the renderer, so every variant
+            # would score the same refresh rate and the benchmark would report
+            # nothing at all.
+            options.write_text(
+                "\n".join(
+                    [
+                        f"renderDistance:{render}",
+                        "maxFps:260",
+                        "enableVsync:false",
+                        "graphicsMode:1",
+                        "gamma:1.0",
+                        "pauseOnLostFocus:false",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
     def _launch_command(self, instance: Path, scenario: Scenario) -> list[str]:
         if self.headlessmc is None:
@@ -376,8 +448,11 @@ class Harness:
             self.on_event("run.fail", {"cell": str(planned.cell), "error": str(exc)})
             return RunOutcome(planned=planned, metrics=None, error=str(exc))
 
+        # These names are the contract with ProbeSession.fromEnvironment(); the
+        # probe stays completely inert unless MCBENCH_PROBE_CONFIG is set, so it
+        # is harmless left installed in a normal play session.
         environment = dict(os.environ)
-        environment["MCBENCH_SCENARIO"] = str(instance / "mcbench" / "scenario.json")
+        environment["MCBENCH_PROBE_CONFIG"] = str(instance / "mcbench" / "probe.properties")
         environment["MCBENCH_PROBE_OUTPUT"] = str(probe_path)
 
         try:

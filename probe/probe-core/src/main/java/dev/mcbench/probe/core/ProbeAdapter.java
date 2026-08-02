@@ -29,6 +29,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public abstract class ProbeAdapter {
 
+    /**
+     * Setup commands issued per tick.
+     *
+     * <p>Large scenarios compile to tens of thousands of setup commands. Running them all in
+     * one tick trips Minecraft's overload watchdog; spreading them over ticks is free, since
+     * setup is untimed by construction.
+     */
+    public static final int MAX_SETUP_COMMANDS_PER_PUMP = 200;
+
     protected final ProbeSession session;
     private final AtomicBoolean shuttingDown = new AtomicBoolean();
     private long lastFrameNanos;
@@ -109,8 +118,17 @@ public abstract class ProbeAdapter {
         if (!setupIssued) {
             // Setup runs untimed, before warmup: it builds the world the scenario describes,
             // and timing that work would measure world construction rather than the mod.
-            String command;
-            while ((command = session.pollCommand()) != null) {
+            //
+            // Batched rather than drained in one go. A scenario that places hundreds of
+            // structures compiles to five figures of commands, and running all of them inside
+            // a single tick stalls the server long enough to trip Minecraft's own overload
+            // watchdog — which would kill the run before it ever reached warmup. Spreading the
+            // work over several ticks costs nothing, because none of it is timed.
+            for (int issued = 0; issued < MAX_SETUP_COMMANDS_PER_PUMP; issued++) {
+                String command = session.pollCommand();
+                if (command == null) {
+                    break;
+                }
                 safely(command);
             }
             if (session.setupComplete()) {

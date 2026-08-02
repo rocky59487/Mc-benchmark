@@ -3,11 +3,11 @@ package dev.mcbench.probe.fabric;
 import dev.mcbench.probe.core.ProbeSession;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.client.MinecraftClient;
 
 /**
  * Fabric entrypoint. Wires the platform's events onto the adapter and does nothing else.
@@ -75,6 +75,13 @@ public final class McbenchProbeMod implements ModInitializer, ClientModInitializ
 
     @Override
     public void onInitializeClient() {
+        // Frame timing only. Deliberately does NOT call pump().
+        //
+        // Even a client scenario runs an integrated server, so pump() already fires once per
+        // server tick at a fixed 20 Hz. Pumping here as well would advance the workload once
+        // per rendered frame, which would make a scripted camera path fly faster on a faster
+        // machine — the fast and slow configurations would then be doing different amounts of
+        // work, and the comparison would no longer be measuring the same workload.
         HudRenderCallback.EVENT.register((context, tickCounter) -> {
             FabricProbeAdapter current = adapter;
             if (current != null && current.measuresFrames() && !current.isFinished()) {
@@ -82,18 +89,13 @@ public final class McbenchProbeMod implements ModInitializer, ClientModInitializ
             }
         });
 
-        // A client-only scenario has no server lifecycle to close the run, so the client
-        // drives shutdown once the measurement window has elapsed.
-        HudRenderCallback.EVENT.register((context, tickCounter) -> {
+        // Shutdown only. The client owns stopping the game because scheduleStop() closes the
+        // window and the integrated server together; stopping the server alone would leave a
+        // client process the harness would have to time out.
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
             FabricProbeAdapter current = adapter;
-            if (current == null || current.isFinished()) {
-                return;
-            }
-            if (current.measuresFrames() && !current.measuresTicks()) {
-                current.pump();
-                if (current.isFinished()) {
-                    MinecraftClient.getInstance().scheduleStop();
-                }
+            if (current != null && current.isFinished()) {
+                client.scheduleStop();
             }
         });
     }

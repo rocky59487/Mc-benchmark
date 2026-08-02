@@ -1,0 +1,51 @@
+{
+  "id": "reference-hardware-baseline",
+  "version": "1.0.0",
+  "title": "Reference hardware baseline",
+  "description": "Fixed, mod-free vanilla workload used to normalise results across machines. Every suite runs this in the same session as the mods under test; results are reported primarily as ratios to it. This is what makes contributions from different hardware compose into one corpus (METHODOLOGY.md section 8). Its definition must stay frozen — a change here invalidates cross-machine comparability for the whole corpus.",
+  "side": "client",
+  "category": "reference",
+  "tags": ["reference", "normalisation", "do-not-modify"],
+  "world": {
+    "seed": 1337420692,
+    "generator": "default",
+    "spawn": { "x": 0.5, "y": 80.0, "z": 0.5, "yaw": 0.0, "pitch": 0.0 },
+    "time": 6000,
+    "weather": "clear",
+    "difficulty": "normal",
+    "gamerules": {
+      "doDaylightCycle": false,
+      "doWeatherCycle": false,
+      "doMobSpawning": false,
+      "randomTickSpeed": 0
+    },
+    "fingerprint_region": { "radius_chunks": 8 }
+  },
+  "setup": [
+    { "op": "set_render_distance", "chunks": 12, "comment": "Fixed; render distance dominates client cost." },
+    { "op": "set_simulation_distance", "chunks": 8 },
+    { "op": "generate_chunks", "radius_chunks": 14, "comment": "Pre-generate so measurement never pays worldgen cost." },
+    { "op": "wait", "ticks": 100 }
+  ],
+  "workload": [
+    {
+      "op": "camera_path",
+      "comment": "Closed loop so the workload is identical on every repetition.",
+      "loop": true,
+      "duration_s": 60,
+      "points": [
+        { "x": 0, "y": 80, "z": 0, "yaw": 0, "pitch": 0 },
+        { "x": 120, "y": 85, "z": 40, "yaw": 90, "pitch": -10 },
+        { "x": 120, "y": 90, "z": 160, "yaw": 180, "pitch": 0 },
+        { "x": 0, "y": 85, "z": 120, "yaw": 270, "pitch": 10 },
+        { "x": 0, "y": 80, "z": 0, "yaw": 360, "pitch": 0 }
+      ]
+    }
+  ],
+  "measurement": {
+    "warmup": { "min": 60, "max_multiple": 3, "steady_state_tolerance": 0.05 },
+    "duration": { "quick": 60, "full": 180, "long": 600 },
+    "primary_metric": "frametime_mean_ms",
+    "metrics": ["fps_avg", "fps_1pct_low", "frametime_p99_ms", "frametime_cv"]
+  }
+}

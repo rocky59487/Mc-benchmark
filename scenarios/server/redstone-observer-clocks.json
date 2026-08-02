@@ -1,0 +1,47 @@
+{
+  "id": "redstone-observer-clocks",
+  "version": "1.0.0",
+  "title": "Redstone update storm",
+  "description": "An array of observer clocks driving piston banks, producing a sustained high rate of block updates and neighbour notifications. Stresses the update propagation path, which is largely single-threaded and a frequent target of optimisation mods.",
+  "side": "server",
+  "category": "redstone",
+  "tags": ["redstone", "block-update", "neighbour-notification"],
+  "requires": ["carpet"],
+  "world": {
+    "seed": 515334028,
+    "generator": "flat",
+    "generator_settings": { "layers": "minecraft:bedrock,3*minecraft:stone,minecraft:grass_block" },
+    "spawn": { "x": 0.5, "y": 5.0, "z": 0.5 },
+    "time": 6000,
+    "weather": "clear",
+    "gamerules": {
+      "doDaylightCycle": false, "doWeatherCycle": false,
+      "doMobSpawning": false, "randomTickSpeed": 0
+    },
+    "fingerprint_region": { "radius_chunks": 4 }
+  },
+  "setup": [
+    { "op": "set_simulation_distance", "chunks": 6 },
+    { "op": "generate_chunks", "radius_chunks": 8 },
+    {
+      "op": "place_structure",
+      "comment": "Structure is emitted from the recipe below, not loaded from a distributed file (LICENSING.md).",
+      "template": "observer_clock_bank",
+      "count": 64,
+      "spacing": 6,
+      "origin": { "x": -48, "y": 5, "z": -48 },
+      "parameters": { "piston_count": 4, "clock_period_ticks": 2 }
+    },
+    { "op": "wait", "ticks": 200 }
+  ],
+  "workload": [
+    { "op": "wait", "ticks": 20, "comment": "The clocks are self-sustaining once placed." }
+  ],
+  "measurement": {
+    "warmup": { "min": 2000, "max_multiple": 3, "steady_state_tolerance": 0.05 },
+    "duration": { "quick": 4000, "full": 12000, "long": 36000 },
+    "primary_metric": "mspt_mean",
+    "metrics": ["mspt_p95", "mspt_p99", "tick_headroom", "warp_throughput", "alloc_rate_mb_s"],
+    "tick_warp": true
+  }
+}

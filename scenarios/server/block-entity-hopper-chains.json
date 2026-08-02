@@ -1,0 +1,47 @@
+{
+  "id": "block-entity-hopper-chains",
+  "version": "1.0.0",
+  "title": "Block entity hopper chains",
+  "description": "Long chains of hoppers moving items continuously, plus comparator readback. Block entities tick on a separate path from mobs and are a distinct optimisation target; hoppers in particular are the classic technical-Minecraft lag source and respond to a different class of fix than entity AI does.",
+  "side": "server",
+  "category": "block-entity",
+  "tags": ["block-entity", "hopper", "inventory", "comparator"],
+  "requires": ["carpet"],
+  "world": {
+    "seed": 356102944,
+    "generator": "flat",
+    "generator_settings": { "layers": "minecraft:bedrock,3*minecraft:stone,minecraft:grass_block" },
+    "spawn": { "x": 0.5, "y": 5.0, "z": 0.5 },
+    "time": 6000,
+    "weather": "clear",
+    "gamerules": {
+      "doDaylightCycle": false, "doWeatherCycle": false,
+      "doMobSpawning": false, "randomTickSpeed": 0
+    },
+    "fingerprint_region": { "radius_chunks": 6 }
+  },
+  "setup": [
+    { "op": "set_simulation_distance", "chunks": 8 },
+    { "op": "generate_chunks", "radius_chunks": 10 },
+    {
+      "op": "place_structure",
+      "template": "hopper_chain",
+      "count": 400,
+      "spacing": 4,
+      "origin": { "x": -64, "y": 5, "z": -64 },
+      "parameters": { "length": 24, "with_comparator": true, "preload_items": 64 },
+      "comment": "Chains are pre-loaded with items so the measurement window sees steady-state transfer rather than a fill-up transient."
+    },
+    { "op": "wait", "ticks": 400 }
+  ],
+  "workload": [
+    { "op": "wait", "ticks": 20 }
+  ],
+  "measurement": {
+    "warmup": { "min": 2000, "max_multiple": 3, "steady_state_tolerance": 0.05 },
+    "duration": { "quick": 4000, "full": 12000, "long": 36000 },
+    "primary_metric": "mspt_mean",
+    "metrics": ["mspt_p95", "mspt_p99", "tick_headroom", "warp_throughput", "alloc_rate_mb_s"],
+    "tick_warp": true
+  }
+}

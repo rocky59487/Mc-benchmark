@@ -1,0 +1,53 @@
+{
+  "id": "visual-particle-storm",
+  "version": "1.0.0",
+  "title": "Particle storm",
+  "description": "Dense sustained particle emission from a static viewpoint. Isolates the particle pipeline — allocation, update, sort, and draw — from terrain rendering by holding the camera still and the terrain pre-meshed. A common source of frametime spikes that whole-scene benchmarks average away.",
+  "side": "client",
+  "category": "visual",
+  "tags": ["particles", "allocation", "spike"],
+  "world": {
+    "seed": 88117733,
+    "generator": "flat",
+    "generator_settings": { "layers": "minecraft:bedrock,3*minecraft:stone,minecraft:grass_block" },
+    "spawn": { "x": 0.5, "y": 6.0, "z": -24.5, "yaw": 0.0, "pitch": 0.0 },
+    "time": 6000,
+    "weather": "clear",
+    "gamerules": {
+      "doDaylightCycle": false,
+      "doWeatherCycle": false,
+      "doMobSpawning": false,
+      "randomTickSpeed": 0
+    },
+    "fingerprint_region": { "radius_chunks": 4 }
+  },
+  "setup": [
+    { "op": "set_render_distance", "chunks": 8 },
+    { "op": "generate_chunks", "radius_chunks": 10 },
+    { "op": "look", "yaw": 0.0, "pitch": 0.0 },
+    { "op": "wait", "ticks": 100, "comment": "Camera is static; terrain meshing completes before measurement." }
+  ],
+  "workload": [
+    {
+      "op": "loop",
+      "duration_s": 60,
+      "comment": "Emitters are spread across seven particle types at fixed rates so the mix is reproducible, not dominated by whichever type happens to be cheapest.",
+      "body": [
+        { "op": "command", "value": "particle minecraft:flame 0 6 0 8 3 8 0.05 400 force" },
+        { "op": "command", "value": "particle minecraft:smoke 0 6 0 8 3 8 0.05 400 force" },
+        { "op": "command", "value": "particle minecraft:end_rod 0 8 0 8 3 8 0.02 300 force" },
+        { "op": "command", "value": "particle minecraft:portal 0 6 0 8 3 8 0.50 300 force" },
+        { "op": "command", "value": "particle minecraft:dust 1 0 0 1 0 7 0 6 3 6 0.00 200 force" },
+        { "op": "command", "value": "particle minecraft:falling_water 0 9 0 8 1 8 0.00 200 force" },
+        { "op": "command", "value": "particle minecraft:crit 0 6 0 6 3 6 0.20 200 force" },
+        { "op": "wait", "ticks": 2 }
+      ]
+    }
+  ],
+  "measurement": {
+    "warmup": { "min": 45, "max_multiple": 3, "steady_state_tolerance": 0.08 },
+    "duration": { "quick": 60, "full": 180, "long": 480 },
+    "primary_metric": "frametime_p99_ms",
+    "metrics": ["frametime_mean_ms", "fps_avg", "fps_1pct_low", "fps_0p1pct_low", "stutter_rate", "frametime_cv", "alloc_rate_mb_s", "gc_pause_total_ms"]
+  }
+}

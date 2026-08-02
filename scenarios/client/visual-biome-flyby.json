@@ -1,0 +1,52 @@
+{
+  "id": "visual-biome-flyby",
+  "version": "1.0.0",
+  "title": "Cinematic biome flyby",
+  "description": "Sustained camera traversal across varied terrain and biomes at high render distance. The broadest client rendering workload: terrain meshing, chunk upload, culling, and translucency sorting all under continuous load. This is the scenario most sensitive to renderer replacements.",
+  "side": "client",
+  "category": "visual",
+  "tags": ["rendering", "terrain", "chunk-mesh"],
+  "world": {
+    "seed": 4048764308,
+    "generator": "default",
+    "spawn": { "x": -200.5, "y": 96.0, "z": -200.5, "yaw": 45.0, "pitch": -5.0 },
+    "time": 6000,
+    "weather": "clear",
+    "gamerules": {
+      "doDaylightCycle": false,
+      "doWeatherCycle": false,
+      "doMobSpawning": false,
+      "randomTickSpeed": 0
+    },
+    "fingerprint_region": { "radius_chunks": 16 }
+  },
+  "setup": [
+    { "op": "set_render_distance", "chunks": 16 },
+    { "op": "set_simulation_distance", "chunks": 8 },
+    { "op": "generate_chunks", "radius_chunks": 20 },
+    { "op": "wait", "ticks": 200 }
+  ],
+  "workload": [
+    {
+      "op": "camera_path",
+      "loop": true,
+      "duration_s": 90,
+      "interpolation": "catmull-rom",
+      "comment": "Smooth interpolation so frame cost varies continuously rather than stepping, which would create artificial frametime spikes at waypoints.",
+      "points": [
+        { "x": -200, "y": 96, "z": -200, "yaw": 45, "pitch": -5 },
+        { "x": 0, "y": 110, "z": -100, "yaw": 90, "pitch": -15 },
+        { "x": 200, "y": 96, "z": 0, "yaw": 135, "pitch": 0 },
+        { "x": 100, "y": 128, "z": 200, "yaw": 200, "pitch": -25 },
+        { "x": -100, "y": 90, "z": 150, "yaw": 300, "pitch": 5 },
+        { "x": -200, "y": 96, "z": -200, "yaw": 405, "pitch": -5 }
+      ]
+    }
+  ],
+  "measurement": {
+    "warmup": { "min": 60, "max_multiple": 3, "steady_state_tolerance": 0.05 },
+    "duration": { "quick": 90, "full": 270, "long": 900 },
+    "primary_metric": "frametime_mean_ms",
+    "metrics": ["fps_avg", "fps_1pct_low", "fps_0p1pct_low", "frametime_p95_ms", "frametime_p99_ms", "frametime_cv", "stutter_rate", "alloc_rate_mb_s"]
+  }
+}

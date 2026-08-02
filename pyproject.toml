@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcbench"
+version = "0.1.0"
+description = "Controlled, reproducible performance benchmarking for Minecraft mods"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+keywords = ["minecraft", "benchmark", "performance", "mods"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Games/Entertainment",
+    "Topic :: System :: Benchmark",
+]
+
+# Intentionally no runtime dependencies. A measurement standard that people are
+# asked to trust should be verifiable by anyone with a stock interpreter, and
+# the statistics involved (bootstrap, MAD, Cliff's delta) are a few dozen lines
+# each. tomllib is stdlib on 3.11+.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "ruff>=0.4"]
+
+[project.scripts]
+mcbench = "mcbench.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]

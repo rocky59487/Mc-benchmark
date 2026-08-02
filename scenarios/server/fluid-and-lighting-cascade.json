@@ -1,0 +1,57 @@
+{
+  "id": "fluid-and-lighting-cascade",
+  "version": "1.0.0",
+  "title": "Fluid spread with lighting cascade",
+  "description": "Large-volume water release into a carved basin, triggering sustained fluid tick scheduling and a corresponding cascade of light updates as the fluid occludes and reveals blocks. Fluid and lighting are paired deliberately: they are coupled in the engine, and measuring either alone misrepresents the cost a player experiences.",
+  "side": "server",
+  "category": "fluid",
+  "tags": ["fluid", "lighting", "scheduled-tick", "light-engine"],
+  "requires": ["carpet"],
+  "world": {
+    "seed": 730220118,
+    "generator": "flat",
+    "generator_settings": { "layers": "minecraft:bedrock,60*minecraft:stone" },
+    "spawn": { "x": 0.5, "y": 62.0, "z": 0.5 },
+    "time": 6000,
+    "weather": "clear",
+    "gamerules": {
+      "doDaylightCycle": false, "doWeatherCycle": false,
+      "doMobSpawning": false, "randomTickSpeed": 0
+    },
+    "fingerprint_region": { "radius_chunks": 6 }
+  },
+  "setup": [
+    { "op": "set_simulation_distance", "chunks": 8 },
+    { "op": "generate_chunks", "radius_chunks": 10 },
+    {
+      "op": "fill",
+      "comment": "Carve the basin during untimed setup so the measurement window sees only fluid and light work.",
+      "from": { "x": -48, "y": 40, "z": -48 },
+      "to": { "x": 48, "y": 60, "z": 48 },
+      "block": "minecraft:air",
+      "mode": "replace"
+    },
+    { "op": "wait", "ticks": 300, "comment": "Let the light engine finish the carve before measuring." }
+  ],
+  "workload": [
+    {
+      "op": "loop",
+      "duration_s": 0,
+      "tick_period": 400,
+      "comment": "Periodic release-and-reset keeps the load steady and loopable; a one-shot release would decay to nothing partway through the measurement window.",
+      "body": [
+        { "op": "fill", "from": { "x": -48, "y": 60, "z": -48 }, "to": { "x": 48, "y": 60, "z": 48 }, "block": "minecraft:water" },
+        { "op": "wait", "ticks": 300 },
+        { "op": "fill", "from": { "x": -48, "y": 40, "z": -48 }, "to": { "x": 48, "y": 60, "z": 48 }, "block": "minecraft:air", "mode": "replace" },
+        { "op": "wait", "ticks": 100 }
+      ]
+    }
+  ],
+  "measurement": {
+    "warmup": { "min": 2400, "max_multiple": 3, "steady_state_tolerance": 0.08 },
+    "duration": { "quick": 4000, "full": 12000, "long": 36000 },
+    "primary_metric": "mspt_mean",
+    "metrics": ["mspt_p95", "mspt_p99", "tick_headroom", "warp_throughput", "alloc_rate_mb_s", "gc_pause_p99_ms"],
+    "tick_warp": true
+  }
+}

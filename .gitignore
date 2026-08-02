@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# mcbench working state — provisioned game files and mod jars must never be
+# committed (see docs/LICENSING.md: no redistribution of Minecraft or mods).
+/work/
+/instances/
+/cache/
+/results/
+*.jar
+
+# Java / Gradle (probe mod, milestone 2)
+.gradle/
+bin/
+out/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

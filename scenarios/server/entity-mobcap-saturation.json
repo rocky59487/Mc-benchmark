@@ -1,0 +1,59 @@
+{
+  "id": "entity-mobcap-saturation",
+  "version": "1.0.0",
+  "title": "Entity tick under mobcap saturation",
+  "description": "A large, stable population of hostile and passive mobs ticking within simulation distance. The primary scenario for mob-optimisation mods: entity ticking, mob AI goal selection, collision, and despawn checks. Run under tick warp so the cost is measurable even when the server would otherwise sit comfortably at 20 TPS — below budget, TPS reports 20 for every configuration and reveals nothing.",
+  "side": "server",
+  "category": "entity",
+  "tags": ["mob-optimisation", "entity-tick", "ai", "collision"],
+  "requires": ["carpet"],
+  "world": {
+    "seed": 220731445,
+    "generator": "flat",
+    "generator_settings": { "layers": "minecraft:bedrock,3*minecraft:stone,minecraft:grass_block" },
+    "spawn": { "x": 0.5, "y": 5.0, "z": 0.5 },
+    "time": 6000,
+    "weather": "clear",
+    "difficulty": "hard",
+    "gamerules": {
+      "doDaylightCycle": false,
+      "doWeatherCycle": false,
+      "doMobSpawning": false,
+      "randomTickSpeed": 0,
+      "mobGriefing": false,
+      "doFireTick": false
+    },
+    "fingerprint_region": { "radius_chunks": 8 }
+  },
+  "setup": [
+    { "op": "set_simulation_distance", "chunks": 10 },
+    { "op": "generate_chunks", "radius_chunks": 12 },
+    {
+      "op": "spawn_ring",
+      "comment": "Deterministic placement on a fixed lattice. Natural spawning would vary the population between runs and destroy comparability — this is why doMobSpawning is off.",
+      "entities": [
+        { "type": "minecraft:zombie", "count": 300 },
+        { "type": "minecraft:skeleton", "count": 200 },
+        { "type": "minecraft:cow", "count": 200 },
+        { "type": "minecraft:sheep", "count": 200 },
+        { "type": "minecraft:creeper", "count": 100 }
+      ],
+      "radius": 64,
+      "layout": "lattice",
+      "y": 5,
+      "persistent": true,
+      "no_ai": false
+    },
+    { "op": "wait", "ticks": 400, "comment": "Let AI goals settle before warmup begins." }
+  ],
+  "workload": [
+    { "op": "wait", "ticks": 20, "comment": "Mob AI is itself the load; the workload only needs to let ticks proceed." }
+  ],
+  "measurement": {
+    "warmup": { "min": 2000, "max_multiple": 3, "steady_state_tolerance": 0.05 },
+    "duration": { "quick": 4000, "full": 12000, "long": 40000 },
+    "primary_metric": "mspt_mean",
+    "metrics": ["mspt_p95", "mspt_p99", "tick_headroom", "warp_throughput", "alloc_rate_mb_s", "gc_pause_total_ms", "heap_steady_mb"],
+    "tick_warp": true
+  }
+}

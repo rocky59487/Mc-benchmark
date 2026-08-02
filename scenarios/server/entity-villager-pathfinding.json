@@ -1,0 +1,67 @@
+{
+  "id": "entity-villager-pathfinding",
+  "version": "1.0.0",
+  "title": "Villager brain and pathfinding load",
+  "description": "A dense villager population with workstations and beds, exercising the brain/behaviour system and the pathfinder. Deliberately separate from the mobcap scenario: villager AI is the single most expensive vanilla entity workload and it stresses entirely different code from simple hostile-mob ticking. Mob-optimisation mods frequently improve one and regress the other, which a combined scenario would hide.",
+  "side": "server",
+  "category": "entity",
+  "tags": ["mob-optimisation", "pathfinding", "brain", "poi"],
+  "requires": ["carpet"],
+  "world": {
+    "seed": 611903882,
+    "generator": "flat",
+    "generator_settings": { "layers": "minecraft:bedrock,3*minecraft:stone,minecraft:grass_block" },
+    "spawn": { "x": 0.5, "y": 5.0, "z": 0.5 },
+    "time": 1000,
+    "weather": "clear",
+    "difficulty": "normal",
+    "gamerules": {
+      "doDaylightCycle": false,
+      "doWeatherCycle": false,
+      "doMobSpawning": false,
+      "randomTickSpeed": 0,
+      "mobGriefing": false
+    },
+    "fingerprint_region": { "radius_chunks": 6 }
+  },
+  "setup": [
+    { "op": "set_simulation_distance", "chunks": 8 },
+    { "op": "generate_chunks", "radius_chunks": 10 },
+    {
+      "op": "fill",
+      "comment": "Workstation and bed grid: creates the points of interest the brain system searches, which is where the cost concentrates.",
+      "from": { "x": -40, "y": 5, "z": -40 },
+      "to": { "x": 40, "y": 5, "z": 40 },
+      "block": "minecraft:composter",
+      "mode": "hollow_grid",
+      "spacing": 4
+    },
+    {
+      "op": "fill",
+      "from": { "x": -40, "y": 6, "z": -40 },
+      "to": { "x": 40, "y": 6, "z": 40 },
+      "block": "minecraft:white_bed",
+      "mode": "hollow_grid",
+      "spacing": 6
+    },
+    {
+      "op": "spawn_ring",
+      "entities": [{ "type": "minecraft:villager", "count": 250 }],
+      "radius": 40,
+      "layout": "lattice",
+      "y": 6,
+      "persistent": true
+    },
+    { "op": "wait", "ticks": 600, "comment": "POI registration and initial brain scheduling must complete untimed." }
+  ],
+  "workload": [
+    { "op": "wait", "ticks": 20 }
+  ],
+  "measurement": {
+    "warmup": { "min": 2400, "max_multiple": 3, "steady_state_tolerance": 0.06 },
+    "duration": { "quick": 4000, "full": 12000, "long": 36000 },
+    "primary_metric": "mspt_mean",
+    "metrics": ["mspt_p95", "mspt_p99", "tick_headroom", "warp_throughput", "alloc_rate_mb_s", "gc_pause_p99_ms"],
+    "tick_warp": true
+  }
+}

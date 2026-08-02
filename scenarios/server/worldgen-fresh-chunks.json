@@ -1,0 +1,45 @@
+{
+  "id": "worldgen-fresh-chunks",
+  "version": "1.0.0",
+  "title": "Fresh chunk generation throughput",
+  "description": "Generates a large region of never-before-generated terrain. The primary scenario for worldgen-optimisation mods: noise sampling, surface rules, carvers, feature placement, and structure generation. Measured as throughput rather than tick cost, because generation runs largely off the main tick thread and MSPT would understate it.",
+  "side": "server",
+  "category": "worldgen",
+  "tags": ["worldgen", "generation-optimisation", "throughput", "off-thread"],
+  "requires": ["carpet"],
+  "world": {
+    "seed": 907351226,
+    "generator": "default",
+    "spawn": { "x": 0.5, "y": 100.0, "z": 0.5 },
+    "time": 6000,
+    "weather": "clear",
+    "gamerules": {
+      "doDaylightCycle": false,
+      "doWeatherCycle": false,
+      "doMobSpawning": false,
+      "randomTickSpeed": 0
+    },
+    "fingerprint_region": { "radius_chunks": 16 }
+  },
+  "setup": [
+    { "op": "set_simulation_distance", "chunks": 4, "comment": "Kept low so entity ticking does not contaminate a generation measurement." },
+    { "op": "wait", "ticks": 100 }
+  ],
+  "workload": [
+    {
+      "op": "generate_chunks",
+      "comment": "Walks outward from spawn into virgin terrain. Any worldgen-altering mod will change the world fingerprint here; that is reported as a finding rather than averaged away, since it means the mod is not generating the same world.",
+      "radius_chunks": 32,
+      "origin": { "x": 0, "z": 0 },
+      "order": "spiral",
+      "force_fresh": true
+    }
+  ],
+  "measurement": {
+    "warmup": { "min": 1000, "max_multiple": 3, "steady_state_tolerance": 0.10 },
+    "duration": { "quick": 3000, "full": 10000, "long": 30000 },
+    "primary_metric": "chunkgen_rate",
+    "metrics": ["mspt_mean", "mspt_p99", "warp_throughput", "alloc_rate_mb_s", "gc_pause_total_ms", "heap_peak_mb"],
+    "tick_warp": true
+  }
+}

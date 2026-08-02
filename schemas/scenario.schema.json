@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcbench.dev/schemas/scenario.schema.json",
+  "title": "mcbench scenario",
+  "description": "A reproducible benchmark scenario. A scenario is a recipe, never a world save: it declares a seed and a scripted setup sequence from which the world is generated deterministically on the operator's machine. See docs/LICENSING.md (worlds may not be redistributed) and docs/METHODOLOGY.md section 7.",
+  "type": "object",
+  "required": ["id", "version", "side", "category", "title", "world", "measurement"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Stable identifier, kebab-case. Never reused for different content."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version. Any change that could move the numbers is a MAJOR bump; results are never pooled across a major bump (METHODOLOGY.md section 7)."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "side": {
+      "enum": ["client", "server", "both"],
+      "description": "Which side is measured. 'both' runs an integrated client+server instance."
+    },
+    "category": {
+      "enum": [
+        "visual", "tick-stability", "entity", "worldgen", "redstone",
+        "lighting", "fluid", "block-entity", "chunk-io", "memory", "reference"
+      ]
+    },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "minecraft_versions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Game versions this scenario is valid for. Empty means unrestricted."
+    },
+    "requires": {
+      "type": "array",
+      "items": { "enum": ["carpet", "gamemode-creative", "flat-world"] },
+      "description": "Runtime capabilities the scenario needs. 'carpet' enables tick-warp driving."
+    },
+    "world": {
+      "type": "object",
+      "required": ["seed", "generator"],
+      "additionalProperties": false,
+      "properties": {
+        "seed": {
+          "type": "integer",
+          "description": "Fixed world seed. Identical across every variant in a comparison."
+        },
+        "generator": {
+          "enum": ["default", "flat", "amplified", "large_biomes", "void"]
+        },
+        "generator_settings": { "type": "object" },
+        "spawn": {
+          "type": "object",
+          "required": ["x", "y", "z"],
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" },
+            "yaw": { "type": "number" }, "pitch": { "type": "number" }
+          }
+        },
+        "dimension": { "type": "string", "default": "minecraft:overworld" },
+        "time": { "type": "integer", "description": "Fixed world time in ticks; prevents day/night from varying the load." },
+        "weather": { "enum": ["clear", "rain", "thunder"], "default": "clear" },
+        "difficulty": { "enum": ["peaceful", "easy", "normal", "hard"], "default": "normal" },
+        "gamerules": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "fingerprint_region": {
+          "type": "object",
+          "description": "Region hashed to produce the world fingerprint. Runs with differing fingerprints are never pooled.",
+          "required": ["radius_chunks"],
+          "additionalProperties": false,
+          "properties": {
+            "radius_chunks": { "type": "integer", "minimum": 1, "maximum": 32 }
+          }
+        }
+      }
+    },
+    "setup": {
+      "type": "array",
+      "description": "Deterministic world preparation, executed untimed before warmup.",
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "workload": {
+      "type": "array",
+      "description": "The scripted load driven during warmup and measurement. Must be deterministic and loopable.",
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "measurement": {
+      "type": "object",
+      "required": ["warmup", "duration"],
+      "additionalProperties": false,
+      "properties": {
+        "warmup": {
+          "type": "object",
+          "required": ["min"],
+          "additionalProperties": false,
+          "properties": {
+            "min": { "type": "number", "exclusiveMinimum": 0, "description": "Minimum warmup in seconds (client) or ticks (server)." },
+            "max_multiple": { "type": "number", "minimum": 1, "default": 3, "description": "Hard ceiling as a multiple of min. Exceeding it flags warmup_not_converged." },
+            "steady_state_tolerance": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.05 }
+          }
+        },
+        "duration": {
+          "type": "object",
+          "required": ["full"],
+          "additionalProperties": false,
+          "properties": {
+            "quick": { "type": "number", "exclusiveMinimum": 0 },
+            "full": { "type": "number", "exclusiveMinimum": 0 },
+            "long": { "type": "number", "exclusiveMinimum": 0 }
+          },
+          "description": "Measurement window in seconds (client) or ticks (server)."
+        },
+        "primary_metric": {
+          "type": "string",
+          "description": "The metric this scenario is designed to resolve. Must exist in the metric registry."
+        },
+        "metrics": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Additional metrics to report. Empty means the side's full default set."
+        },
+        "tick_warp": {
+          "type": "boolean",
+          "default": false,
+          "description": "Drive the server with Carpet tick warp, removing the 20 TPS clamp so headroom becomes measurable."
+        },
+        "saturated": {
+          "type": "boolean",
+          "default": false,
+          "description": "Scenario deliberately exceeds the tick budget. Only then is tps_effective meaningful."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "action": {
+      "type": "object",
+      "required": ["op"],
+      "properties": {
+        "op": {
+          "enum": [
+            "wait", "teleport", "camera_path", "look", "fill", "setblock",
+            "summon", "spawn_ring", "give", "command", "gamerule",
+            "load_chunks", "generate_chunks", "unload_chunks", "place_structure",
+            "set_render_distance", "set_simulation_distance", "loop"
+          ]
+        },
+        "comment": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "id": "chunkio-load-throughput",
+  "version": "1.0.0",
+  "title": "Chunk load and unload throughput",
+  "description": "Repeated load/unload cycling over a pre-generated region, measuring deserialisation, NBT parsing, and region-file I/O rather than generation. Distinct from worldgen-fresh-chunks: a mod can speed generation while slowing load, and the two costs fall on completely different players — one on world creation, one on every session thereafter.",
+  "side": "server",
+  "category": "chunk-io",
+  "tags": ["chunk-io", "serialisation", "disk", "nbt"],
+  "requires": ["carpet"],
+  "world": {
+    "seed": 143065571,
+    "generator": "default",
+    "spawn": { "x": 0.5, "y": 100.0, "z": 0.5 },
+    "time": 6000,
+    "weather": "clear",
+    "gamerules": {
+      "doDaylightCycle": false, "doWeatherCycle": false,
+      "doMobSpawning": false, "randomTickSpeed": 0
+    },
+    "fingerprint_region": { "radius_chunks": 12 }
+  },
+  "setup": [
+    { "op": "set_simulation_distance", "chunks": 4 },
+    {
+      "op": "generate_chunks",
+      "radius_chunks": 24,
+      "comment": "Full pre-generation during untimed setup; the measurement must never pay generation cost."
+    },
+    { "op": "unload_chunks", "all": true },
+    { "op": "wait", "ticks": 200, "comment": "Flush to disk so the first measured load is a real read, not a cache hit." }
+  ],
+  "workload": [
+    {
+      "op": "loop",
+      "comment": "Cycling a wide radius defeats the OS page cache, so this measures I/O rather than memory bandwidth.",
+      "body": [
+        { "op": "load_chunks", "radius_chunks": 20, "origin": { "x": 0, "z": 0 }, "order": "spiral" },
+        { "op": "wait", "ticks": 40 },
+        { "op": "unload_chunks", "all": true },
+        { "op": "wait", "ticks": 40 }
+      ]
+    }
+  ],
+  "measurement": {
+    "warmup": { "min": 1200, "max_multiple": 3, "steady_state_tolerance": 0.10 },
+    "duration": { "quick": 3000, "full": 9000, "long": 27000 },
+    "primary_metric": "chunkload_rate",
+    "metrics": ["mspt_mean", "mspt_p99", "warp_throughput", "alloc_rate_mb_s", "heap_peak_mb"],
+    "tick_warp": true
+  }
+}

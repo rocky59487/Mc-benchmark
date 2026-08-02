@@ -1,0 +1,52 @@
+# Example suite: do well-known client performance mods actually help, and do
+# they interact?
+#
+# This manifest names mods by coordinate only. It never references a jar file —
+# mcbench resolves and downloads them at run time on your machine, because mod
+# jars may not be redistributed (docs/LICENSING.md).
+#
+# Every version below is pinned. An unpinned suite describes different software
+# over time, so its results cannot be pooled or reproduced, and mcbench refuses
+# to mark it publishable.
+
+name = "Client performance mods — 1.21.1 Fabric"
+minecraft_version = "1.21.1"
+loader = "fabric"
+
+scenarios = [
+    "reference-hardware-baseline",
+    "visual-biome-flyby",
+    "visual-particle-storm",
+]
+
+baseline = "vanilla"
+runs_per_cell = 7
+preset = "full"
+order = "interleaved"
+rope = 0.02
+seed = 20260802
+heap_mb = 6144
+
+# Full factorial over two mods: measuring A, B, and A+B is what makes the
+# interaction term computable. Without the A+B cell you can only assume the
+# costs add — which is exactly the assumption that surprises modpack authors.
+interactions = [["sodium", "entityculling", "sodium+entityculling"]]
+
+[[variants]]
+name = "vanilla"
+mods = []
+
+[[variants]]
+name = "sodium"
+mods = ["modrinth:sodium@mc1.21.1-0.6.0-fabric"]
+
+[[variants]]
+name = "entityculling"
+mods = ["modrinth:entityculling@1.7.2"]
+
+[[variants]]
+name = "sodium+entityculling"
+mods = [
+    "modrinth:sodium@mc1.21.1-0.6.0-fabric",
+    "modrinth:entityculling@1.7.2",
+]

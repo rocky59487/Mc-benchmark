@@ -1,0 +1,50 @@
+{
+  "id": "tick-stability-saturated",
+  "version": "1.0.0",
+  "title": "Tick stability under saturation",
+  "description": "Deliberately pushes the server past the 50 ms tick budget with a combined entity, block-entity, and redstone load, then measures how gracefully it degrades. The only scenario where TPS is meaningful — everywhere else every configuration reports 20 and the metric is uninformative. Runs without tick warp, because the question here is specifically what happens when real ticks overrun.",
+  "side": "server",
+  "category": "tick-stability",
+  "tags": ["saturation", "degradation", "tps", "worst-case"],
+  "world": {
+    "seed": 999472051,
+    "generator": "flat",
+    "generator_settings": { "layers": "minecraft:bedrock,3*minecraft:stone,minecraft:grass_block" },
+    "spawn": { "x": 0.5, "y": 5.0, "z": 0.5 },
+    "time": 6000,
+    "weather": "clear",
+    "difficulty": "hard",
+    "gamerules": {
+      "doDaylightCycle": false, "doWeatherCycle": false,
+      "doMobSpawning": false, "randomTickSpeed": 0, "mobGriefing": false
+    },
+    "fingerprint_region": { "radius_chunks": 8 }
+  },
+  "setup": [
+    { "op": "set_simulation_distance", "chunks": 12 },
+    { "op": "generate_chunks", "radius_chunks": 14 },
+    {
+      "op": "spawn_ring",
+      "entities": [
+        { "type": "minecraft:zombie", "count": 800 },
+        { "type": "minecraft:villager", "count": 200 },
+        { "type": "minecraft:cow", "count": 400 }
+      ],
+      "radius": 80, "layout": "lattice", "y": 5, "persistent": true
+    },
+    { "op": "place_structure", "template": "hopper_chain", "count": 200, "spacing": 4, "origin": { "x": -64, "y": 5, "z": -64 }, "parameters": { "length": 16 } },
+    { "op": "place_structure", "template": "observer_clock_bank", "count": 32, "spacing": 6, "origin": { "x": 32, "y": 5, "z": 32 }, "parameters": { "piston_count": 4, "clock_period_ticks": 2 } },
+    { "op": "wait", "ticks": 600 }
+  ],
+  "workload": [
+    { "op": "wait", "ticks": 20 }
+  ],
+  "measurement": {
+    "warmup": { "min": 2400, "max_multiple": 3, "steady_state_tolerance": 0.10 },
+    "duration": { "quick": 3000, "full": 9000, "long": 27000 },
+    "primary_metric": "mspt_mean",
+    "metrics": ["mspt_p95", "mspt_p99", "tps_effective", "alloc_rate_mb_s", "gc_pause_total_ms", "gc_pause_p99_ms", "heap_steady_mb"],
+    "tick_warp": false,
+    "saturated": true
+  }
+}

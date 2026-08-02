@@ -12,10 +12,11 @@ mcbench exists to make that distinction. It measures many mods in one pass,
 under one methodology, and it says `inconclusive` when the data does not support
 a verdict.
 
-> **Status: foundation complete, execution backend in progress.**
-> The methodology, statistics engine, scenario suite, planner, mod resolution,
-> and reporting are implemented and tested. The in-game probe and instance
-> orchestration are the next milestone — see [Roadmap](#roadmap).
+> **Status: harness complete, in-game probe in progress.**
+> Methodology, statistics, scenarios, planner, mod resolution, headless run
+> loop, preflight gating, and chart/table export are implemented and tested.
+> The in-game probe mod — the component that actually samples frametimes inside
+> Minecraft — is the remaining piece. See [Roadmap](#roadmap).
 
 ## What makes it different
 
@@ -88,16 +89,84 @@ whoever produced it.
 ```bash
 pip install -e .
 
+mcbench doctor                                     # can this machine measure?
 mcbench scenarios                                  # list what's available
 mcbench metrics                                    # the metric registry
 mcbench validate --suite suites/example-performance-mods.toml
 mcbench plan suites/example-performance-mods.toml  # inspect the schedule
 mcbench resolve suites/example-performance-mods.toml --download
-mcbench analyse results.json                       # aggregate into a report
+mcbench run suites/example-performance-mods.toml -o results.json
+mcbench analyse results.json --export-dir report/  # charts + tables + HTML
 ```
 
 No runtime dependencies. A measurement standard people are asked to trust should
 be verifiable with a stock interpreter.
+
+### Headless use
+
+`mcbench run` is designed to be driven by a developer in one command or by CI
+with no terminal at all:
+
+```bash
+mcbench run suite.toml --json-events -o results.json   # NDJSON progress for CI
+mcbench doctor --json                                  # machine-readable gating
+mcbench analyse results.json --format json             # structured verdicts
+```
+
+Benchmarking a build that is not published yet — the usual case during
+development — uses a local jar:
+
+```toml
+[[variants]]
+name = "my-dev-build"
+mods = [{ platform = "local", project = "build/libs/mymod.jar", version = "1.2.0-dev" }]
+```
+
+It runs exactly like any other variant and its file is hashed into the
+provenance, but the suite is reported as **not publishable**: nobody else can
+obtain that jar, so the result is reproducible only on your machine.
+
+### Preflight gating
+
+`mcbench doctor` decides whether the machine can produce a number worth
+believing, and `run` refuses to start if it cannot. It checks for a real GPU,
+forced software rendering, a display, competing Minecraft processes, CPU
+governor, battery, memory against the configured heap, disk, virtualisation, a
+licensed account, and HeadlessMC.
+
+The most important thing it does is **refuse**. Benchmarking a rendering mod on
+a machine with no GPU is the easiest way to publish a meaningless Minecraft
+number: software rasterisation does not just make things slower, it moves the
+work the mod exists to optimise onto a completely different bottleneck. That is
+a hard block, not a warning.
+
+## Exporting charts and tables
+
+`--export-dir` writes the full bundle:
+
+```
+report.html    self-contained: charts, sortable tables, no external requests
+report.md      Markdown, for pasting into a PR or an issue
+report.json    structured verdicts, for CI gates and the corpus
+comparisons.csv / cells.csv / runs.csv     data tables (also tsv/md/html)
+```
+
+`runs.csv` carries every individual run before aggregation, so a reader can redo
+the analysis instead of taking ours on trust. A benchmark that publishes only
+summaries cannot be independently checked.
+
+The charts are hand-built SVG — no plotting dependency, colourblind-safe
+palette, light and dark themes:
+
+- **Forest plot** — relative changes with intervals against a shaded ROPE band.
+  The most important chart here, because it draws the verdict rule directly:
+  an interval touching the band has not established anything.
+- **Interval bars** — absolute values with confidence whiskers, zero-based.
+- **Frametime CDF** — the whole distribution. Two variants can share a mean and
+  differ sharply in the tail where stutter lives; a bar chart hides that.
+- **Order-effect scatter** — metric against execution position, so you can audit
+  whether interleaving actually held on your machine.
+- **Interaction plot** — observed pair cost against the additive prediction.
 
 ## Defining a suite
 
@@ -184,15 +253,20 @@ purpose — it cannot be done honestly.
 outlier rejection, Cliff's delta, ROPE verdicts, interaction terms, FDR control);
 metric registry and per-run reduction; scenario schema, loader, and 11
 definitions; run planner with interleaved randomised ordering; suite manifests
-with publishability checks; Modrinth resolution with hash verification;
-Markdown/JSON reporting. 130 tests.
+with publishability checks; Modrinth and local-jar resolution with hash
+verification; environment preflight gating; the headless run loop; the probe
+wire protocol; SVG charts, table export in four formats, and the self-contained
+HTML report. 182 tests.
 
-**Next** — the in-game probe mod (Fabric/NeoForge) emitting frametime and tick
-streams; instance orchestration via HeadlessMC + Xvfb; world fingerprinting;
-environment quiescence checks; CurseForge provider (opt-in, no caching).
+**Next — the one thing standing between this and real numbers:** the in-game
+probe mod (Fabric/NeoForge). It implements the wire protocol in
+`src/mcbench/runner/protocol.py`: drive the scenario script, sample frame and
+tick durations, emit newline-delimited JSON. Everything on both sides of it is
+built and tested.
 
-**Later** — cross-loader and cross-version comparison; bot-driven player load;
-the public results corpus.
+**Then** — world fingerprinting; CurseForge provider (opt-in, no caching);
+cross-loader and cross-version comparison; bot-driven player load; the public
+results corpus.
 
 ## Contributing
 

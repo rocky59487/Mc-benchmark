@@ -71,6 +71,17 @@ class ModRef:
     def pinned(self) -> bool:
         return self.version is not None
 
+    @property
+    def third_party_obtainable(self) -> bool:
+        """Whether someone else could fetch this exact file.
+
+        A local jar is reproducible only on the machine that holds it. That is
+        entirely legitimate for development — benchmarking a build before it is
+        published is a primary use case — but a result depending on it cannot be
+        verified by anyone else and so must never be marked publishable.
+        """
+        return self.platform is not Platform.LOCAL
+
     def __str__(self) -> str:
         return f"{self.platform.value}:{self.project}" + (
             f"@{self.version}" if self.version else "@latest"
@@ -126,15 +137,17 @@ class SuiteConfig:
     def publishable(self) -> bool:
         """Whether results from this suite may enter the public corpus.
 
-        Three conditions, each from METHODOLOGY.md: interleaved ordering,
-        sufficient repetition, and fully pinned mod versions. A suite that fails
-        any of these can still be run — it is useful for local iteration — but
-        its numbers are not comparable to anyone else's.
+        Four conditions: interleaved ordering, sufficient repetition, fully
+        pinned mod versions, and every mod obtainable by a third party. A suite
+        that fails any of these can still be run — it is useful for local
+        iteration — but its numbers are not comparable to anyone else's.
         """
+        mods = [mod for v in self.variants for mod in v.mods]
         return (
             self.order is OrderStrategy.INTERLEAVED
             and self.runs_per_cell >= MIN_RUNS_PER_CELL
-            and all(mod.pinned for v in self.variants for mod in v.mods)
+            and all(mod.pinned for mod in mods)
+            and all(mod.third_party_obtainable for mod in mods)
         )
 
     def unpublishable_reasons(self) -> list[str]:
@@ -160,6 +173,17 @@ class SuiteConfig:
             reasons.append(
                 "unpinned mod versions make the suite unreproducible: "
                 + ", ".join(sorted(floating))
+            )
+        local = [
+            f"{v.name}/{m.project}"
+            for v in self.variants
+            for m in v.mods
+            if not m.third_party_obtainable
+        ]
+        if local:
+            reasons.append(
+                "local mod files cannot be obtained by anyone else, so results "
+                "are reproducible only on this machine: " + ", ".join(sorted(local))
             )
         return reasons
 

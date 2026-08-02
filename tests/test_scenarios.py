@@ -233,6 +233,46 @@ class TestSuiteManifest:
         assert not suite.publishable
         assert any("unpinned" in r for r in suite.unpublishable_reasons())
 
+    def test_local_jars_make_a_suite_unpublishable(self):
+        """A local jar is legitimate for development but not verifiable by others.
+
+        Benchmarking an unpublished build is a primary use case, so this must
+        still run. It must not claim to be comparable to anyone else's numbers,
+        because nobody else can obtain the file it measured.
+        """
+        suite = parse_suite({
+            "name": "t", "minecraft_version": "1.21.1", "loader": "fabric",
+            "scenarios": ["s"],
+            "variants": [
+                {"name": "base", "mods": []},
+                {"name": "dev", "mods": [
+                    {"platform": "local", "project": "build/libs/mymod.jar",
+                     "version": "1.0.0"}
+                ]},
+            ],
+            "baseline": "base",
+        })
+        assert not suite.publishable
+        assert any("local mod files" in r for r in suite.unpublishable_reasons())
+
+    def test_a_pinned_local_jar_is_still_unpublishable(self):
+        # Pinning a version string does not make the file obtainable.
+        suite = parse_suite({
+            "name": "t", "minecraft_version": "1.21.1", "loader": "fabric",
+            "scenarios": ["s"],
+            "variants": [
+                {"name": "base", "mods": []},
+                {"name": "dev", "mods": [
+                    {"platform": "local", "project": "a.jar", "version": "9.9.9"}
+                ]},
+            ],
+            "baseline": "base",
+        })
+        mod = suite.variants[1].mods[0]
+        assert mod.pinned
+        assert not mod.third_party_obtainable
+        assert not suite.publishable
+
     def test_blocked_ordering_makes_a_suite_unpublishable(self):
         suite = parse_suite({
             "name": "t", "minecraft_version": "1.21.1", "loader": "fabric",

@@ -275,6 +275,47 @@ def cmd_analyse(args: argparse.Namespace) -> int:
                 )
             )
 
+    # Order effects are plotted from the execution positions recorded at run
+    # time, so a reader can audit whether interleaving actually held.
+    order_points: dict[str, dict[str, list[tuple[int, float]]]] = {}
+    for key, runs in cells_raw.items():
+        scenario, _, variant = key.partition("/")
+        for run in runs:
+            if not isinstance(run, dict) or "position" not in run:
+                continue
+            values = run.get("values", {})
+            metric = next(
+                (m for m in ("frametime_mean_ms", "mspt_mean") if m in values), None
+            )
+            if metric:
+                order_points.setdefault(scenario, {}).setdefault(variant, []).append(
+                    (int(run["position"]), float(values[metric]))
+                )
+
+    if args.export_dir:
+        from .export import render_html_report, tables_for
+        from .export.tables import write_all
+
+        export_dir = Path(args.export_dir)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        tables = tables_for(result, raw_runs=cells_raw)
+
+        written = write_all(tables, str(export_dir), formats=args.table_format)
+        (export_dir / "report.json").write_text(render_json(result), encoding="utf-8")
+        (export_dir / "report.md").write_text(render_markdown(result), encoding="utf-8")
+        html_path = export_dir / "report.html"
+        html_path.write_text(
+            render_html_report(
+                result, raw_runs=cells_raw, order_points=order_points,
+                preflight=raw.get("preflight"), tables=tables,
+            ),
+            encoding="utf-8",
+        )
+        for path in [*written, str(export_dir / "report.json"),
+                     str(export_dir / "report.md"), str(html_path)]:
+            print(f"Wrote {path}")
+        return 0
+
     output = render_json(result) if args.format == "json" else render_markdown(result)
     if args.output:
         Path(args.output).write_text(output, encoding="utf-8")
@@ -282,6 +323,148 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     else:
         print(output)
     return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Check whether this machine can produce a publishable measurement."""
+    from .runner import Severity, run_preflight
+
+    needs_gpu = args.side != "server"
+    result = run_preflight(
+        needs_gpu=needs_gpu,
+        heap_mb=args.heap_mb,
+        require_account=not args.no_account_check,
+    )
+
+    if args.json:
+        print(json.dumps({
+            "admissible": result.admissible,
+            "publishable": result.publishable,
+            "host": result.host,
+            "checks": [
+                {"name": c.name, "severity": c.severity.value,
+                 "detail": c.detail, "remedy": c.remedy}
+                for c in result.checks
+            ],
+        }, indent=2))
+        return 0 if result.admissible else 1
+
+    mark = {
+        Severity.OK: "✓", Severity.INFO: "·",
+        Severity.WARN: "⚠", Severity.BLOCK: "✗",
+    }
+    width = max(len(c.name) for c in result.checks)
+    for check in result.checks:
+        print(f"{mark[check.severity]} {check.name:<{width}}  {check.detail}")
+        if check.remedy:
+            for line in _wrap(check.remedy, width + 4):
+                print(line)
+
+    print()
+    if result.admissible and result.publishable:
+        print("✓ this machine can produce publishable results")
+    elif result.admissible:
+        print("⚠ measurement can proceed, but results are not publishable:")
+        for check in result.warnings:
+            print(f"    - {check.name}: {check.detail}")
+    else:
+        print("✗ measurement must not proceed:")
+        for check in result.blockers:
+            print(f"    - {check.name}: {check.detail}")
+    return 0 if result.admissible else 1
+
+
+def _wrap(text: str, indent: int, width: int = 78) -> list[str]:
+    import textwrap
+
+    return textwrap.wrap(
+        text, width=width,
+        initial_indent=" " * indent, subsequent_indent=" " * indent,
+    )
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Execute a suite headlessly and write the results."""
+    from .runner import Harness, HarnessError, Severity
+    from .runner.harness import outcomes_to_cells
+
+    suite = load_suite(args.suite)
+    scenarios = {s.id: s for s in load_scenarios(_scenario_root(args.scenario_root))}
+
+    missing = [s for s in suite.scenarios if s not in scenarios]
+    if missing:
+        print(f"✗ unknown scenario(s): {', '.join(missing)}", file=sys.stderr)
+        return 2
+
+    def emit(event: str, payload: dict) -> None:
+        if args.json_events:
+            print(json.dumps({"event": event, **payload}), flush=True)
+        elif event == "run.start":
+            print(f"  [{payload['position']:>4}] {payload['cell']} …",
+                  end="", flush=True)
+        elif event == "run.done":
+            flags = f" ({', '.join(payload['flags'])})" if payload["flags"] else ""
+            print(f" {payload['wall_clock_s']}s{flags}", flush=True)
+        elif event == "run.fail":
+            print(f" FAILED: {payload['error']}", flush=True)
+        elif event == "suite.start":
+            print(f"Executing {payload['runs']} runs "
+                  f"({payload['strategy']}, seed {payload['seed']})")
+
+    harness = Harness(
+        suite, scenarios,
+        work_dir=args.work_dir,
+        headlessmc=args.headlessmc,
+        local_root=args.local_root,
+        on_event=emit,
+    )
+
+    preflight = harness.preflight(require_account=not args.no_account_check)
+    if not preflight.admissible and not args.force:
+        print("✗ preflight failed; refusing to run:", file=sys.stderr)
+        for check in preflight.blockers:
+            print(f"    {check.name}: {check.detail}", file=sys.stderr)
+            if check.remedy:
+                for line in _wrap(check.remedy, 6):
+                    print(line, file=sys.stderr)
+        print("\n  Use --force to override. Results from a forced run are "
+              "flagged and must not be published.", file=sys.stderr)
+        return 1
+
+    if preflight.warnings:
+        print("⚠ preflight warnings (results will be flagged):", file=sys.stderr)
+        for check in preflight.warnings:
+            print(f"    {check.name}: {check.detail}", file=sys.stderr)
+
+    try:
+        harness.resolve_all()
+        outcomes = harness.run_suite(
+            stop_on_failure=args.stop_on_failure, timeout_s=args.timeout
+        )
+    except HarnessError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "suite": suite.name,
+        "baseline": suite.baseline,
+        "provenance": {
+            **preflight.host,
+            "minecraft_version": suite.minecraft_version,
+            "loader": suite.loader.value,
+            "mcbench": __version__,
+            "preflight_publishable": str(preflight.publishable),
+        },
+        "cells": outcomes_to_cells(outcomes),
+    }
+    Path(args.output).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    succeeded = sum(1 for o in outcomes if o.succeeded)
+    print(f"\n{succeeded}/{len(outcomes)} runs usable → {args.output}")
+    if succeeded < len(outcomes):
+        print("  Failed runs are recorded with their flags; inspect the "
+              "instance logs under the work directory.")
+    return 0 if succeeded else 1
 
 
 def cmd_metrics(args: argparse.Namespace) -> int:
@@ -338,7 +521,39 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rope", type=float, default=0.02,
                    help="region of practical equivalence (default 0.02 = ±2%%)")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--export-dir",
+                   help="write the full bundle: HTML report with charts, "
+                        "Markdown, JSON, and data tables")
+    p.add_argument("--table-format", action="append", default=None,
+                   choices=["csv", "tsv", "md", "html"],
+                   help="table formats for --export-dir (repeatable, default csv)")
     p.set_defaults(func=cmd_analyse)
+
+    p = sub.add_parser("doctor", help="check whether this machine can measure")
+    p.add_argument("--side", choices=["client", "server", "both"], default="both",
+                   help="server-side runs do not need a GPU")
+    p.add_argument("--heap-mb", type=int, default=4096)
+    p.add_argument("--no-account-check", action="store_true",
+                   help="skip the Minecraft account check")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("run", help="execute a suite headlessly")
+    p.add_argument("suite")
+    p.add_argument("--scenario-root")
+    p.add_argument("--output", "-o", default="results.json")
+    p.add_argument("--work-dir", default="work")
+    p.add_argument("--headlessmc", help="path to the HeadlessMC jar or binary")
+    p.add_argument("--local-root", help="root for resolving local: mod paths")
+    p.add_argument("--timeout", type=float, help="per-run timeout in seconds")
+    p.add_argument("--stop-on-failure", action="store_true")
+    p.add_argument("--no-account-check", action="store_true")
+    p.add_argument("--force", action="store_true",
+                   help="run despite preflight blockers; results are flagged "
+                        "and must not be published")
+    p.add_argument("--json-events", action="store_true",
+                   help="emit newline-delimited JSON progress, for CI")
+    p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("metrics", help="list the metric registry")
     p.set_defaults(func=cmd_metrics)

@@ -12,12 +12,13 @@ mcbench exists to make that distinction. It measures many mods in one pass,
 under one methodology, and it says `inconclusive` when the data does not support
 a verdict.
 
-> **Status: harness and probe core complete; platform adapters in progress.**
-> Methodology, statistics, scenarios, planner, mod resolution, headless run
-> loop, preflight gating, chart/table export, and the in-game probe's timing
-> core are implemented and tested — 237 tests across Python and Java, including
-> cross-implementation conformance of the wire protocol. What remains is wiring
-> the probe into each mod loader. See [Roadmap](#roadmap).
+> **Status: the full chain is built; it needs a machine that can run Minecraft.**
+> Methodology, statistics, scenarios, planner, mod resolution, headless run loop,
+> preflight gating, chart/table export, the scenario-to-command compiler, the
+> probe timing core, and adapters for Fabric and Paper are implemented and
+> tested — 295 tests across Python and Java, including conformance fixtures in
+> both directions of the harness/probe seam. What remains is more platforms and
+> real hardware. See [Roadmap](#roadmap).
 
 ## What makes it different
 

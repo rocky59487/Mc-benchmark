@@ -61,7 +61,7 @@ parser, no dependency, and no knowledge of the methodology it is enforcing.
 
 | Platform | Timing hook | Status |
 |---|---|---|
-| Fabric | `ClientTickEvents` / `ServerTickEvents` | adapter written |
+| Fabric | `HudRenderCallback` / `ServerTickEvents` | **builds against 1.21.1** |
 | NeoForge | `ClientTickEvent` / `ServerTickEvent` | planned |
 | Forge | `TickEvent` | planned |
 | Quilt | Fabric adapter loads directly | expected to work as-is |
@@ -93,6 +93,26 @@ avoid colliding with the game's own), and it measures presented frames, which on
 a machine with vsync enabled measures the display rather than the renderer. The
 harness must therefore verify vsync is off before trusting agent-sourced frame
 timings — a check that belongs in preflight alongside the GPU check.
+
+## Builds are separate, on purpose
+
+`probe/` builds only `probe-core`. Each adapter under `probe/adapters/` is its
+own standalone Gradle build, opted into by whoever wants a mod jar.
+
+This is not tidiness. Building an adapter requires Fabric Loom — or the NeoForge
+or Forge equivalent — which downloads and remaps Minecraft itself: hundreds of
+megabytes, a network dependency, and a licence-sensitive step. `probe-core` has
+zero Minecraft imports and its full test suite runs in about a second with no
+network at all. Coupling the two would make every CI run of the methodology
+tests hostage to a game download, and that fast, offline verification is one of
+the most valuable properties the split buys.
+
+It also isolates toolchain conflicts, which are real and unavoidable across a
+matrix this wide. Fabric Loom 1.7.x calls Gradle's `Problems.forNamespace`,
+removed in Gradle 8.13, so the Fabric adapter pins its own Gradle 8.10 wrapper
+while `probe-core` builds on current Gradle. Under one build that would be an
+impasse; under separate builds it is a line in a properties file. Every adapter
+gets to track whatever toolchain its loader ecosystem requires.
 
 ## Adding a platform
 

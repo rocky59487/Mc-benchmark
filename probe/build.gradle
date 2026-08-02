@@ -1,10 +1,19 @@
 subprojects {
-    apply plugin: 'java'
     group = 'dev.mcbench'
     version = '0.1.0'
-    java {
-        toolchain { languageVersion = JavaLanguageVersion.of(21) }
+
+    repositories {
+        mavenCentral()
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
     }
-    repositories { mavenCentral() }
-    tasks.withType(Test).configureEach { useJUnitPlatform() }
+
+    plugins.withType(JavaPlugin).configureEach {
+        java {
+            toolchain { languageVersion = JavaLanguageVersion.of(21) }
+        }
+        tasks.withType(Test).configureEach { useJUnitPlatform() }
+    }
 }

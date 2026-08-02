@@ -1,7 +1,11 @@
-// No dependencies on purpose. probe-core is loaded into a running Minecraft JVM, where any
-// library it drags in can collide with the game's own classpath. Everything it needs —
-// java.util.Properties for its input, hand-written JSON for its output, JMX for runtime
-// metrics — is in the JDK.
+plugins {
+    id 'java'
+}
+
+// No dependencies on purpose. probe-core is loaded into a running Minecraft JVM,
+// where any library it drags in can collide with the game's own classpath.
+// Everything it needs — java.util.Properties for input, hand-written JSON for
+// output, JMX for runtime metrics — is in the JDK.
 dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "mcbench_probe",
+  "version": "${version}",
+  "name": "mcbench probe",
+  "description": "Timing probe for the mcbench Minecraft mod benchmark. Inert unless launched by the mcbench harness.",
+  "authors": ["The mcbench Authors"],
+  "contact": {
+    "homepage": "https://github.com/mcbench/mcbench",
+    "sources": "https://github.com/mcbench/mcbench"
+  },
+  "license": "Apache-2.0",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.mcbench.probe.fabric.McbenchProbeMod"],
+    "client": ["dev.mcbench.probe.fabric.McbenchProbeMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

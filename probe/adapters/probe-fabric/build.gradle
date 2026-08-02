@@ -1,0 +1,41 @@
+plugins {
+    id 'fabric-loom' version "${loom_version}"
+}
+
+group = 'dev.mcbench'
+version = '0.1.0'
+base { archivesName = 'mcbench-probe-fabric' }
+
+repositories {
+    mavenCentral()
+    maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${minecraft_version}"
+    mappings "net.fabricmc:yarn:${yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+
+    // Bundled into the mod jar rather than declared as a dependency: probe-core
+    // has no dependencies of its own, so shipping it inside makes the adapter a
+    // single self-contained artefact with nothing for the game's classloader to
+    // resolve at runtime.
+    implementation 'dev.mcbench:probe-core:0.1.0'
+    include 'dev.mcbench:probe-core:0.1.0'
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand version: project.version
+    }
+}

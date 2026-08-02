@@ -1,2 +1,14 @@
 rootProject.name = 'mcbench-probe'
+
+// probe-core only. Adapters are deliberately NOT included here.
+//
+// Building a loader adapter requires Fabric Loom (or the NeoForge/Forge
+// equivalent), which downloads and remaps Minecraft itself — a large,
+// network-heavy, licence-sensitive step. probe-core has zero Minecraft imports
+// and its tests run in about a second with no network at all, and that property
+// is worth protecting: it is what lets CI verify every methodology rule on every
+// commit without provisioning a game.
+//
+// Each adapter under adapters/ is therefore its own standalone Gradle build,
+// opted into only by someone who actually wants to produce a mod jar.
 include 'probe-core'

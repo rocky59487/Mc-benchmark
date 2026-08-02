@@ -1,0 +1,19 @@
+// Standalone build. See ../../settings.gradle for why adapters are not part of
+// the probe-core build: Loom downloads and remaps Minecraft, and probe-core's
+// network-free one-second test run is worth protecting from that.
+pluginManagement {
+    repositories {
+        maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = 'mcbench-probe-fabric'
+
+// probe-core is consumed as a source dependency so the adapter always builds
+// against the core in this checkout rather than a stale published jar.
+includeBuild('../..') {
+    dependencySubstitution {
+        substitute module('dev.mcbench:probe-core') using project(':probe-core')
+    }
+}

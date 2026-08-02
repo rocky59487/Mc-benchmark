@@ -252,8 +252,13 @@ there, and its 39 JUnit tests run in a second with no game present.
 
 A platform adapter implements three methods — a timing hook, a command
 executor, and a shutdown request. That is the entire version-coupled surface,
-which is what makes "every version, every loader" tractable: a new Minecraft
-version normally needs no code change, only a rebuild. See
+which is what makes "every version, every platform" tractable: a new Minecraft
+version normally needs no code change, only a rebuild.
+
+Two adapters exist, and they are the evidence the SPI is the right size. Fabric
+(a mod loader with a client) and Paper (a server plugin platform with no client
+at all) are unrelated ecosystems, yet their adapters are nearly the same length
+and neither contains a single line of methodology. See
 [docs/PLATFORMS.md](docs/PLATFORMS.md), including the JVM-agent approach that
 can time frames on any version and any loader by instrumenting LWJGL — a
 third-party library whose names are never obfuscated — instead of the game.
@@ -300,10 +305,11 @@ steady-state detection, JMX runtime monitoring, the protocol writer, and the
 adapter SPI — with cross-implementation conformance tests between the Java
 writer and the Python reader.
 
-**Next — what stands between this and real numbers:** platform adapters. Each
-is roughly fifty lines against `ProbeAdapter`. Fabric first, then NeoForge,
-Forge, and a Paper plugin for server-side runs, then the JVM agent that covers
-every remaining version and loader.
+Plus the scenario-to-command compiler that joins the harness to the probe, and
+adapters for Fabric and Paper.
+
+**Next:** NeoForge and Forge adapters, then the JVM agent that covers every
+remaining version and loader.
 
 **Then** — vsync detection in preflight (required before trusting agent-sourced
 frame timings); world fingerprinting; CurseForge provider (opt-in, no caching);

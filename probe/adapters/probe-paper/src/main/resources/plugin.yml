@@ -1,0 +1,8 @@
+name: mcbench-probe
+version: '${version}'
+main: dev.mcbench.probe.paper.McbenchProbePlugin
+api-version: '1.21'
+description: Timing probe for the mcbench Minecraft mod benchmark. Inert unless launched by the mcbench harness.
+author: The mcbench Authors
+website: https://github.com/mcbench/mcbench
+load: STARTUP

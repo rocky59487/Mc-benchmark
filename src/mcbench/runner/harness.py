@@ -193,12 +193,34 @@ class Harness:
 
     @property
     def needs_gpu(self) -> bool:
-        """True when any selected scenario renders."""
+        """True when any selected scenario renders.
+
+        Plugin platforms have no client at all, so a suite on Paper never needs a
+        GPU regardless of what its scenarios declare — and demanding one would
+        block a perfectly valid server benchmark.
+        """
+        if self.suite.loader.is_plugin_platform:
+            return False
         return any(
             self.scenarios[s].side in (Side.CLIENT, Side.BOTH)
             for s in self.suite.scenarios
             if s in self.scenarios
         )
+
+    def unsupported_scenarios(self) -> list[str]:
+        """Scenarios this suite's platform cannot run.
+
+        Reported up front rather than discovered as an empty result: a client
+        scenario dispatched to a Paper server records no frames, and an empty
+        result is far more confusing than a clear refusal.
+        """
+        if not self.suite.loader.is_plugin_platform:
+            return []
+        return [
+            name
+            for name in self.suite.scenarios
+            if name in self.scenarios and self.scenarios[name].side is Side.CLIENT
+        ]
 
     def preflight(self, *, require_account: bool = True) -> Preflight:
         result = run_preflight(

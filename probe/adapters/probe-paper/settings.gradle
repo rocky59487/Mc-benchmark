@@ -1,0 +1,10 @@
+// Standalone build, like every adapter. Paper plugins compile against only the
+// API jar — no Minecraft download — so this one is fast, but keeping it separate
+// still isolates its toolchain from probe-core's.
+rootProject.name = 'mcbench-probe-paper'
+
+includeBuild('../..') {
+    dependencySubstitution {
+        substitute module('dev.mcbench:probe-core') using project(':probe-core')
+    }
+}

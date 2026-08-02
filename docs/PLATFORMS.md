@@ -62,10 +62,10 @@ parser, no dependency, and no knowledge of the methodology it is enforcing.
 | Platform | Timing hook | Status |
 |---|---|---|
 | Fabric | `HudRenderCallback` / `ServerTickEvents` | **builds against 1.21.1** |
+| Paper / Spigot / Purpur | repeating `Scheduler` task | **builds against paper-api** |
 | NeoForge | `ClientTickEvent` / `ServerTickEvent` | planned |
 | Forge | `TickEvent` | planned |
 | Quilt | Fabric adapter loads directly | expected to work as-is |
-| Paper / Spigot / Purpur | plugin `Scheduler` | planned, server-side only |
 | **Any version, any loader** | **JVM agent** | designed, see below |
 
 ## The universal fallback: a JVM agent
@@ -93,6 +93,23 @@ avoid colliding with the game's own), and it measures presented frames, which on
 a machine with vsync enabled measures the display rather than the renderer. The
 harness must therefore verify vsync is off before trusting agent-sourced frame
 timings — a check that belongs in preflight alongside the GPU check.
+
+## Evidence the SPI is the right size
+
+Fabric and Paper are unrelated ecosystems — one is a mod loader with a client,
+the other a server plugin platform with no client at all — and their adapters
+are nearly the same length and shape. Neither contains a single line of
+methodology. Everything that decides what a number means is in probe-core and is
+shared between them verbatim.
+
+Their timing hooks differ only in how each platform exposes a tick. Fabric has a
+tick event; Bukkit does not, but a repeating task scheduled at a one-tick period
+runs exactly once per tick on the main thread, which is the same quantity. That
+scheduler API has been stable since Bukkit's earliest releases — considerably
+longer than any internal hook would have survived.
+
+Paper also builds in well under a minute, because a plugin compiles against only
+the API jar and never downloads Minecraft.
 
 ## Builds are separate, on purpose
 
@@ -131,10 +148,10 @@ launching a real benchmark.
 ## Version matrix
 
 Because the coupled surface is three methods, breadth is a build concern rather
-than a code concern. Adapters are built against a matrix of game versions
-declared in `probe/gradle.properties`; a new version is normally a one-line
-addition. Where a version genuinely moves an API an adapter uses, the divergence
-is isolated to that adapter's source set rather than spreading into the core.
+than a code concern. Each adapter declares its target in its own
+`gradle.properties`, so retargeting a version is normally a one-line change and
+never touches Java. Where a version genuinely moves an API an adapter uses, the
+divergence is isolated to that adapter rather than spreading into the core.
 
 Mappings note: recent versions (26.x) have no Yarn mappings published, so
 adapters build against **official Mojang mappings**, which are available for

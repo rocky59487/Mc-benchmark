@@ -1,0 +1,34 @@
+plugins {
+    id 'java'
+    id 'com.gradleup.shadow' version '8.3.5'
+}
+
+group = 'dev.mcbench'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+    maven { name = 'papermc'; url = 'https://repo.papermc.io/repository/maven-public/' }
+}
+
+dependencies {
+    compileOnly "io.papermc.paper:paper-api:${paper_api_version}"
+    // Shaded in: the server provides no classpath for a plugin's dependencies,
+    // and probe-core has none of its own, so bundling keeps the plugin a single
+    // self-contained jar.
+    implementation 'dev.mcbench:probe-core:0.1.0'
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+}
+
+tasks.withType(JavaCompile).configureEach { options.release = 21 }
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('plugin.yml') { expand version: project.version }
+}
+
+shadowJar { archiveClassifier = '' }
+build.dependsOn shadowJar

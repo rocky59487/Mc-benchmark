@@ -237,3 +237,51 @@ class TestHarnessPreflight:
     def test_server_only_suite_does_not_demand_a_gpu(self, tmp_path):
         harness = self._harness(tmp_path)
         assert not harness.needs_gpu
+
+
+class TestPluginPlatforms:
+    """Paper and friends are server plugin platforms, not mod loaders."""
+
+    def _harness(self, tmp_path, loader, scenarios_wanted):
+        from mcbench.config import parse_suite
+        from mcbench.runner import Harness
+        from mcbench.scenario import load_scenarios
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[1]
+        scenarios = {s.id: s for s in load_scenarios(repo / "scenarios")}
+        suite = parse_suite({
+            "name": "t", "minecraft_version": "1.21.1", "loader": loader,
+            "scenarios": scenarios_wanted,
+            "variants": [{"name": "base", "mods": []}],
+            "baseline": "base",
+        })
+        return Harness(suite, scenarios, work_dir=tmp_path)
+
+    def test_paper_never_requires_a_gpu(self, tmp_path):
+        # Paper has no client, so demanding a GPU would block a valid server run.
+        harness = self._harness(tmp_path, "paper", ["visual-biome-flyby"])
+        assert not harness.needs_gpu
+
+    def test_paper_reports_client_scenarios_as_unsupported(self, tmp_path):
+        # Surfaced up front; a client scenario on a headless server would record
+        # no frames, and an empty result is more confusing than a refusal.
+        harness = self._harness(tmp_path, "paper", ["visual-biome-flyby"])
+        assert harness.unsupported_scenarios() == ["visual-biome-flyby"]
+
+    def test_paper_accepts_server_scenarios(self, tmp_path):
+        harness = self._harness(tmp_path, "paper", ["entity-mobcap-saturation"])
+        assert harness.unsupported_scenarios() == []
+
+    def test_mod_loaders_have_no_platform_restriction(self, tmp_path):
+        harness = self._harness(tmp_path, "fabric", ["visual-biome-flyby"])
+        assert harness.unsupported_scenarios() == []
+        assert harness.needs_gpu
+
+    def test_plugin_platform_flag(self):
+        from mcbench.config import Loader
+
+        assert Loader.PAPER.is_plugin_platform
+        assert Loader.SPIGOT.is_plugin_platform
+        assert not Loader.FABRIC.is_plugin_platform
+        assert not Loader.NEOFORGE.is_plugin_platform

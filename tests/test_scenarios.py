@@ -315,9 +315,20 @@ class TestSuiteManifest:
     def test_rejects_an_unknown_loader(self):
         with pytest.raises(ConfigError, match="unknown loader"):
             parse_suite({
-                "name": "t", "minecraft_version": "1.21.1", "loader": "bukkit",
+                "name": "t", "minecraft_version": "1.21.1", "loader": "modloader64",
                 "scenarios": ["s"], "variants": [{"name": "a", "mods": []}],
             })
+
+    def test_accepts_plugin_platforms_alongside_mod_loaders(self):
+        # Paper and its derivatives are a large part of the server ecosystem that
+        # mod loaders never touch, so the platform set has to include them.
+        for platform in ("fabric", "neoforge", "forge", "quilt", "paper", "spigot"):
+            suite = parse_suite({
+                "name": "t", "minecraft_version": "1.21.1", "loader": platform,
+                "scenarios": ["s"], "variants": [{"name": "a", "mods": []}],
+                "baseline": "a",
+            })
+            assert suite.loader.value == platform
 
     def test_rejects_an_interaction_group_naming_an_undeclared_variant(self):
         with pytest.raises(ConfigError, match="undeclared variants"):

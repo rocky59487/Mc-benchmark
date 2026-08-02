@@ -36,10 +36,27 @@ class ConfigError(ValueError):
 
 
 class Loader(str, Enum):
+    """The platform an instance runs on.
+
+    Named ``Loader`` because most entries are mod loaders, but the set is wider
+    than that: Paper and its derivatives are plugin platforms with no client and
+    no mod loader at all, and they cover a large part of the server ecosystem
+    that Fabric and Forge never touch. These strings are also the values Modrinth
+    uses for its own loader facet, so they double as the resolution key.
+    """
+
     FABRIC = "fabric"
     NEOFORGE = "neoforge"
     FORGE = "forge"
     QUILT = "quilt"
+    PAPER = "paper"
+    SPIGOT = "spigot"
+    BUKKIT = "bukkit"
+
+    @property
+    def is_plugin_platform(self) -> bool:
+        """True for server plugin platforms, which have no client side."""
+        return self in (Loader.PAPER, Loader.SPIGOT, Loader.BUKKIT)
 
 
 class Platform(str, Enum):

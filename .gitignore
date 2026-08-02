@@ -17,6 +17,9 @@ dist/
 /cache/
 /results/
 *.jar
+# The Gradle wrapper jar is our own build tooling, not a redistributed mod, and
+# committing it is what lets adopters build the probe without installing Gradle.
+!probe/gradle/wrapper/gradle-wrapper.jar
 
 # Java / Gradle (probe mod, milestone 2)
 .gradle/

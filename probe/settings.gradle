@@ -1,0 +1,2 @@
+rootProject.name = 'mcbench-probe'
+include 'probe-core'

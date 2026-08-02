@@ -1,0 +1,10 @@
+subprojects {
+    apply plugin: 'java'
+    group = 'dev.mcbench'
+    version = '0.1.0'
+    java {
+        toolchain { languageVersion = JavaLanguageVersion.of(21) }
+    }
+    repositories { mavenCentral() }
+    tasks.withType(Test).configureEach { useJUnitPlatform() }
+}

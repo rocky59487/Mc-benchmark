@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 from . import __version__
 from .config import ConfigError, Loader, load_suite
@@ -1307,7 +1309,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _use_utf8(stream: IO[str]) -> None:
+    """Stop the status marks from killing the command that prints them.
+
+    Every check in doctor and validate is reported with U+2713, U+2717 or
+    U+26A0, and Python encodes to the locale codepage when its output is a pipe
+    rather than a console. On a Traditional Chinese install that codepage is
+    cp950, which has none of the three, so ``mcbench validate`` exited with
+    UnicodeEncodeError from the line announcing that everything was valid — and
+    only when redirected, which is how CI and every wrapper script runs it.
+
+    UTF-8 is what the JSON output already assumes. Streams that cannot be
+    reconfigured (a StringIO under test, a closed stdout) are left alone.
+    """
+    with contextlib.suppress(AttributeError, ValueError, OSError):
+        stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _use_utf8(sys.stdout)
+    _use_utf8(sys.stderr)
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

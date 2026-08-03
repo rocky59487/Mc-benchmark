@@ -420,10 +420,13 @@ costs, came from where the region was drawn.
 
 Two things follow:
 
-- **A margin below 6 chunks is refused by `mcbench validate`.** Six is where the
-  evidence starts, not a guarantee: `reference-hardware-baseline` is stable on
-  6 while the flyby needed 8, because how much settled terrain a region needs
-  depends on how much world the run generates around it.
+- **A margin below 6 chunks is warned about by `mcbench validate`.** Warned, not
+  refused: six is where the evidence starts, not a guarantee.
+  `reference-hardware-baseline` is stable on 6 while the flyby needed 8, because
+  how much settled terrain a region needs depends on how much world the run
+  generates around it. Five server scenarios ship at a margin of 4 and are
+  flagged rather than rejected, since a threshold calibrated on one client
+  scenario is not grounds for narrowing five regions that have never been run.
 - **The run that generates a scenario's world is the one most likely to be
   refused**, since it is the least settled and it is also the one the shared
   world is cached from. Which variant that is comes from the shuffle, not from

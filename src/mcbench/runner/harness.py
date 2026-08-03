@@ -18,16 +18,17 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from ..config import Platform, SuiteConfig, Variant
-from ..metrics import RunFlag, RunMetrics, reduce_client_run, reduce_server_run
+from ..metrics import RunMetrics, reduce_client_run, reduce_server_run
 from ..planner import Cell, PlannedRun, RunPlan, plan_runs
 from ..providers import ModrinthClient, ModrinthError, ResolvedMod
-from ..scenario import Preset, Scenario, Side
-from ..targets import Target, UnsupportedTarget
+from ..scenario import Scenario, Side
+from ..targets import Target
 from .plan import check_target, write_plan
 from .preflight import Check, Preflight, Severity, run_preflight
 from .protocol import ProbeError, ProbeStream, parse_probe_stream

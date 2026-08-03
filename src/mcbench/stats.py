@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from statistics import median
-from typing import Callable, Sequence
 
 __all__ = [
     "Verdict",
@@ -549,10 +549,11 @@ def runs_needed_for_resolution(
     rope = comparison.rope
     # Distance the interval edge must travel to fall wholly inside or wholly
     # outside the ROPE, whichever this delta is heading toward.
-    if abs(centre) <= rope:
-        target_half_width = rope - abs(centre)  # shrink to sit inside the ROPE
-    else:
-        target_half_width = abs(centre) - rope  # shrink to clear the boundary
+    # Inside the ROPE the interval must shrink to sit wholly within it; outside,
+    # it must shrink until it clears the boundary.
+    target_half_width = (
+        rope - abs(centre) if abs(centre) <= rope else abs(centre) - rope
+    )
 
     if target_half_width <= 0:
         return None

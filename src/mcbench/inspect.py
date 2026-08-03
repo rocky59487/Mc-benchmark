@@ -28,17 +28,20 @@ Nothing here proves a conflict. It ranks where to point the benchmark next.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import struct
 import tomllib
 import zipfile
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 __all__ = [
+    "ArchiveTooLarge",
     "ModMetadata",
     "Finding",
     "Severity",
@@ -48,6 +51,78 @@ __all__ = [
     "inspect_mods",
     "mixin_targets",
 ]
+
+
+# --------------------------------------------------------------------------
+# Archive safety limits
+# --------------------------------------------------------------------------
+#
+# A mod jar is untrusted input. Inspection is often the *first* thing run
+# against a pack from an unknown source, so it must survive a hostile archive
+# rather than being the thing that falls over.
+#
+# The classic attack is a zip bomb: a 200 KB jar whose entries expand to
+# hundreds of megabytes, exhausting memory in a tool that reads every class.
+# ZipInfo carries the declared uncompressed size, so the cost of an entry is
+# knowable before reading it — these limits are checked against that, and the
+# read is capped again afterwards in case the declared size lied.
+
+#: Largest single entry we will read into memory.
+MAX_ENTRY_BYTES = 32 * 1024 * 1024
+
+#: Largest total we will read from one jar.
+MAX_TOTAL_BYTES = 256 * 1024 * 1024
+
+#: Entry-count cap, against archives with millions of tiny members.
+MAX_ENTRIES = 20_000
+
+#: Compression ratios above this are the signature of a bomb; real class files
+#: and JSON compress well but not like this.
+MAX_COMPRESSION_RATIO = 300
+
+
+class ArchiveTooLarge(Exception):
+    """A jar exceeded a safety limit and was not fully read."""
+
+
+def _safe_read(archive: zipfile.ZipFile, name: str, budget: list[int]) -> bytes | None:
+    """Read one entry, refusing anything that would blow a limit.
+
+    ``budget`` is a one-element list holding the remaining total allowance, so
+    the cap applies across the whole jar rather than per entry.
+    """
+    try:
+        info = archive.getinfo(name)
+    except KeyError:
+        return None
+
+    if info.file_size > MAX_ENTRY_BYTES:
+        raise ArchiveTooLarge(
+            f"{name}: entry declares {info.file_size} bytes, over the "
+            f"{MAX_ENTRY_BYTES} limit"
+        )
+    if info.compress_size > 0:
+        ratio = info.file_size / info.compress_size
+        if ratio > MAX_COMPRESSION_RATIO:
+            raise ArchiveTooLarge(
+                f"{name}: compression ratio {ratio:.0f}:1 exceeds "
+                f"{MAX_COMPRESSION_RATIO}:1, which is the signature of a zip bomb"
+            )
+    if info.file_size > budget[0]:
+        raise ArchiveTooLarge(
+            f"{name}: reading it would exceed the {MAX_TOTAL_BYTES}-byte "
+            f"per-jar budget"
+        )
+
+    with archive.open(name) as handle:
+        # Bounded again on read: the declared size is attacker-controlled and a
+        # lying header should not turn into an unbounded read.
+        data = handle.read(MAX_ENTRY_BYTES + 1)
+    if len(data) > MAX_ENTRY_BYTES:
+        raise ArchiveTooLarge(f"{name}: actual size exceeds the entry limit")
+
+    budget[0] -= len(data)
+    return data
 
 
 class Severity(str, Enum):
@@ -178,10 +253,8 @@ def _constant_pool_strings(data: bytes) -> list[str]:
             offset += 2
             raw = data[offset : offset + length]
             offset += length
-            try:
+            with contextlib.suppress(UnicodeDecodeError):
                 strings.append(raw.decode("utf-8", errors="replace"))
-            except Exception:
-                pass
         else:
             size = _FIXED_SIZES.get(tag)
             if size is None:
@@ -216,8 +289,11 @@ def _version_spec(value: Any) -> str:
     return str(value)
 
 
-def _read_fabric(archive: zipfile.ZipFile, meta: ModMetadata) -> None:
-    data = json.loads(archive.read("fabric.mod.json").decode("utf-8"))
+def _read_fabric(archive: zipfile.ZipFile, meta: ModMetadata, budget: list[int]) -> None:
+    raw = _safe_read(archive, "fabric.mod.json", budget)
+    if raw is None:
+        raise KeyError("fabric.mod.json")
+    data = json.loads(raw.decode("utf-8"))
     meta.loader = "fabric"
     meta.mod_id = str(data.get("id", ""))
     meta.name = str(data.get("name", meta.mod_id))
@@ -239,8 +315,13 @@ def _read_fabric(archive: zipfile.ZipFile, meta: ModMetadata) -> None:
     meta.mixin_configs = tuple(n for n in names if n)
 
 
-def _read_neoforge(archive: zipfile.ZipFile, meta: ModMetadata, name: str) -> None:
-    data = tomllib.loads(archive.read(name).decode("utf-8"))
+def _read_neoforge(
+    archive: zipfile.ZipFile, meta: ModMetadata, name: str, budget: list[int]
+) -> None:
+    raw = _safe_read(archive, name, budget)
+    if raw is None:
+        raise KeyError(name)
+    data = tomllib.loads(raw.decode("utf-8"))
     meta.loader = "neoforge" if "neoforge" in name else "forge"
 
     mods = data.get("mods") or []
@@ -271,7 +352,9 @@ def _read_neoforge(archive: zipfile.ZipFile, meta: ModMetadata, name: str) -> No
     )
 
 
-def _read_bukkit(archive: zipfile.ZipFile, meta: ModMetadata) -> None:
+def _read_bukkit(
+    archive: zipfile.ZipFile, meta: ModMetadata, budget: list[int]
+) -> None:
     """Minimal plugin.yml reader.
 
     Deliberately not a YAML parser. plugin.yml uses a tiny, well-established
@@ -279,7 +362,10 @@ def _read_bukkit(archive: zipfile.ZipFile, meta: ModMetadata) -> None:
     keys would cost more than it returns. Anything it cannot parse is reported as
     an error on the mod rather than guessed at.
     """
-    text = archive.read("plugin.yml").decode("utf-8", errors="replace")
+    raw = _safe_read(archive, "plugin.yml", budget)
+    if raw is None:
+        raise KeyError("plugin.yml")
+    text = raw.decode("utf-8", errors="replace")
     meta.loader = "bukkit"
 
     current_key: str | None = None
@@ -324,19 +410,27 @@ def read_jar(path: str | Path, *, scan_mixins: bool = True) -> ModMetadata:
     meta = ModMetadata(path=path)
     errors: list[str] = []
 
+    budget = [MAX_TOTAL_BYTES]
+
     try:
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
+            if len(names) > MAX_ENTRIES:
+                meta.errors = (
+                    f"jar declares {len(names)} entries, over the "
+                    f"{MAX_ENTRIES} limit; refusing to inspect it",
+                )
+                return meta
 
             try:
                 if "fabric.mod.json" in names:
-                    _read_fabric(archive, meta)
+                    _read_fabric(archive, meta, budget)
                 elif "META-INF/neoforge.mods.toml" in names:
-                    _read_neoforge(archive, meta, "META-INF/neoforge.mods.toml")
+                    _read_neoforge(archive, meta, "META-INF/neoforge.mods.toml", budget)
                 elif "META-INF/mods.toml" in names:
-                    _read_neoforge(archive, meta, "META-INF/mods.toml")
+                    _read_neoforge(archive, meta, "META-INF/mods.toml", budget)
                 elif "plugin.yml" in names:
-                    _read_bukkit(archive, meta)
+                    _read_bukkit(archive, meta, budget)
                 else:
                     errors.append(
                         "no recognised mod metadata "
@@ -344,6 +438,8 @@ def read_jar(path: str | Path, *, scan_mixins: bool = True) -> ModMetadata:
                     )
             except (json.JSONDecodeError, tomllib.TOMLDecodeError, KeyError) as exc:
                 errors.append(f"malformed metadata: {exc}")
+            except ArchiveTooLarge as exc:
+                errors.append(f"refused to read metadata: {exc}")
 
             meta.nested_jars = tuple(
                 n for n in names if n.startswith("META-INF/jars/") and n.endswith(".jar")
@@ -358,9 +454,14 @@ def read_jar(path: str | Path, *, scan_mixins: bool = True) -> ModMetadata:
                     if not name.endswith(".class") or "mixin" not in name.lower():
                         continue
                     try:
-                        targets |= mixin_targets(archive.read(name))
+                        data = _safe_read(archive, name, budget)
+                    except ArchiveTooLarge as exc:
+                        errors.append(f"stopped scanning mixins: {exc}")
+                        break
                     except (KeyError, zipfile.BadZipFile):
                         continue
+                    if data is not None:
+                        targets |= mixin_targets(data)
                 meta.mixin_targets = frozenset(targets)
 
     except (zipfile.BadZipFile, OSError) as exc:

@@ -25,9 +25,11 @@ Two rules govern everything here:
 from __future__ import annotations
 
 import math
+import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from ..config import Loader
 from ..scenario import Preset, Scenario, Side
@@ -65,9 +67,48 @@ CAMERA_STEPS_PER_SECOND = 20
 
 VANILLA_FILL_MODES = {"replace", "destroy", "hollow", "keep", "outline"}
 
+#: Minecraft truncates over-long commands, which would silently run a different
+#: command than the scenario declared.
+MAX_COMMAND_LENGTH = 32500
+
+
+#: Characters that must never appear inside an emitted command.
+#:
+#: The plan is a newline-delimited file, so a command containing a newline
+#: becomes *several* commands when written — one scenario action silently
+#: turning into three. Scenarios are meant to be shared and committed, which
+#: makes them untrusted input, so this is a real injection vector rather than a
+#: theoretical one. Carriage returns and NULs are rejected for the same reason.
+_FORBIDDEN_IN_COMMAND = re.compile(r"[\x00-\x1f\x7f]")
+
 
 class PlanError(ValueError):
     """A scenario action could not be compiled."""
+
+
+def _check_command(line: str, where: str) -> str:
+    """Reject a command that would break out of its line.
+
+    Refuses rather than escapes or strips. A scenario doing this is either
+    malicious or broken, and silently rewriting it into something that *looks*
+    valid would hide both cases.
+    """
+    match = _FORBIDDEN_IN_COMMAND.search(line)
+    if match:
+        char = match.group()
+        raise PlanError(
+            f"{where}: command contains a forbidden control character "
+            f"{char!r} (0x{ord(char):02x}). The plan is newline-delimited, so "
+            f"this would inject additional commands into the run."
+        )
+    if len(line) > MAX_COMMAND_LENGTH:
+        # Minecraft's own command buffer is bounded; an over-long line is
+        # truncated at runtime, which silently executes a *different* command.
+        raise PlanError(
+            f"{where}: command is {len(line)} characters, over the "
+            f"{MAX_COMMAND_LENGTH} limit; it would be truncated at runtime"
+        )
+    return line
 
 
 @dataclass
@@ -138,8 +179,8 @@ def _split_volume(
     Splitting along Y first keeps each piece a wide flat slab, which matches how
     scenario regions are usually shaped and keeps the piece count low.
     """
-    x0, y0, z0 = (min(a, b) for a, b in zip(start, end))
-    x1, y1, z1 = (max(a, b) for a, b in zip(start, end))
+    x0, y0, z0 = (min(a, b) for a, b in zip(start, end, strict=True))
+    x1, y1, z1 = (max(a, b) for a, b in zip(start, end, strict=True))
 
     width, height, depth = x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1
     if width * height * depth <= MAX_FILL_VOLUME:
@@ -233,7 +274,7 @@ def _compile_action(
         value = action.get("value")
         if not isinstance(value, str) or not value.strip():
             raise PlanError(f"{where}: 'command' needs a non-empty 'value'")
-        lines.append(value.strip().lstrip("/"))
+        lines.append(_check_command(value.strip().lstrip("/"), where))
 
     elif op == "wait":
         ticks = int(action.get("ticks", 0))
@@ -614,8 +655,13 @@ def compile_plan(
     if difficulty:
         gamerules.append(dialect.difficulty(difficulty))
 
-    plan.setup = gamerules + setup_lines
-    plan.workload = workload_lines
+    # Every emitted line is checked, not just the pass-through command op:
+    # structure templates, dialect spellings and interpolated coordinates all
+    # reach the same file, and a single unchecked path defeats the check.
+    plan.setup = [
+        _check_command(line, "setup") for line in gamerules + setup_lines
+    ]
+    plan.workload = [_check_command(line, "workload") for line in workload_lines]
     plan.instance_settings = {**setup_settings, **workload_settings}
 
     warmup = scenario.measurement["warmup"]

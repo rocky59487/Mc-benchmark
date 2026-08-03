@@ -196,10 +196,11 @@ class TestHarnessPreflight:
     """The harness adds checks that depend on how it was constructed."""
 
     def _harness(self, tmp_path, headlessmc=None):
+        from pathlib import Path
+
         from mcbench.config import parse_suite
         from mcbench.runner import Harness
         from mcbench.scenario import load_scenarios
-        from pathlib import Path
 
         repo = Path(__file__).resolve().parents[1]
         scenarios = {s.id: s for s in load_scenarios(repo / "scenarios")}
@@ -243,10 +244,11 @@ class TestPluginPlatforms:
     """Paper and friends are server plugin platforms, not mod loaders."""
 
     def _harness(self, tmp_path, loader, scenarios_wanted):
+        from pathlib import Path
+
         from mcbench.config import parse_suite
         from mcbench.runner import Harness
         from mcbench.scenario import load_scenarios
-        from pathlib import Path
 
         repo = Path(__file__).resolve().parents[1]
         scenarios = {s.id: s for s in load_scenarios(repo / "scenarios")}

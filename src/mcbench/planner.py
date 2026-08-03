@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import itertools
 import random
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterator, Sequence
 
 __all__ = [
     "OrderStrategy",

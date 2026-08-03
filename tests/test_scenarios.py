@@ -10,8 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from mcbench.config import Loader, Platform, load_suite, parse_suite
-from mcbench.config import ConfigError
+from mcbench.config import ConfigError, Loader, Platform, load_suite, parse_suite
 from mcbench.metrics import METRICS
 from mcbench.planner import OrderStrategy
 from mcbench.scenario import (

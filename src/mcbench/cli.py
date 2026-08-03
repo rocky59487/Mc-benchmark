@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
 
 from . import __version__
 from .config import ConfigError, load_suite
@@ -254,7 +254,7 @@ def cmd_analyse(args: argparse.Namespace) -> int:
         baseline=baseline_name,
         cells=aggregated,
         provenance=raw.get("provenance", {}),
-        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
     )
 
     scenarios = {c.scenario for c in aggregated}
@@ -395,7 +395,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
     hotspots = result.hotspots(limit=args.top)
     if hotspots:
-        print(f"\nMost contended classes (where a conflict would show up first):")
+        print("\nMost contended classes (where a conflict would show up first):")
         for target, owners in hotspots:
             print(f"  {len(owners)}x  {target}")
             print(f"        {', '.join(owners)}")
@@ -541,7 +541,7 @@ def _wrap(text: str, indent: int, width: int = 78) -> list[str]:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Execute a suite headlessly and write the results."""
-    from .runner import Harness, HarnessError, Severity
+    from .runner import Harness, HarnessError
     from .runner.harness import outcomes_to_cells
 
     suite = load_suite(args.suite)
@@ -664,7 +664,9 @@ def cmd_bisect(args: argparse.Namespace) -> int:
         entry = resolved.get(variant.name)
         if entry is None:
             continue
-        for mod, jar in zip(variant.mods, entry.jars):
+        # strict: a length mismatch would silently map a mod id onto another
+        # mod's jar, and the bisect would then blame the wrong mod.
+        for mod, jar in zip(variant.mods, entry.jars, strict=True):
             jars_by_id[mod.project] = jar
 
     candidates = args.mod or sorted(jars_by_id)
@@ -675,8 +677,6 @@ def cmd_bisect(args: argparse.Namespace) -> int:
     if not candidates:
         print("✗ no mods to bisect", file=sys.stderr)
         return 2
-
-    probe_index = {"n": 0}
 
     def measure(mods, replicate):
         return harness.measure_subset(
@@ -710,7 +710,7 @@ def cmd_bisect(args: argparse.Namespace) -> int:
     result = isolate(candidates, oracle, max_probes=args.max_probes)
 
     print()
-    for record, probe in zip(oracle.records, result.probes):
+    for record, probe in zip(oracle.records, result.probes, strict=True):
         label = "+".join(probe.subset) or "baseline"
         if len(label) > 60:
             label = label[:57] + "…"

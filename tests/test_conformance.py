@@ -145,9 +145,9 @@ def test_end_to_end_from_java_output_to_a_verdict():
     aggregate, bootstrap, and ROPE in one path — the same code that will run on
     real measurements.
     """
+    from mcbench.metrics import RunMetrics
     from mcbench.planner import Cell
     from mcbench.report import aggregate_cell, compare_to_baseline
-    from mcbench.metrics import RunMetrics
     from mcbench.stats import Verdict
 
     stream = parse_probe_stream(CLIENT)

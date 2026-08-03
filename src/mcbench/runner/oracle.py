@@ -23,8 +23,8 @@ obtained that way are marked so they cannot be mistaken for the real thing.
 from __future__ import annotations
 
 import random
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Callable, Sequence
 
 from ..diagnose import Outcome
 from ..metrics import METRICS

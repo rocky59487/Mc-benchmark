@@ -13,7 +13,8 @@ qualifications, not just the winning number.
 from __future__ import annotations
 
 import html
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..metrics import METRICS
 from ..report import SuiteResult
@@ -231,7 +232,7 @@ def _scenario_section(
         ]
         rope = rows[0].comparison.rope
         parts.append(
-            f'<div class="chart">'
+            '<div class="chart">'
             + forest_plot(
                 series,
                 title=f"{definition.label} — change vs baseline",
@@ -263,7 +264,7 @@ def _scenario_section(
         ]
         if series:
             parts.append(
-                f'<div class="chart">'
+                '<div class="chart">'
                 + interval_bar_chart(
                     series,
                     title=f"{definition.label} — absolute",
@@ -274,7 +275,7 @@ def _scenario_section(
 
     if distributions and scenario in distributions:
         parts.append(
-            f'<div class="chart">'
+            '<div class="chart">'
             + distribution_cdf(
                 distributions[scenario],
                 title="Frametime distribution (empirical CDF)",
@@ -290,7 +291,7 @@ def _scenario_section(
 
     if order_points and scenario in order_points:
         parts.append(
-            f'<div class="chart">'
+            '<div class="chart">'
             + order_effect_scatter(
                 order_points[scenario],
                 title="Order effects — metric vs execution position",
@@ -374,7 +375,7 @@ def render_html_report(
             absolute = item.get("absolute")
             if absolute:
                 body.append(
-                    f'<div class="chart">'
+                    '<div class="chart">'
                     + interaction_plot(
                         none=absolute["none"], a=absolute["a"],
                         b=absolute["b"], ab=absolute["ab"],

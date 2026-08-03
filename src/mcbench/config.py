@@ -254,7 +254,7 @@ def parse_suite(data: dict[str, Any], *, source: Path | None = None) -> SuiteCon
     except ValueError:
         raise ConfigError(
             f"{where}: unknown loader {data['loader']!r}; "
-            f"expected one of {[l.value for l in Loader]}"
+            f"expected one of {[item.value for item in Loader]}"
         ) from None
 
     raw_variants = data.get("variants") or []
@@ -363,10 +363,7 @@ def load_suite(path: str | Path) -> SuiteConfig:
 
     text = path.read_text(encoding="utf-8")
     try:
-        if path.suffix == ".json":
-            data = json.loads(text)
-        else:
-            data = tomllib.loads(text)
+        data = json.loads(text) if path.suffix == ".json" else tomllib.loads(text)
     except (json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{path}: could not parse: {exc}") from exc
 

@@ -12,8 +12,9 @@ from __future__ import annotations
 import csv
 import html
 import io
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from ..metrics import METRICS
 from ..report import SuiteResult
@@ -226,7 +227,8 @@ def to_html(table: Table, *, sortable: bool = True) -> str:
         parts.append("<tr>")
         for value in row:
             text = "" if value is None else str(value)
-            numeric = ' class="mcb-num"' if isinstance(value, (int, float)) and not isinstance(value, bool) else ""
+            is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
+            numeric = ' class="mcb-num"' if is_number else ""
             parts.append(f"<td{numeric}>{html.escape(text)}</td>")
         parts.append("</tr>")
     parts.append("</tbody></table>")

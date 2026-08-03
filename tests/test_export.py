@@ -26,9 +26,9 @@ from mcbench.export import (
     to_tsv,
 )
 from mcbench.export.tables import Table, write_all
+from mcbench.metrics import RunMetrics
 from mcbench.planner import Cell
 from mcbench.report import SuiteResult, aggregate_cell, compare_to_baseline
-from mcbench.metrics import RunMetrics
 
 
 def _parses(svg: str) -> ET.Element:

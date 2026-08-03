@@ -159,6 +159,48 @@ def _check_software_rasteriser(*, needs_gpu: bool) -> Check:
     return Check("software_rasteriser", Severity.OK, "no forced software rendering")
 
 
+def _check_vsync(*, needs_gpu: bool) -> Check:
+    """Detect a compositor or driver forcing vsync.
+
+    mcbench writes ``enableVsync:false`` into every client instance, so the game
+    will not ask for it. But a compositor or a driver-level override can impose
+    it anyway, and then frametimes quantise to the refresh interval: every
+    variant scores the same number and the benchmark measures the monitor
+    instead of the renderer.
+
+    This cannot be detected reliably before the run — the honest check is on the
+    *data*, where a frametime distribution pinned to a refresh interval is
+    unmistakable (see ``vsync_suspected`` in metrics). What preflight can do is
+    flag the environment variables that are known to force it.
+    """
+    if not needs_gpu:
+        return Check("vsync", Severity.INFO, "not applicable to a server-side run")
+
+    forced = {
+        name: os.environ[name]
+        for name in ("__GL_SYNC_TO_VBLANK", "vblank_mode", "MESA_VK_WSI_PRESENT_MODE")
+        if name in os.environ
+    }
+    # vblank_mode=0 and __GL_SYNC_TO_VBLANK=0 *disable* vsync, which is what we
+    # want; only non-zero settings are a problem.
+    forcing = {k: v for k, v in forced.items() if v not in ("0", "immediate")}
+    if forcing:
+        return Check(
+            "vsync", Severity.WARN,
+            "environment forces vsync: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(forcing.items())),
+            remedy=(
+                "Frametimes pinned to the refresh interval measure the display, "
+                "not the renderer, and every variant scores the same. Set "
+                "vblank_mode=0 (Mesa) or __GL_SYNC_TO_VBLANK=0 (NVIDIA)."
+            ),
+        )
+    return Check(
+        "vsync", Severity.OK,
+        "no environment-level vsync override; the run is also checked for it",
+    )
+
+
 def _check_display(*, needs_gpu: bool) -> Check:
     """A client run needs a display, real or virtual."""
     if not needs_gpu:
@@ -411,6 +453,7 @@ def run_preflight(
         _check_gpu(needs_gpu=needs_gpu),
         _check_software_rasteriser(needs_gpu=needs_gpu),
         _check_display(needs_gpu=needs_gpu),
+        _check_vsync(needs_gpu=needs_gpu),
         _check_competing_minecraft(),
         _check_cpu_count(),
         _check_cpu_scaling(),

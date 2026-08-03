@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor: tomllib is stdlib from there, which is what lets the
+        # project stay dependency-free.
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check src tests
+      - name: Test
+        run: pytest -q
+
+  no-runtime-dependencies:
+    name: No runtime dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install without dev extras
+        run: pip install -e .
+      - name: Import and run on a bare interpreter
+        # The claim that a stock interpreter can verify this project is load
+        # bearing — it is why anyone can check a published result. A dependency
+        # sneaking into an import would break that silently, so it is enforced.
+        run: |
+          pip list --format=freeze | grep -v "^mcbench" | grep -v "^pip" \
+            | grep -v "^setuptools" | grep -v "^wheel" > /tmp/extra.txt || true
+          if [ -s /tmp/extra.txt ]; then
+            echo "Unexpected runtime dependencies:"; cat /tmp/extra.txt; exit 1
+          fi
+          python -c "import mcbench, mcbench.cli, mcbench.stats, mcbench.inspect"
+          mcbench scenarios
+          mcbench metrics
+          mcbench targets
+
+  java:
+    name: probe-core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Test
+        # No Minecraft, no network beyond Maven Central. probe-core has zero game
+        # imports precisely so this stays fast and offline-ish; adapters are
+        # separate builds and are not gated here.
+        working-directory: probe
+        run: ./gradlew test --no-daemon
+
+  cross-implementation:
+    name: Wire protocol conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build the probe
+        working-directory: probe
+        run: ./gradlew jar --no-daemon
+      - name: Regenerate fixtures from the real Java writer
+        run: |
+          java -cp probe/probe-core/build/libs/probe-core-0.1.0.jar \
+            dev.mcbench.probe.core.SelfTest /tmp/conf client 42
+          java -cp probe/probe-core/build/libs/probe-core-0.1.0.jar \
+            dev.mcbench.probe.core.SelfTest /tmp/confs server 7
+          cp /tmp/conf/probe.jsonl tests/fixtures/probe-client-reference.jsonl
+          cp /tmp/confs/probe.jsonl tests/fixtures/probe-server-reference.jsonl
+      - name: Parse them with the Python reader
+        # The protocol has two independent implementations and will drift unless
+        # something checks. Regenerating rather than reusing the committed
+        # fixtures is the point: it tests today's Java against today's Python.
+        run: |
+          pip install -e ".[dev]"
+          pytest tests/test_conformance.py -q
+
+  security:
+    name: Security regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Run security tests
+        # Every case here is a vulnerability that was actually present. They are
+        # split out so a failure is unmistakable in the checks list.
+        run: pytest tests/test_security.py -q
+
+  licence-compliance:
+    name: Licence compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No game files, mod jars, or world saves committed
+        # docs/LICENSING.md: Minecraft and mod jars may never be redistributed.
+        # The only jar permitted in the tree is the Gradle wrapper.
+        run: |
+          offenders=$(git ls-files '*.jar' | grep -v 'gradle-wrapper.jar' || true)
+          if [ -n "$offenders" ]; then
+            echo "Jars committed that are not the Gradle wrapper:"
+            echo "$offenders"; exit 1
+          fi
+          saves=$(git ls-files '*.mca' '*.mcr' 'level.dat' || true)
+          if [ -n "$saves" ]; then
+            echo "World save data committed:"; echo "$saves"; exit 1
+          fi

@@ -7,10 +7,7 @@ that matter are the ones a naive bisection gets wrong.
 
 from __future__ import annotations
 
-import pytest
-
 from mcbench.diagnose import (
-    BudgetExhausted,
     Outcome,
     isolate,
     leave_one_out,

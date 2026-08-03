@@ -12,15 +12,16 @@ confidence this project exists to correct.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Iterable, Sequence
+from datetime import UTC, datetime
+from typing import Any
 
 from .metrics import METRICS, RunFlag, RunMetrics
 from .planner import Cell
 from .stats import (
-    Comparison,
     DEFAULT_ROPE,
+    Comparison,
     Estimate,
     OutlierReport,
     Verdict,
@@ -406,7 +407,7 @@ def render_json(result: SuiteResult) -> str:
         "suite": result.suite_name,
         "baseline": result.baseline,
         "generated_at": result.generated_at
-        or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        or datetime.now(UTC).isoformat(timespec="seconds"),
         "provenance": result.provenance,
         "cells": [
             {

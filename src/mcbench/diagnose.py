@@ -25,9 +25,10 @@ search is budgeted and reports what it spent.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Iterable, Protocol, Sequence
+from typing import Protocol
 
 __all__ = [
     "Outcome",
@@ -226,7 +227,7 @@ def _ddmin(candidates: list[str], test: Callable[[Sequence[str]], Outcome]) -> l
         # half reproduces alone, but every complement that keeps the pair
         # together does.
         narrowed = None
-        for index, chunk in enumerate(chunks):
+        for chunk in chunks:
             complement = [m for m in current if m not in set(chunk)]
             if complement and test(complement) is Outcome.REGRESSION:
                 narrowed = complement

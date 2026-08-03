@@ -17,13 +17,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from .. import __version__
 
@@ -31,6 +33,19 @@ __all__ = ["ResolvedMod", "ModrinthError", "ModrinthClient"]
 
 API_ROOT = "https://api.modrinth.com/v2"
 PROJECT_URL = "https://github.com/mcbench/mcbench"
+
+#: Hosts a download may come from.
+#:
+#: The sha512 check already guarantees we benchmark the bytes we expected, but
+#: it runs *after* the request. A compromised or spoofed API response could
+#: point the URL at an internal address, and the request itself — issued from
+#: inside whatever network the harness runs on — is the attack. Pinning the host
+#: closes that before anything is fetched.
+ALLOWED_DOWNLOAD_HOSTS = frozenset({
+    "cdn.modrinth.com",
+    "cdn-raw.modrinth.com",
+    "api.modrinth.com",
+})
 
 # Documented limit is 300 requests/minute per IP. We stay well inside it: a
 # suite resolves a handful of mods and has no reason to run hot.
@@ -244,6 +259,35 @@ class ModrinthClient:
 
     # -- Download --------------------------------------------------------
 
+    @staticmethod
+    def _check_download_url(url: str) -> None:
+        """Refuse a download URL that is not plainly a Modrinth CDN address."""
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https":
+            raise ModrinthError(
+                f"refusing a non-HTTPS download URL ({parsed.scheme!r}); "
+                f"mod jars are executed, so their transport must be authenticated"
+            )
+        host = (parsed.hostname or "").lower()
+        if host not in ALLOWED_DOWNLOAD_HOSTS:
+            raise ModrinthError(
+                f"refusing a download from unexpected host {host!r}. Expected one "
+                f"of {sorted(ALLOWED_DOWNLOAD_HOSTS)}. A URL pointing elsewhere "
+                f"means the API response was not what we think it was."
+            )
+
+    @staticmethod
+    def _safe_cache_name(mod: ResolvedMod) -> str:
+        """Build a cache filename that cannot escape the cache directory.
+
+        The filename comes from the API and is therefore attacker-influenced.
+        A value like ``../../../.bashrc`` would otherwise write outside the
+        cache, so only the basename is kept and anything unusual is stripped.
+        """
+        base = Path(mod.filename).name
+        cleaned = re.sub(r"[^A-Za-z0-9._+-]", "_", base)[:120]
+        return f"{mod.sha512[:16]}-{cleaned or 'mod.jar'}"
+
     def download(self, mod: ResolvedMod) -> Path:
         """Download a resolved mod, verifying its hash. Cached by hash.
 
@@ -251,8 +295,9 @@ class ModrinthClient:
         sharing a filename cannot collide, and a corrupted or truncated download
         can never be served from cache as if it were valid.
         """
+        self._check_download_url(mod.url)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        target = self.cache_dir / f"{mod.sha512[:16]}-{mod.filename}"
+        target = self.cache_dir / self._safe_cache_name(mod)
 
         if target.exists() and _sha512(target) == mod.sha512:
             return target

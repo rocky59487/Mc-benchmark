@@ -12,9 +12,9 @@ notice. Every FPS figure mcbench reports is derived from a frametime aggregate.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Sequence
 
 from .stats import (
     coefficient_of_variation,
@@ -24,6 +24,8 @@ from .stats import (
 )
 
 __all__ = [
+    "COMMON_REFRESH_HZ",
+    "vsync_suspected",
     "Direction",
     "MetricDef",
     "METRICS",
@@ -137,6 +139,8 @@ class RunFlag(str, Enum):
     """
 
     WARMUP_NOT_CONVERGED = "warmup_not_converged"
+    VSYNC_SUSPECTED = "vsync_suspected"
+    """Frametimes pinned to a refresh interval: the display was measured."""
     TOO_FEW_SAMPLES = "too_few_samples"
     ENVIRONMENT_NOISY = "environment_noisy"
     WORLD_FINGERPRINT_MISMATCH = "world_fingerprint_mismatch"
@@ -273,6 +277,12 @@ def reduce_client_run(
     if len(frames_ms) >= 2:
         values["frametime_cv"] = coefficient_of_variation(frames_ms)
 
+    if (hz := vsync_suspected(frames_ms)) is not None:
+        # Not dropped, but flagged: every variant would score the refresh rate
+        # and the comparison would confidently report equivalence.
+        flags.append(RunFlag.VSYNC_SUSPECTED)
+        values["suspected_refresh_hz"] = hz
+
     values.update(
         _memory_metrics(
             samples.gc_pauses_ms,
@@ -335,6 +345,43 @@ def reduce_server_run(
     )
 
     return RunMetrics(values=values, flags=flags, sample_count=len(ticks_ms))
+
+
+#: Refresh rates a display is plausibly locked to.
+COMMON_REFRESH_HZ = (60.0, 75.0, 90.0, 120.0, 144.0, 165.0, 240.0)
+
+
+def vsync_suspected(
+    frametimes_ms: Sequence[float], *, tolerance: float = 0.06, share: float = 0.80
+) -> float | None:
+    """Detect frametimes pinned to a refresh interval.
+
+    The check that actually matters for vsync, because environment inspection
+    cannot see a compositor-level override. A vsync-locked client quantises
+    frametimes to the refresh interval, so most frames land within a percent or
+    two of 16.67 ms, 8.33 ms and so on.
+
+    That is fatal to a rendering comparison and invisible in the summary: every
+    variant reports the same average FPS, the intervals are tight, and the
+    benchmark confidently concludes the mods are equivalent — when what it
+    measured was the monitor.
+
+    Returns the suspected refresh rate, or None. Deliberately conservative: a
+    genuinely CPU-bound scene can sit near a round frametime by coincidence, and
+    a false alarm that discards a good run is its own kind of damage.
+    """
+    if len(frametimes_ms) < 200:
+        return None
+
+    for hz in COMMON_REFRESH_HZ:
+        interval = 1000.0 / hz
+        near = sum(
+            1 for value in frametimes_ms
+            if abs(value - interval) <= interval * tolerance
+        )
+        if near / len(frametimes_ms) >= share:
+            return hz
+    return None
 
 
 def find_steady_state(

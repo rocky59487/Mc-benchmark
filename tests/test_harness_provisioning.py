@@ -381,6 +381,68 @@ class TestTickSourceReachesTheMetrics:
         assert metrics.values["tick_headroom"] == pytest.approx(0.9)
 
 
+class TestSharedWorldCarriesTerrainOnly:
+    """The cache is terrain, not the state a run left behind.
+
+    Copying a whole world directory carried data/chunks.dat, which records
+    which chunks are force-loaded. The next run's `/forceload add` then found
+    nothing left to mark, which Minecraft reports as a failure, so every run
+    after the first failed setup. It only showed up on the second run.
+    """
+
+    def _harness(self, tmp_path):
+        from mcbench.runner import Harness
+
+        suite = parse_suite({
+            "name": "t", "minecraft_version": "1.21.1", "loader": "fabric",
+            "scenarios": ["visual-biome-flyby"],
+            "variants": [{"name": "base", "mods": []}],
+            "baseline": "base",
+        })
+        return Harness(suite, scenarios(), work_dir=tmp_path)
+
+    def _world(self, root, name="w"):
+        world = root / name
+        (world / "region").mkdir(parents=True)
+        (world / "region" / "r.0.0.mca").write_bytes(b"terrain")
+        (world / "DIM-1" / "region").mkdir(parents=True)
+        (world / "DIM-1" / "region" / "r.0.0.mca").write_bytes(b"nether")
+        (world / "data").mkdir()
+        (world / "data" / "chunks.dat").write_bytes(b"forceloaded")
+        (world / "playerdata").mkdir()
+        (world / "playerdata" / "someone.dat").write_bytes(b"inventory")
+        (world / "level.dat").write_bytes(b"authored")
+        return world
+
+    def test_terrain_is_carried_and_run_state_is_not(self, tmp_path):
+        h = self._harness(tmp_path)
+        scenario = scenarios()["visual-biome-flyby"]
+
+        source = self._world(tmp_path / "first")
+        h._cache_world(scenario, source)
+
+        target = tmp_path / "second" / "w"
+        (target / "region").mkdir(parents=True)
+        (target / "level.dat").write_bytes(b"this run's own")
+        assert h._restore_cached_world(scenario, target)
+
+        assert (target / "region" / "r.0.0.mca").read_bytes() == b"terrain"
+        assert (target / "DIM-1" / "region" / "r.0.0.mca").read_bytes() == b"nether"
+        assert not (target / "data").exists(), "force-load state must not carry"
+        assert not (target / "playerdata").exists()
+        assert (target / "level.dat").read_bytes() == b"this run's own"
+
+    def test_fresh_world_mode_caches_nothing(self, tmp_path):
+        h = self._harness(tmp_path)
+        h.fresh_world = True
+        scenario = scenarios()["visual-biome-flyby"]
+
+        h._cache_world(scenario, self._world(tmp_path / "first"))
+        target = tmp_path / "second" / "w"
+        (target / "region").mkdir(parents=True)
+        assert not h._restore_cached_world(scenario, target)
+
+
 class TestWindowResolution:
     """METHODOLOGY section 7 promises the resolution is recorded. It was not.
 

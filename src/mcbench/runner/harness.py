@@ -69,6 +69,23 @@ def _spawn_of(scenario: Scenario) -> tuple[int, int, int]:
                  for axis, default in (("x", 0), ("y", 64), ("z", 0)))
 
 
+def _region_dirs(world: Path) -> list[Path]:
+    """Every directory of terrain in a world, overworld and dimensions.
+
+    Terrain only. A world directory also holds run state: `data/chunks.dat`
+    records which chunks are force-loaded, and carrying that into the next run
+    made `/forceload add` return "No chunks were marked for force loading",
+    which the game reports as a failure and the probe as a failed setup
+    command. Player data, POI and entities are run state too, and the scenario
+    rebuilds them.
+    """
+    found = [world / "region"] if (world / "region").is_dir() else []
+    for dimension in sorted(world.glob("DIM*")):
+        if (dimension / "region").is_dir():
+            found.append(dimension / "region")
+    return found
+
+
 def _one_or_many(per_variant: dict[str, Any]) -> Any:
     """Collapse a per-variant map that says the same thing for every variant.
 
@@ -1406,16 +1423,10 @@ class Harness:
         cached = self._world_cache(scenario)
         if not self.shares_world or not (cached / "region").is_dir():
             return False
-        for entry in cached.iterdir():
-            if entry.name == "level.dat":
-                # The harness authored this run's own level.dat, with the
-                # scenario's seed and spawn; keep it.
-                continue
-            target = world / entry.name
-            if entry.is_dir():
-                shutil.copytree(entry, target, dirs_exist_ok=True)
-            else:
-                shutil.copy2(entry, target)
+        for source in _region_dirs(cached):
+            shutil.copytree(
+                source, world / source.relative_to(cached), dirs_exist_ok=True
+            )
         return True
 
     def _cache_world(self, scenario: Scenario, world: Path) -> None:
@@ -1425,8 +1436,11 @@ class Harness:
             return
         if (cached / "region").is_dir() or not (world / "region").is_dir():
             return
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(world, cached, dirs_exist_ok=True)
+        cached.mkdir(parents=True, exist_ok=True)
+        for source in _region_dirs(world):
+            shutil.copytree(
+                source, cached / source.relative_to(world), dirs_exist_ok=True
+            )
         self.on_event("world.cached", {
             "scenario": scenario.id, "path": str(cached),
         })

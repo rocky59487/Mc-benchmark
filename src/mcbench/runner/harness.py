@@ -26,6 +26,7 @@ from typing import Any
 
 from ..config import Platform, SuiteConfig, Variant
 from ..metrics import (
+    NS_PER_MS,
     RunFlag,
     RunMetrics,
     frame_cap_suspected,
@@ -35,6 +36,7 @@ from ..metrics import (
 from ..planner import Cell, PlannedRun, RunPlan, plan_runs
 from ..providers import ModrinthClient, ModrinthError, ResolvedMod
 from ..scenario import Scenario, Side
+from ..stats import quantile_sketch
 from ..targets import Target
 from ..world import WorldError, create_world, fingerprint_world
 from .launcher import KNOWN_FLAGS, LauncherCapabilities, probe_launcher
@@ -273,6 +275,16 @@ class RunOutcome:
             record["reported"] = dict(self.stream.metadata)
         if self.configuration_mismatches:
             record["configuration_mismatches"] = list(self.configuration_mismatches)
+        if self.stream is not None and self.stream.client.frametimes_ns:
+            # The shape of the distribution, not just its percentiles. Two
+            # variants can share a mean and differ entirely in the tail, and a
+            # reader given only summaries has to take the tail on trust.
+            record["frametime_sketch_ms"] = [
+                round(value, 4)
+                for value in quantile_sketch(
+                    [ns / NS_PER_MS for ns in self.stream.client.frametimes_ns]
+                )
+            ]
         return record
 
 

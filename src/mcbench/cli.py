@@ -324,6 +324,19 @@ def cmd_analyse(args: argparse.Namespace) -> int:
                     (int(run["position"]), float(values[metric]))
                 )
 
+    # One curve per variant, pooled from each run's recorded sketch. Absent for
+    # documents written before runs carried one, and for server suites, which
+    # have no frametimes; the chart is then simply not drawn.
+    distributions: dict[str, dict[str, list[float]]] = {}
+    for key, runs in cells_raw.items():
+        scenario, _, variant = key.partition("/")
+        for run in runs:
+            sketch = run.get("frametime_sketch_ms") if isinstance(run, dict) else None
+            if sketch:
+                distributions.setdefault(scenario, {}).setdefault(
+                    variant, []
+                ).extend(float(v) for v in sketch)
+
     if args.export_dir:
         from .export import render_html_report, tables_for
         from .export.tables import write_all
@@ -343,6 +356,7 @@ def cmd_analyse(args: argparse.Namespace) -> int:
         html_path.write_text(
             render_html_report(
                 result, raw_runs=cells_raw, order_points=order_points,
+                distributions=distributions,
                 preflight=raw.get("preflight"), tables=tables,
             ),
             encoding="utf-8",

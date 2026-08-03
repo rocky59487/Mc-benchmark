@@ -16,6 +16,7 @@ import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from statistics import mean
 from typing import Any
 
 from .metrics import METRICS, RunFlag, RunMetrics
@@ -168,6 +169,9 @@ def parse_results_document(raw: Any) -> tuple[str, str, dict[str, list[dict[str,
                 # the run recorded. The flag alone decides admissibility; these
                 # are what tell a reader which field disagreed and by how much.
                 "reported", "configuration_mismatches",
+                # The distribution's shape, for the CDF chart and for a reader
+                # who wants to redraw it rather than trust the percentiles.
+                "frametime_sketch_ms",
             ):
                 if optional in run:
                     entry[optional] = run[optional]
@@ -488,6 +492,7 @@ def build_interaction(
     else:
         verdict = "inconclusive"
 
+    none_values, a_values, b_values, ab_values = samples
     return {
         "scenario": scenario,
         "metric": metric,
@@ -499,6 +504,16 @@ def build_interaction(
         "min_runs": min_runs,
         "lower_is_better": worse_when_larger,
         "verdict": verdict,
+        # The four arm means the interaction was computed from. The term says
+        # how far the pair lands from the additive prediction; these are what
+        # the prediction was made out of, and without them the chart that plots
+        # one against the other has nothing to draw.
+        "absolute": {
+            "none": mean(none_values),
+            "a": mean(a_values),
+            "b": mean(b_values),
+            "ab": mean(ab_values),
+        },
     }
 
 

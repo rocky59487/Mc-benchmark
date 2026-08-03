@@ -14,6 +14,7 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
 from executable import executable_python
 
 from mcbench.config import parse_suite
@@ -429,6 +430,37 @@ class TestWhatTheGameSaysItWas:
         # every server run in every suite.
         outcome = self.run_reporting(tmp_path, monkeypatch, window="1280x720")
         assert outcome.configuration_mismatches == []
+
+
+class TestTheShapeOfTheDistribution:
+    def test_a_client_run_records_its_frametime_sketch(self, tmp_path):
+        """Without it the CDF chart the README promises has no data source.
+
+        A results document carried percentiles and nothing else, so the chart
+        was implemented, wired into the renderer, and never once drawn.
+        """
+        scenario_id = next(
+            s.id for s in load_scenarios(REPO / "scenarios") if s.side is Side.CLIENT
+        )
+        harness, planned, _ = build(
+            tmp_path, scenario_id, "probe-client-reference.jsonl"
+        )
+        record = harness.execute_run(planned).to_record()
+
+        sketch = record["frametime_sketch_ms"]
+        assert sketch == sorted(sketch)
+        assert sketch[0] > 0
+        # It has to agree with the summary it travels beside, or the chart and
+        # the table would describe different runs.
+        assert sketch[-1] == pytest.approx(record["values"]["frametime_p99_ms"], rel=0.5)
+
+    def test_a_server_run_records_none(self, tmp_path):
+        # No frames to shape. An empty list would be a claim that the
+        # distribution was measured and found empty.
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        assert "frametime_sketch_ms" not in harness.execute_run(planned).to_record()
 
 
 class TestSomethingElseOnTheMachine:

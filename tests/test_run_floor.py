@@ -172,6 +172,37 @@ class TestInteractionPath:
         )
         assert item["verdict"] == "costs more together"
 
+    def test_it_carries_the_four_arm_means_its_chart_plots(self):
+        """The interaction plot draws the pair against the additive prediction.
+
+        It reads `absolute` off each interaction, and nothing set it, so the
+        chart the README lists was never drawn by any invocation of the tool.
+        """
+        def values(base):
+            return [base + i * 0.01 for i in range(7)]
+
+        cells = {
+            "none": cell("none", values(10.0)),
+            "a": cell("a", values(11.0)),
+            "b": cell("b", values(12.0)),
+            "ab": cell("ab", values(20.0)),
+        }
+        item = build_interaction(
+            "bench", METRIC, cells,
+            none_key="none", a_key="a", b_key="b", ab_key="ab",
+        )
+        absolute = item["absolute"]
+        assert set(absolute) == {"none", "a", "b", "ab"}
+        assert absolute["none"] == pytest.approx(10.03)
+        assert absolute["ab"] == pytest.approx(20.03)
+        # The term is the gap between the observed pair and what the two
+        # singles predict, as a fraction of the baseline. The numbers plotted
+        # have to be the ones it was computed from, or the chart and the
+        # verdict beside it describe different arithmetic.
+        predicted = absolute["a"] + absolute["b"] - absolute["none"]
+        gap = (absolute["ab"] - predicted) / absolute["none"]
+        assert gap == pytest.approx(item["value"], rel=0.05)
+
     def test_the_verdict_is_read_against_the_metric_direction(self):
         """The same positive term means opposite things on the two metrics.
 

@@ -25,6 +25,7 @@ from mcbench.stats import (
     mad,
     mean_of_worst_fraction,
     percentile,
+    quantile_sketch,
     reject_outlying_runs,
     runs_needed_for_resolution,
 )
@@ -173,6 +174,45 @@ class TestOutlierRejection:
         values = [10.0] * 5 + [10.05, 10.02] + [900.0, 901.0, 902.0]
         report = reject_outlying_runs(values)
         assert report.unstable
+
+
+class TestQuantileSketch:
+    """The distribution has to survive into the results document.
+
+    Percentiles alone cannot be checked by a reader, and the CDF chart the
+    README promises had no data source: nothing recorded the shape, so it was
+    never drawn by any invocation of the tool.
+    """
+
+    def test_the_ends_are_the_ends(self):
+        # The maximum is where stutter lives. A sketch that lost it would draw
+        # a curve that agrees everywhere except the part worth looking at.
+        values = [float(v) for v in range(1, 10001)]
+        sketch = quantile_sketch(values, points=64)
+        assert sketch[0] == min(values)
+        assert sketch[-1] == max(values)
+        assert len(sketch) == 64
+        assert sketch == sorted(sketch)
+
+    def test_it_tracks_the_percentiles_it_replaces(self):
+        rng = random.Random(11)
+        values = [rng.lognormvariate(0.0, 0.5) for _ in range(50_000)]
+        sketch = quantile_sketch(values)
+        for q in (50.0, 95.0, 99.0):
+            assert percentile(sketch, q) == pytest.approx(percentile(values, q), rel=0.02)
+
+    def test_a_short_run_is_kept_whole(self):
+        # Nothing to summarise, and interpolating would invent values between
+        # samples that were never observed.
+        values = [3.0, 1.0, 2.0]
+        assert quantile_sketch(values, points=64) == [1.0, 2.0, 3.0]
+
+    def test_no_samples_is_no_sketch(self):
+        assert quantile_sketch([]) == []
+
+    def test_one_point_is_refused(self):
+        with pytest.raises(ValueError, match="at least 2"):
+            quantile_sketch([1.0, 2.0, 3.0], points=1)
 
 
 class TestWhyACellIsUnstable:

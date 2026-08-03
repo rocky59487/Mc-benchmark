@@ -30,6 +30,7 @@ __all__ = [
     "sufficient_runs",
     "mean",
     "percentile",
+    "quantile_sketch",
     "mean_of_worst_fraction",
     "coefficient_of_variation",
     "mad",
@@ -246,6 +247,30 @@ def percentile(values: Sequence[float], q: float) -> float:
     if not 0.0 <= q <= 100.0:
         raise ValueError(f"q must be in [0, 100], got {q}")
     return _percentile_of_sorted(sorted(values), q)
+
+
+def quantile_sketch(values: Sequence[float], points: int = 256) -> list[float]:
+    """``points`` evenly spaced quantiles, from the minimum to the maximum.
+
+    A run holds a few hundred thousand frametimes and a results document has to
+    stay readable, so the distribution travels as a sketch rather than as every
+    sample. At this resolution an empirical CDF drawn from the sketch is the
+    same curve as one drawn from the full data at any chart size, and the tail
+    survives: the last point is the maximum, which is where stutter lives and
+    what a histogram of fixed bins would smear away.
+
+    Summaries alone cannot be checked by a reader; this is the smallest thing
+    that lets one redraw the distribution rather than trust the percentiles.
+    """
+    if not values:
+        return []
+    if points < 2:
+        raise ValueError(f"points must be at least 2, got {points}")
+    ordered = sorted(values)
+    if len(ordered) <= points:
+        return ordered
+    step = 100.0 / (points - 1)
+    return [_percentile_of_sorted(ordered, min(100.0, i * step)) for i in range(points)]
 
 
 def _interval_of(replicates: list[float], confidence: float) -> Interval:

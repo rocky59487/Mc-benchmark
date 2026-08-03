@@ -317,8 +317,12 @@ Exit code is non-zero on blocking problems, so it drops straight into CI.
 
 ### Culprit isolation
 
-When a pack really is slow, `mcbench.diagnose` isolates the minimal responsible
-subset by delta debugging. Two things make it more than a bisection:
+```bash
+mcbench bisect suite.toml --scenario visual-biome-flyby -o diagnosis.json
+```
+
+When a pack really is slow, this isolates the minimal responsible subset by
+delta debugging. Two things make it more than a bisection:
 
 **The oracle is statistical.** A subset is slower by some amount with some
 confidence, and the same subset measured twice can disagree. So probes return
@@ -332,9 +336,19 @@ and concludes nothing is wrong. The complement phase of ddmin is what survives
 that, and it is usually the finding worth reporting loudest — neither author
 would ever find it alone.
 
+**The baseline is re-measured for every probe.** The obvious design measures the
+mod-free baseline once and compares everything against it — but a bisection runs
+for hours, so a probe at hour three would be compared against a machine state
+from hour zero, and thermal drift would be attributed to a mod. Each probe
+therefore interleaves baseline and subset, alternating with a shuffled order. It
+doubles the cost and it is the difference between a culprit and an artefact of
+when the probe happened to run. `--reuse-baseline` takes the cheap path and says
+loudly that the result is exploratory.
+
 Each probe is a full benchmark cell, so the search is budgeted and reports what
-it spent. Isolating one bad mod out of 64 takes well under 40 probes instead of
-2^64 subsets.
+it spent — probes *and* game launches. Isolating one bad mod out of 64 takes well
+under 40 probes instead of 2^64 subsets. Every probe's numbers are kept, so
+`diagnosis.json` lets someone check the conclusion rather than trust it.
 
 ## One scenario, every platform
 

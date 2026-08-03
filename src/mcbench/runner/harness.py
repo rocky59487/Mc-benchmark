@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 
 from ..config import Platform, SuiteConfig, Variant
 from ..metrics import RunFlag, RunMetrics, reduce_client_run, reduce_server_run
-from ..planner import PlannedRun, RunPlan, plan_runs
+from ..planner import Cell, PlannedRun, RunPlan, plan_runs
 from ..providers import ModrinthClient, ModrinthError, ResolvedMod
 from ..scenario import Preset, Scenario, Side
 from ..targets import Target, UnsupportedTarget
@@ -304,7 +304,12 @@ class Harness:
             / f"{planned.cell.scenario}__{planned.cell.variant}__r{planned.replicate}"
         )
 
-    def _prepare_instance(self, planned: PlannedRun, scenario: Scenario) -> Path:
+    def _prepare_instance(
+        self,
+        planned: PlannedRun,
+        scenario: Scenario,
+        jars: Sequence[Path] | None = None,
+    ) -> Path:
         """Create a clean instance directory with the variant's mods installed.
 
         Every run gets a *fresh* directory. Reusing one would carry over JIT
@@ -319,13 +324,15 @@ class Harness:
         mods_dir = instance / "mods"
         mods_dir.mkdir(parents=True, exist_ok=True)
 
-        resolved = self._resolved.get(planned.cell.variant)
-        if resolved is None:
-            raise HarnessError(
-                f"variant {planned.cell.variant!r} was not resolved; "
-                f"call resolve_all() first"
-            )
-        for jar in resolved.jars:
+        if jars is None:
+            resolved = self._resolved.get(planned.cell.variant)
+            if resolved is None:
+                raise HarnessError(
+                    f"variant {planned.cell.variant!r} was not resolved; "
+                    f"call resolve_all() first"
+                )
+            jars = resolved.jars
+        for jar in jars:
             shutil.copy2(jar, mods_dir / jar.name)
 
         probe_dir = instance / "mcbench"
@@ -452,7 +459,63 @@ class Harness:
             command.append("--server")
         return command
 
-    def execute_run(self, planned: PlannedRun, *, timeout_s: float | None = None) -> RunOutcome:
+    def measure_subset(
+        self,
+        scenario_id: str,
+        mods: Sequence[str],
+        replicate: int,
+        *,
+        metric: str,
+        jars_by_id: dict[str, Path],
+        timeout_s: float | None = None,
+    ) -> float | None:
+        """Run one replicate with an arbitrary mod subset; return one metric.
+
+        This is the measurement primitive behind ``mcbench bisect``. A bisect
+        probes subsets that are not declared variants, so it cannot go through
+        the suite's variant table.
+
+        Returns None when the run fails, which the oracle drops rather than
+        substitutes — inventing a value would be fabricating a measurement.
+        """
+        scenario = self.scenarios.get(scenario_id)
+        if scenario is None:
+            raise HarnessError(f"unknown scenario {scenario_id!r}")
+
+        missing = [m for m in mods if m not in jars_by_id]
+        if missing:
+            raise HarnessError(
+                f"no resolved jar for: {', '.join(sorted(missing))}"
+            )
+
+        label = "+".join(sorted(mods)) or "baseline"
+        # Hashed so a long subset name cannot overflow the filesystem's path
+        # limit halfway through a multi-hour search.
+        import hashlib
+
+        digest = hashlib.sha256(label.encode()).hexdigest()[:12]
+        planned = PlannedRun(
+            cell=Cell(scenario_id, f"probe-{digest}"),
+            replicate=replicate,
+            position=replicate,
+            round_index=replicate,
+        )
+        outcome = self.execute_run(
+            planned,
+            timeout_s=timeout_s,
+            jars=[jars_by_id[m] for m in mods],
+        )
+        if outcome.metrics is None or not outcome.metrics.admissible:
+            return None
+        return outcome.metrics.values.get(metric)
+
+    def execute_run(
+        self,
+        planned: PlannedRun,
+        *,
+        timeout_s: float | None = None,
+        jars: Sequence[Path] | None = None,
+    ) -> RunOutcome:
         """Execute one run end to end."""
         scenario = self.scenarios.get(planned.cell.scenario)
         if scenario is None:
@@ -467,7 +530,7 @@ class Harness:
             "replicate": planned.replicate,
         })
 
-        instance = self._prepare_instance(planned, scenario)
+        instance = self._prepare_instance(planned, scenario, jars)
         log_path = instance / "mcbench" / "instance.log"
         probe_path = instance / "mcbench" / "probe.jsonl"
 

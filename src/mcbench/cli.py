@@ -623,6 +623,130 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if succeeded else 1
 
 
+def cmd_bisect(args: argparse.Namespace) -> int:
+    """Isolate which mod, or which combination, causes a regression."""
+    from .diagnose import isolate
+    from .runner import Harness, HarnessError
+    from .runner.oracle import BenchmarkOracle
+
+    suite = load_suite(args.suite)
+    scenarios = {s.id: s for s in load_scenarios(_scenario_root(args.scenario_root))}
+
+    scenario_id = args.scenario or (suite.scenarios[0] if suite.scenarios else None)
+    if scenario_id not in scenarios:
+        print(f"✗ unknown scenario {scenario_id!r}", file=sys.stderr)
+        return 2
+
+    harness = Harness(
+        suite, scenarios,
+        work_dir=args.work_dir,
+        headlessmc=args.headlessmc,
+        local_root=args.local_root,
+    )
+
+    preflight = harness.preflight(require_account=not args.no_account_check)
+    if not preflight.admissible and not args.force:
+        print("✗ preflight failed; refusing to bisect:", file=sys.stderr)
+        for check in preflight.blockers:
+            print(f"    {check.name}: {check.detail}", file=sys.stderr)
+        return 1
+
+    try:
+        resolved = harness.resolve_all()
+    except HarnessError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
+
+    # Every mod across every variant becomes a bisect candidate; a pack is the
+    # union of what the suite declares.
+    jars_by_id: dict[str, Path] = {}
+    for variant in suite.variants:
+        entry = resolved.get(variant.name)
+        if entry is None:
+            continue
+        for mod, jar in zip(variant.mods, entry.jars):
+            jars_by_id[mod.project] = jar
+
+    candidates = args.mod or sorted(jars_by_id)
+    unknown = [m for m in candidates if m not in jars_by_id]
+    if unknown:
+        print(f"✗ not in this suite: {', '.join(unknown)}", file=sys.stderr)
+        return 2
+    if not candidates:
+        print("✗ no mods to bisect", file=sys.stderr)
+        return 2
+
+    probe_index = {"n": 0}
+
+    def measure(mods, replicate):
+        return harness.measure_subset(
+            scenario_id, mods, replicate,
+            metric=args.metric, jars_by_id=jars_by_id, timeout_s=args.timeout,
+        )
+
+    oracle = BenchmarkOracle(
+        measure,
+        metric=args.metric,
+        runs_per_probe=args.runs_per_probe,
+        rope=args.rope,
+        seed=suite.seed,
+        interleave_baseline=not args.reuse_baseline,
+    )
+
+    if args.reuse_baseline:
+        print(
+            "⚠ --reuse-baseline measures the baseline once and compares every "
+            "later probe against it.\n"
+            "  Over a long search that is blocked ordering: drift between the "
+            "baseline and a late\n  probe gets attributed to a mod. Exploratory "
+            "use only.\n",
+            file=sys.stderr,
+        )
+
+    print(f"Bisecting {len(candidates)} mod(s) on {scenario_id}")
+    print(f"Metric: {args.metric}  ROPE: ±{args.rope * 100:g}%  "
+          f"{args.runs_per_probe} runs per arm per probe\n")
+
+    result = isolate(candidates, oracle, max_probes=args.max_probes)
+
+    print()
+    for record, probe in zip(oracle.records, result.probes):
+        label = "+".join(probe.subset) or "baseline"
+        if len(label) > 60:
+            label = label[:57] + "…"
+        print(f"  {probe.outcome.value:<13} {record.note or ''}  [{label}]")
+
+    print()
+    print(result.summary())
+    print(f"Cost: {result.probe_count} probes, {oracle.total_runs} game launches")
+
+    if result.is_interaction:
+        print(
+            "\nThis is an interaction: no single mod reproduces it. Neither "
+            "author would\nfind this alone, which is why it is worth reporting "
+            "to both."
+        )
+    if result.note:
+        print(f"\nNote: {result.note}")
+
+    if args.output:
+        Path(args.output).write_text(json.dumps({
+            "scenario": scenario_id,
+            "metric": args.metric,
+            "candidates": candidates,
+            "culprits": list(result.culprits),
+            "converged": result.converged,
+            "is_interaction": result.is_interaction,
+            "probe_count": result.probe_count,
+            "total_runs": oracle.total_runs,
+            "note": result.note,
+            "probes": oracle.audit(),
+        }, indent=2), encoding="utf-8")
+        print(f"\nWrote {args.output}")
+
+    return 0 if result.converged else 1
+
+
 def cmd_metrics(args: argparse.Namespace) -> int:
     """List the metric registry."""
     width = max(len(k) for k in METRICS)
@@ -730,6 +854,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json-events", action="store_true",
                    help="emit newline-delimited JSON progress, for CI")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("bisect", help="isolate which mod causes a regression")
+    p.add_argument("suite")
+    p.add_argument("--scenario-root")
+    p.add_argument("--scenario", help="which scenario to bisect on")
+    p.add_argument("--mod", action="append",
+                   help="candidate mod id (repeatable; default: all in the suite)")
+    p.add_argument("--metric", default="frametime_mean_ms")
+    p.add_argument("--runs-per-probe", type=int, default=5)
+    p.add_argument("--rope", type=float, default=0.02)
+    p.add_argument("--max-probes", type=int, default=200)
+    p.add_argument("--reuse-baseline", action="store_true",
+                   help="measure the baseline once instead of interleaving it "
+                        "(cheaper, exploratory only)")
+    p.add_argument("--work-dir", default="work")
+    p.add_argument("--headlessmc")
+    p.add_argument("--local-root")
+    p.add_argument("--timeout", type=float)
+    p.add_argument("--no-account-check", action="store_true")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--output", "-o")
+    p.set_defaults(func=cmd_bisect)
 
     p = sub.add_parser("metrics", help="list the metric registry")
     p.set_defaults(func=cmd_metrics)

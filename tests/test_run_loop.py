@@ -303,13 +303,14 @@ class TestARunThatFails:
 class TestAWholeSuite:
     """Several runs in the plan's order, then the document an analysis reads."""
 
-    def suite(self, tmp_path, monkeypatch):
+    def suite(self, tmp_path, monkeypatch, *, fresh_world: bool = False):
         monkeypatch.setenv("MCBENCH_STANDIN_DROP_WORLD", "1")
         harness, _, _ = build(
             tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl",
             variants=[{"name": "base", "mods": []}, {"name": "candidate", "mods": []}],
             runs_per_cell=5,
         )
+        harness.fresh_world = fresh_world
         return harness
 
     def test_a_clean_suite(self, tmp_path, monkeypatch):
@@ -339,22 +340,52 @@ class TestAWholeSuite:
         self, tmp_path, monkeypatch
     ):
         # The pooling rule, enforced rather than promised: the candidate's
-        # terrain differs, so its runs carry the mismatch flag and the numbers —
-        # which look entirely ordinary — never enter a comparison.
+        # terrain differs, so its runs carry the mismatch flag and the numbers,
+        # which look entirely ordinary, never enter a comparison.
+        #
+        # fresh_world, because that is the mode this question belongs to. With
+        # the shared world every run measures the terrain the first one
+        # generated, and a mod cannot show that it would have generated
+        # something else.
         monkeypatch.setenv("MCBENCH_STANDIN_ROGUE", "candidate")
-        harness = self.suite(tmp_path, monkeypatch)
+        harness = self.suite(tmp_path, monkeypatch, fresh_world=True)
         outcomes = harness.run_suite()
 
         mismatches = flag_world_mismatches(outcomes)
         assert mismatches["entity-mobcap-saturation"]
+
+        # Five runs each, so neither world holds a majority and there is no
+        # reference. Both sides are flagged rather than one being blamed by
+        # whichever fingerprint sorted higher, which is what used to decide it.
+        flagged = {
+            o.planned.cell.variant for o in outcomes
+            if o.metrics and RunFlag.WORLD_FINGERPRINT_MISMATCH in o.metrics.flags
+        }
+        assert flagged == {"base", "candidate"}
+        assert not any(o.metrics.admissible for o in outcomes if o.metrics)
+
+    def test_a_minority_world_is_flagged_against_the_majority(
+        self, tmp_path, monkeypatch
+    ):
+        """With a real majority the odd runs out are the ones flagged."""
+        monkeypatch.setenv("MCBENCH_STANDIN_DROP_WORLD", "1")
+        monkeypatch.setenv("MCBENCH_STANDIN_ROGUE", "candidate")
+        harness, _, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl",
+            variants=[
+                {"name": "base", "mods": []},
+                {"name": "second", "mods": []},
+                {"name": "candidate", "mods": []},
+            ],
+            runs_per_cell=5,
+        )
+        harness.fresh_world = True
+        outcomes = harness.run_suite()
+        flag_world_mismatches(outcomes)
 
         flagged = {
             o.planned.cell.variant for o in outcomes
             if o.metrics and RunFlag.WORLD_FINGERPRINT_MISMATCH in o.metrics.flags
         }
         assert flagged == {"candidate"}
-        assert not any(
-            o.metrics.admissible for o in outcomes
-            if o.planned.cell.variant == "candidate"
-        )
 

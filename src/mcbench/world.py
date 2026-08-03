@@ -160,6 +160,86 @@ def _region_coords(name: str) -> tuple[int, int]:
     return int(parts[1]), int(parts[2])
 
 
+#: The first data version that pads each packed long rather than letting an
+#: entry straddle two of them (20w17a, which became 1.16).
+_PADDED_PACKING_FROM = 2529
+
+#: Entries per section, for the two packed arrays a section carries.
+_BLOCKS_PER_SECTION = 4096
+_BIOMES_PER_SECTION = 64
+
+
+def _bit_width(size: int, minimum: int) -> int:
+    """Bits per packed entry for a palette of ``size``."""
+    width = max(1, (size - 1).bit_length()) if size > 1 else 1
+    return max(minimum, width)
+
+
+def _unpack(data: Any, size: int, count: int, minimum: int, padded: bool) -> list[int]:
+    """Palette indices, one per block or biome position.
+
+    Resolving these is what makes the fingerprint independent of the order the
+    generator happened to intern blocks in. Two runs of one seed produce
+    identical terrain with palettes in different orders, so hashing the stored
+    indices against the stored palette reports every pair of runs as different
+    worlds.
+    """
+    if not isinstance(data, list) or not data:
+        # A palette of one needs no data: every position holds that entry.
+        return [0] * count if size <= 1 else []
+
+    bits = _bit_width(size, minimum)
+    mask = (1 << bits) - 1
+    out: list[int] = []
+    if padded:
+        per_word = 64 // bits
+        for word in data:
+            value = word & 0xFFFFFFFFFFFFFFFF
+            for slot in range(per_word):
+                out.append((value >> (slot * bits)) & mask)
+                if len(out) == count:
+                    return out
+        return out
+
+    # Pre-1.16: entries run continuously across long boundaries.
+    accumulated = 0
+    available = 0
+    for word in data:
+        accumulated |= (word & 0xFFFFFFFFFFFFFFFF) << available
+        available += 64
+        while available >= bits:
+            out.append(accumulated & mask)
+            accumulated >>= bits
+            available -= bits
+            if len(out) == count:
+                return out
+    return out
+
+
+def _resolved(palette: Any, data: Any, count: int, minimum: int, padded: bool) -> Any:
+    """A section's contents as block states in position order.
+
+    Naming each position's state directly, rather than its index into a palette
+    whose order is an artefact of generation, is what lets two runs of the same
+    seed agree.
+    """
+    entries = _canonical_palette(palette)
+    if entries is None:
+        return None
+    if len(entries) == 1:
+        # Uniform section. Stating it once keeps the common all-air and
+        # all-stone sections cheap to hash.
+        return ["uniform", entries[0]]
+
+    indices = _unpack(data, len(entries), count, minimum, padded)
+    if not indices:
+        # Packed data that could not be read. Fall back to the stored pair
+        # rather than inventing content; the caller reports the difference.
+        return ["raw", entries, list(data) if isinstance(data, list) else None]
+    limit = len(entries) - 1
+    return ["states", [entries[i] if i <= limit else None for i in indices]]
+
+
 def _canonical_block_content(root: dict[str, Any]) -> list[Any]:
     """Extract the block content of one chunk, in a stable order.
 
@@ -173,6 +253,8 @@ def _canonical_block_content(root: dict[str, Any]) -> list[Any]:
     below the flattening floor the target layer already refuses
     (``targets.py``), so it is not handled here rather than handled wrongly.
     """
+    version = root.get("DataVersion")
+    padded = not isinstance(version, int) or version >= _PADDED_PACKING_FROM
     sections = root.get("sections")
     if sections is None:
         level = root.get("Level")
@@ -206,10 +288,8 @@ def _canonical_block_content(root: dict[str, Any]) -> list[Any]:
 
         content.append([
             y,
-            _canonical_palette(palette),
-            list(packed) if isinstance(packed, list) else None,
-            _canonical_palette(biome_palette),
-            list(biome_data) if isinstance(biome_data, list) else None,
+            _resolved(palette, packed, _BLOCKS_PER_SECTION, 4, padded),
+            _resolved(biome_palette, biome_data, _BIOMES_PER_SECTION, 1, padded),
         ])
 
     # Sections arrive in save order, which is stable in practice but is not
@@ -226,8 +306,9 @@ def _canonical_palette(palette: Any) -> list[Any] | None:
     ``{facing, half}`` and ``{half, facing}``, which would hash differently for
     no physical difference. Sorting removes that.
 
-    The palette's own order is *not* sorted: it is referenced by index from the
-    packed data, so reordering it would decouple the two halves.
+    The palette's own order is left alone here. It is referenced by index from
+    the packed data, and :func:`_resolved` is what removes the dependence on
+    that order, by naming each position's state instead of its index.
     """
     if not isinstance(palette, list):
         return None
@@ -257,7 +338,11 @@ def _digest_chunk(chunk: ChunkRef, root: dict[str, Any]) -> bytes | None:
 
 
 def fingerprint_world(
-    world_dir: str | Path, *, dimension: str = "region"
+    world_dir: str | Path,
+    *,
+    dimension: str = "region",
+    radius_chunks: int | None = None,
+    centre: tuple[int, int] = (0, 0),
 ) -> WorldFingerprint:
     """Hash the block content of a saved world.
 
@@ -265,6 +350,11 @@ def fingerprint_world(
         world_dir: The world save directory, the one containing ``level.dat``.
         dimension: Which region directory to read. ``"region"`` is the
             overworld; the Nether and End live under ``DIM-1`` and ``DIM1``.
+        radius_chunks: Hash only chunks within this many chunks of ``centre``,
+            as the scenario's ``fingerprint_region`` declares. Without it every
+            saved chunk counts, and how far a run's chunk loading happened to
+            reach then decides the hash.
+        centre: Chunk coordinates the radius is measured from.
 
     Chunk digests are combined by sorting rather than by file order, so the
     result does not depend on the order the operating system returned the region
@@ -284,10 +374,21 @@ def fingerprint_world(
     digests: list[bytes] = []
     unreadable: list[str] = []
     regions = sorted(region_dir.glob("r.*.mca"))
+    centre_x, centre_z = centre
+
+    def inside(chunk: ChunkRef) -> bool:
+        if radius_chunks is None:
+            return True
+        return (
+            abs(chunk.x - centre_x) <= radius_chunks
+            and abs(chunk.z - centre_z) <= radius_chunks
+        )
 
     for region in regions:
         try:
             for chunk, chunk_root in iter_region_chunks(region):
+                if not inside(chunk):
+                    continue
                 digest = _digest_chunk(chunk, chunk_root)
                 if digest is not None:
                     digests.append(digest)

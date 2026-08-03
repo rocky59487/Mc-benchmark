@@ -125,6 +125,21 @@ class Scenario:
         return int(self.world["seed"])
 
     @property
+    def fingerprint_radius_chunks(self) -> int | None:
+        """Chunks either side of spawn the world fingerprint covers.
+
+        ``None`` when the scenario declares no region, which means every saved
+        chunk. Declaring one is what keeps the hash about the terrain the
+        scenario cares about rather than about how far a particular run's chunk
+        loading happened to reach.
+        """
+        region = self.world.get("fingerprint_region")
+        if not isinstance(region, dict):
+            return None
+        radius = region.get("radius_chunks")
+        return int(radius) if isinstance(radius, int) else None
+
+    @property
     def uses_tick_warp(self) -> bool:
         return bool(self.measurement.get("tick_warp", False))
 

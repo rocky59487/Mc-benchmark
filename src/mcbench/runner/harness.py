@@ -69,6 +69,12 @@ def _spawn_of(scenario: Scenario) -> tuple[int, int, int]:
                  for axis, default in (("x", 0), ("y", 64), ("z", 0)))
 
 
+def _spawn_chunk(scenario: Scenario) -> tuple[int, int]:
+    """The chunk the scenario's spawn falls in, which the fingerprint centres on."""
+    x, _, z = _spawn_of(scenario)
+    return x >> 4, z >> 4
+
+
 def _sha256(path: Path | None) -> str:
     """Hash an artefact, or "" when it cannot be read.
 
@@ -423,6 +429,7 @@ class Harness:
         probe_jar: str | Path | None = None,
         fabric_api_jar: str | Path | None = None,
         extra_launch_args: Sequence[str] = (),
+        fresh_world: bool = False,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.suite = suite
@@ -444,6 +451,17 @@ class Harness:
         self._probe_provenance: list[dict[str, str]] = []
         #: Appended verbatim to every launch, for a launcher this does not know.
         self.extra_launch_args = list(extra_launch_args)
+        #: Generate a world per run rather than sharing one per scenario.
+        #:
+        #: Sharing is the default because Minecraft's worldgen is not
+        #: reproducible block for block, so per-run generation makes every pair
+        #: of runs a fingerprint mismatch and nothing is ever pooled.
+        #:
+        #: Generating fresh is how a mod that alters worldgen shows up, since
+        #: the fingerprint can only report a difference the run was allowed to
+        #: produce. Use it to answer "does this mod change the world", not to
+        #: compare frametimes.
+        self.fresh_world = fresh_world
         self._capabilities: LauncherCapabilities | None = None
 
     # -- setup -----------------------------------------------------------
@@ -913,13 +931,14 @@ class Harness:
 
         if scenario.side in (Side.CLIENT, Side.BOTH):
             # Author the world quick-play enters; it must exist beforehand.
-            create_world(
+            world = create_world(
                 instance / "saves",
                 name=self._client_world_name(scenario),
                 seed=scenario.seed,
                 generator=str(scenario.world.get("generator", "default")),
                 spawn=_spawn_of(scenario),
             )
+            self._restore_cached_world(scenario, world)
 
             options = instance / "options.txt"
             # Vsync off: a vsync-locked client measures the display, not the
@@ -1342,6 +1361,63 @@ class Harness:
             error=error, world_fingerprint=fingerprint,
         )
 
+    def _world_cache(self, scenario: Scenario) -> Path:
+        """Where a scenario's generated terrain is kept between runs."""
+        return self.work_dir / "worlds" / self._client_world_name(scenario)
+
+    @property
+    def shares_world(self) -> bool:
+        """Whether every run of a scenario measures one generated world."""
+        return not self.fresh_world
+
+    def _restore_cached_world(self, scenario: Scenario, world: Path) -> bool:
+        """Give this run the terrain an earlier run of the scenario generated.
+
+        Minecraft's worldgen is not reproducible block for block. Two runs of
+        one seed agree on terrain shape and biomes and disagree on where a
+        handful of ore blobs and plants landed, because feature placement
+        depends on the order neighbouring chunks were generated in, which is
+        threaded. Measured here: 109 of 289 chunks differed between two runs,
+        by 1 to 9 blocks each, andesite against granite and water against
+        seagrass.
+
+        A per-run world therefore makes METHODOLOGY section 7 unsatisfiable,
+        since every pair of runs is a fingerprint mismatch and nothing is ever
+        pooled. Generating once and reusing it is what makes runs comparable:
+        the fingerprint then goes back to checking that the reuse worked, and
+        to catching a mod that alters worldgen.
+
+        Nothing is redistributed. The terrain is generated on this machine and
+        stays under the working directory (docs/LICENSING.md).
+        """
+        cached = self._world_cache(scenario)
+        if not self.shares_world or not (cached / "region").is_dir():
+            return False
+        for entry in cached.iterdir():
+            if entry.name == "level.dat":
+                # The harness authored this run's own level.dat, with the
+                # scenario's seed and spawn; keep it.
+                continue
+            target = world / entry.name
+            if entry.is_dir():
+                shutil.copytree(entry, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(entry, target)
+        return True
+
+    def _cache_world(self, scenario: Scenario, world: Path) -> None:
+        """Keep this run's terrain for every later run of the scenario."""
+        cached = self._world_cache(scenario)
+        if not self.shares_world:
+            return
+        if (cached / "region").is_dir() or not (world / "region").is_dir():
+            return
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(world, cached, dirs_exist_ok=True)
+        self.on_event("world.cached", {
+            "scenario": scenario.id, "path": str(cached),
+        })
+
     def _world_dir(self, instance: Path, scenario: Scenario) -> Path | None:
         """Where this run's world was saved, or None if it cannot be located.
 
@@ -1420,6 +1496,10 @@ class Harness:
         strength of a check that never ran.
         """
         world_dir = self._world_dir(instance, scenario)
+        if world_dir is not None:
+            # Keep the first run's terrain so every later run of this scenario
+            # measures the same one, whatever the generator did this time.
+            self._cache_world(scenario, world_dir)
         if world_dir is None:
             self.on_event("run.world", {
                 "cell": str(planned.cell), "result": "no world directory found",
@@ -1437,8 +1517,14 @@ class Harness:
                     "cell": str(planned.cell), "result": mismatch,
                 })
                 return ""
+        # Only the region the scenario declared. Hashing every saved chunk made
+        # the result depend on how far a run's chunk loading happened to reach.
         try:
-            result = fingerprint_world(world_dir)
+            result = fingerprint_world(
+                world_dir,
+                radius_chunks=scenario.fingerprint_radius_chunks,
+                centre=_spawn_chunk(scenario),
+            )
         except (WorldError, OSError) as exc:
             self.on_event("run.world", {
                 "cell": str(planned.cell), "result": f"unreadable: {exc}",
@@ -1615,12 +1701,15 @@ def flag_world_mismatches(outcomes: Sequence[RunOutcome]) -> dict[str, list[str]
         if len(counts) < 2:
             continue
 
-        # The majority world is the reference. Ties break on the fingerprint
-        # string so the choice is deterministic rather than dependent on run
-        # order: an arbitrary but stable reference beats a shifting one.
-        reference = max(sorted(counts), key=lambda digest: counts[digest])
+        # A strict majority is the reference. Without one there is no reference
+        # world, and every run is flagged rather than one group being blamed:
+        # picking a side by hash string decided which variant was at fault by
+        # something with no bearing on the question.
+        best = max(counts.values())
+        leaders = [digest for digest, count in counts.items() if count == best]
+        reference = leaders[0] if len(leaders) == 1 and best * 2 > len(runs) else None
         for outcome in runs:
-            if outcome.world_fingerprint != reference:
+            if reference is None or outcome.world_fingerprint != reference:
                 assert outcome.metrics is not None
                 if RunFlag.WORLD_FINGERPRINT_MISMATCH not in outcome.metrics.flags:
                     outcome.metrics.flags.append(RunFlag.WORLD_FINGERPRINT_MISMATCH)

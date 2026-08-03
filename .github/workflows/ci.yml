@@ -78,9 +78,40 @@ jobs:
           java-version: "21"
       - name: Test
         # No Minecraft, no network beyond Maven Central. probe-core has zero game
-        # imports so this stays fast; adapters are separate builds, not gated here.
+        # imports so this stays fast. The loader adapters are separate builds and
+        # are gated in `adapters` below.
         working-directory: probe
         run: ./gradlew test --no-daemon
+
+  adapters:
+    name: Loader adapters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Paper
+        # A plugin against the Paper API, which is an ordinary Maven artefact:
+        # no game to download, so this is as cheap as probe-core and was never
+        # gated only because it sat beside the ones that are expensive.
+        working-directory: probe/adapters/probe-paper
+        run: ./gradlew build --no-daemon
+      - name: Fabric
+        # This one does download Minecraft and remap against Yarn, which is why
+        # it was left out. It is also the adapter that ships and the one whose
+        # only compile-time check on a game API is this build: a renamed method
+        # is not a test failure anywhere else, it is a crash in someone's
+        # benchmark three hours in.
+        #
+        # Gradle itself must be on 21. Loom resolves Minecraft while configuring
+        # the project, before the toolchain the build script declares is
+        # consulted, so a Gradle on an older JVM fails with a version error that
+        # names the toolchain it never reached.
+        working-directory: probe/adapters/probe-fabric
+        run: ./gradlew build --no-daemon
 
   agent:
     name: JVM agent

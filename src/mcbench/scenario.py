@@ -151,6 +151,68 @@ class Scenario:
     def primary_metric(self) -> str | None:
         return self.measurement.get("primary_metric")
 
+    def worldgen_reach_gap(self) -> str:
+        """Where the camera goes that setup did not pre-generate, or "".
+
+        A client scenario pre-generates terrain so the measurement never pays
+        worldgen cost. The area that has to cover is not the camera path: a
+        client loads what it can see, so the reach is the furthest camera point
+        plus the render distance.
+
+        Measured on this repository's own baseline, which pre-generates 841
+        chunks: the saved world came out with 3684, reaching 34 chunks from
+        spawn against a pre-generated 14. Three quarters of its terrain was
+        made while the scenario was running. A shared world hides most of that,
+        since only the first run of a scenario generates and every later one
+        restores it, but with ``--fresh-world`` every run pays, and unevenly.
+
+        Reported rather than refused. Raising the pre-generated radius changes
+        what a run costs and so is a version bump, which is the author's call
+        and not something to do quietly on their behalf.
+        """
+        if self.side is Side.SERVER:
+            return ""
+        generated = next(
+            (
+                int(step["radius_chunks"])
+                for step in self.setup
+                if step.get("op") == "generate_chunks"
+            ),
+            None,
+        )
+        if generated is None:
+            return ""
+        render = next(
+            (
+                int(step["chunks"])
+                for step in self.setup
+                if step.get("op") == "set_render_distance"
+            ),
+            0,
+        )
+        spawn = self.world.get("spawn") or {}
+        centre_x = int(spawn.get("x", 0)) // 16
+        centre_z = int(spawn.get("z", 0)) // 16
+
+        reach = 0
+        for step in self.workload:
+            if step.get("op") != "camera_path":
+                continue
+            for point in step.get("points", ()):
+                distance = max(
+                    abs(int(point.get("x", 0)) // 16 - centre_x),
+                    abs(int(point.get("z", 0)) // 16 - centre_z),
+                )
+                reach = max(reach, distance + render)
+
+        if reach <= generated:
+            return ""
+        return (
+            f"the camera reaches {reach} chunks from spawn once render distance "
+            f"{render} is counted, and setup pre-generates {generated}, so the "
+            f"run generates terrain while being measured"
+        )
+
     def duration(self, preset: Preset = Preset.FULL) -> float:
         """Measurement window for a preset, falling back to ``full``.
 

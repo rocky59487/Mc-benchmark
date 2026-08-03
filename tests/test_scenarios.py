@@ -338,3 +338,81 @@ class TestSuiteManifest:
                 "baseline": "a",
                 "interactions": [["a", "ghost"]],
             })
+
+
+class TestWorldgenReach:
+    """Pre-generating terrain only helps if it covers where the camera goes.
+
+    The baseline pre-generates 841 chunks and says the measurement never pays
+    worldgen cost. The world it produced on this machine held 3684, reaching 34
+    chunks from spawn: three quarters of its terrain was made while the scenario
+    was running. A shared world hides that after the first run; --fresh-world
+    does not.
+    """
+
+    def _client(self, **overrides):
+        base = {
+            "id": "reach-test",
+            "version": "1.0.0",
+            "title": "Reach",
+            "side": "client",
+            "category": "visual",
+            "world": {"seed": 1, "generator": "default",
+                      "spawn": {"x": 0.5, "y": 80.0, "z": 0.5}},
+            "measurement": {"warmup": {"min": 60}, "duration": {"full": 60}},
+            "setup": [
+                {"op": "set_render_distance", "chunks": 8},
+                {"op": "generate_chunks", "radius_chunks": 12},
+            ],
+            "workload": [{
+                "op": "camera_path", "duration_s": 30, "loop": True,
+                "points": [{"x": 0, "y": 80, "z": 0}, {"x": 32, "y": 80, "z": 32}],
+            }],
+        }
+        base.update(overrides)
+        return parse_scenario(base)
+
+    def test_a_path_inside_the_generated_area_says_nothing(self):
+        # Furthest camera chunk 2, plus render distance 8, is 10 against 12.
+        assert self._client().worldgen_reach_gap() == ""
+
+    def test_render_distance_counts_towards_the_reach(self):
+        # Same path, render distance 16: the client loads what it can see, not
+        # only the chunk it stands in.
+        scenario = self._client(setup=[
+            {"op": "set_render_distance", "chunks": 16},
+            {"op": "generate_chunks", "radius_chunks": 12},
+        ])
+        gap = scenario.worldgen_reach_gap()
+        assert "reaches 18 chunks" in gap
+        assert "pre-generates 12" in gap
+
+    def test_a_distant_camera_point_counts(self):
+        scenario = self._client(workload=[{
+            "op": "camera_path", "duration_s": 30, "loop": True,
+            "points": [{"x": 0, "y": 80, "z": 0}, {"x": 400, "y": 80, "z": 0}],
+        }])
+        assert "reaches 33 chunks" in scenario.worldgen_reach_gap()
+
+    def test_a_server_scenario_has_no_camera_to_answer_for(self):
+        scenario = parse_scenario({
+            "id": "server-reach", "version": "1.0.0", "title": "S",
+            "side": "server", "category": "entity",
+            "world": {"seed": 1, "generator": "flat"},
+            "measurement": {"warmup": {"min": 100}, "duration": {"full": 1000}},
+            "setup": [{"op": "generate_chunks", "radius_chunks": 4}],
+        })
+        assert scenario.worldgen_reach_gap() == ""
+
+    def test_both_shipped_client_flybys_currently_overrun(self):
+        # Not an assertion that this is acceptable: it records what the shipped
+        # definitions do, so raising a radius has to be a deliberate edit with
+        # the version bump that implies rather than a silent one.
+        found = {
+            s.id: s.worldgen_reach_gap()
+            for s in load_scenarios(Path(__file__).resolve().parents[1] / "scenarios")
+            if s.side is Side.CLIENT
+        }
+        assert "reaches 22 chunks" in found["reference-hardware-baseline"]
+        assert "reaches 41 chunks" in found["visual-biome-flyby"]
+        assert found["visual-particle-storm"] == ""

@@ -96,6 +96,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
     scenarios = load_scenarios(root)
     print(f"✓ {len(scenarios)} scenario(s) valid in {root}")
 
+    # Valid and still measuring something other than what it describes.
+    for scenario in scenarios:
+        if gap := scenario.worldgen_reach_gap():
+            print(f"⚠ {scenario.id}: {gap}", file=sys.stderr)
+
     if not args.suite:
         return 0
 

@@ -123,9 +123,13 @@ SERVER_LEVEL_NAME = "mcbench"
 CLIENT_LEVEL_NAME = "mcbench"
 
 #: Frame cap written into options.txt. 260 is the top of vanilla's slider,
-#: where the limiter is disabled, but it is still a number in a file and mods
-#: are free to honour it literally. Recorded in provenance, and
-#: :func:`~mcbench.metrics.frame_cap_suspected` checks for runs that hit it.
+#: where the limiter is disabled. Written from a constant so the value is
+#: explicit and recorded rather than left to whatever the instance defaults to.
+#:
+#: It is also the sentinel meaning "no limiter": a run is only checked against a
+#: cap when a suite has set one below this. Checking every run against 260
+#: flagged fast machines for rendering fast, which is the opposite of the
+#: condition the flag exists to catch.
 CLIENT_FPS_CAP = 260
 
 
@@ -1248,7 +1252,13 @@ class Harness:
 
         self._adopt_agent_stream(stream, agent_path, planned)
 
-        metrics = self._reduce(stream, scenario)
+        metrics = self._reduce(
+            stream,
+            scenario,
+            max_fps=float(
+                self.effective_game_settings(variant).get("maxFps", CLIENT_FPS_CAP)
+            ),
+        )
         # The probe may report its own fingerprint over the live world; the
         # harness's is computed from the save on disk and needs no game API, so
         # it works on every version and platform. Where both exist the probe's
@@ -1411,7 +1421,9 @@ class Harness:
         })
 
     @staticmethod
-    def _reduce(stream: ProbeStream, scenario: Scenario) -> RunMetrics:
+    def _reduce(
+        stream: ProbeStream, scenario: Scenario, *, max_fps: float = CLIENT_FPS_CAP
+    ) -> RunMetrics:
         """Reduce a probe stream to metrics, merging client and server samples.
 
         A stream that reported errors is reduced and then marked inadmissible:
@@ -1455,13 +1467,20 @@ class Harness:
         if period_only:
             metrics.flags.append(RunFlag.TICK_PERIOD_ONLY)
 
-        if scenario.side.measures_frames and stream.client.frametimes_ns:
+        # Only where a limiter is actually configured. At CLIENT_FPS_CAP there
+        # is none, and asking whether frames came in under 3.8 ms then just asks
+        # whether the machine is fast.
+        if (
+            scenario.side.measures_frames
+            and stream.client.frametimes_ns
+            and max_fps < CLIENT_FPS_CAP
+        ):
             frames_ms = [ns / 1_000_000.0 for ns in stream.client.frametimes_ns]
             # The client sitting against its own limiter means what was measured
             # is the cap. Every variant would score it and the comparison would
             # confidently report equivalence.
             capped = (
-                frame_cap_suspected(frames_ms, CLIENT_FPS_CAP)
+                frame_cap_suspected(frames_ms, max_fps)
                 and RunFlag.FRAME_CAP_SUSPECTED not in metrics.flags
             )
             if capped:

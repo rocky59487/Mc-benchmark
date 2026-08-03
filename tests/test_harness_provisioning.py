@@ -379,6 +379,39 @@ class TestTickSourceReachesTheMetrics:
 
         assert metrics.values["mspt_mean"] == pytest.approx(5.0)
         assert metrics.values["tick_headroom"] == pytest.approx(0.9)
+
+
+class TestFrameCapFlag:
+    """The flag means "the limiter was measured", not "the machine is fast".
+
+    options.txt is written with maxFps at the top of vanilla's slider, which
+    disables the limiter. Checking every run against that number flagged a
+    5070 Ti for rendering a light scene faster than 260 fps, which is the
+    opposite of the condition the flag exists to catch.
+    """
+
+    def _client_run(self, frametime_ms: float, **kwargs):
+        from mcbench.runner.harness import Harness as H
+        from mcbench.runner.protocol import ProbeStream
+
+        stream = ProbeStream()
+        stream.client.frametimes_ns = [int(frametime_ms * 1_000_000)] * 2000
+        stream.client.duration_s = 60.0
+        return H._reduce(stream, scenarios()["visual-biome-flyby"], **kwargs)
+
+    def test_a_fast_machine_is_not_flagged_when_no_limiter_is_set(self):
+        # 500 fps, well past the sentinel, with the limiter disabled.
+        metrics = self._client_run(2.0)
+        assert RunFlag.FRAME_CAP_SUSPECTED not in metrics.flags
+
+    def test_a_run_against_a_configured_limiter_is_flagged(self):
+        # The suite asked for 60 fps and the frametimes sit on 16.7 ms.
+        metrics = self._client_run(1000.0 / 60.0, max_fps=60)
+        assert RunFlag.FRAME_CAP_SUSPECTED in metrics.flags
+
+    def test_a_run_clear_of_its_limiter_is_not_flagged(self):
+        metrics = self._client_run(50.0, max_fps=60)
+        assert RunFlag.FRAME_CAP_SUSPECTED not in metrics.flags
         assert RunFlag.TICK_PERIOD_ONLY not in metrics.flags
 
 

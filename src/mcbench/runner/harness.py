@@ -38,7 +38,7 @@ from ..providers import ModrinthClient, ModrinthError, ResolvedMod
 from ..scenario import Scenario, Side
 from ..stats import quantile_sketch
 from ..targets import Target
-from ..world import WorldError, create_world, fingerprint_world
+from ..world import WorldError, create_world, fingerprint_world, parse_flat_layers
 from .launcher import KNOWN_FLAGS, LauncherCapabilities, probe_launcher
 from .plan import check_target, write_plan
 from .preflight import (
@@ -1019,11 +1019,11 @@ class Harness:
     #: generator-settings as well as level-type, because the preset alone is
     #: the game's default superflat rather than this one. The layers are the
     #: same three world.py writes into level.dat.
-    SERVER_GENERATORS: ClassVar[dict[str, tuple[str, str]]] = {
-        "default": ("minecraft:normal", ""),
-        "amplified": ("minecraft:amplified", ""),
-        "large_biomes": ("minecraft:large_biomes", ""),
-        "flat": ("minecraft:flat", json.dumps({
+    SERVER_GENERATORS: ClassVar[dict[str, tuple[str, dict[str, Any] | None]]] = {
+        "default": ("minecraft:normal", None),
+        "amplified": ("minecraft:amplified", None),
+        "large_biomes": ("minecraft:large_biomes", None),
+        "flat": ("minecraft:flat", {
             "biome": "minecraft:plains",
             "lakes": False,
             "features": False,
@@ -1032,14 +1032,45 @@ class Harness:
                 {"block": "minecraft:dirt", "height": 2},
                 {"block": "minecraft:grass_block", "height": 1},
             ],
-        }, separators=(",", ":"))),
-        "void": ("minecraft:flat", json.dumps({
+        }),
+        "void": ("minecraft:flat", {
             "biome": "minecraft:the_void",
             "lakes": False,
             "features": False,
             "layers": [],
-        }, separators=(",", ":"))),
+        }),
     }
+
+    def _server_generator(self, scenario: Scenario) -> tuple[str, str]:
+        """``(level-type, generator-settings)`` for this scenario's world.
+
+        The settings are shared with the client path through
+        :func:`~mcbench.world.parse_flat_layers`, so both halves build the same
+        world from the same declaration rather than from two copies of a
+        default that only agreed by coincidence.
+        """
+        generator = str(scenario.world.get("generator", "default"))
+        if generator not in self.SERVER_GENERATORS:
+            # Refused rather than defaulted. Silently generating ordinary
+            # terrain for a scenario that named something else is the exact
+            # failure world.py describes on the client side.
+            raise HarnessError(
+                f"scenario {scenario.id!r} asks for the {generator!r} "
+                f"generator and this harness has no server.properties "
+                f"spelling for it; add one to SERVER_GENERATORS rather "
+                f"than measuring a world the scenario did not describe"
+            )
+        level_type, settings = self.SERVER_GENERATORS[generator]
+        if settings is None:
+            return level_type, ""
+
+        settings = dict(settings)
+        if layers := (scenario.world.get("generator_settings") or {}).get("layers"):
+            settings["layers"] = [
+                {"block": block, "height": height}
+                for block, height in parse_flat_layers(str(layers))
+            ]
+        return level_type, json.dumps(settings, separators=(",", ":"))
 
     def _apply_instance_settings(
         self, instance: Path, scenario: Scenario, settings: dict[str, Any]
@@ -1056,20 +1087,7 @@ class Harness:
                 "online-mode=false",
                 "sync-chunk-writes=true",
             ]
-            generator = str(scenario.world.get("generator", "default"))
-            level_type, generator_settings = self.SERVER_GENERATORS.get(
-                generator, ("", "")
-            )
-            if not level_type:
-                # Refused rather than defaulted. Silently generating ordinary
-                # terrain for a scenario that named something else is the exact
-                # failure world.py describes on the client side.
-                raise HarnessError(
-                    f"scenario {scenario.id!r} asks for the {generator!r} "
-                    f"generator and this harness has no server.properties "
-                    f"spelling for it; add one to SERVER_GENERATORS rather "
-                    f"than measuring a world the scenario did not describe"
-                )
+            level_type, generator_settings = self._server_generator(scenario)
             lines.append(f"level-type={level_type}")
             if generator_settings:
                 lines.append(f"generator-settings={generator_settings}")
@@ -1106,6 +1124,9 @@ class Harness:
                 name=self._client_world_name(scenario),
                 seed=scenario.seed,
                 generator=str(scenario.world.get("generator", "default")),
+                # Six scenarios declare this and nothing read it, so each got
+                # the generator's built-in layers instead of the ones it named.
+                generator_settings=scenario.world.get("generator_settings"),
                 spawn=_spawn_of(scenario),
             )
             # Remembered because it explains a fingerprint that stands alone.

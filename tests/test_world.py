@@ -8,13 +8,21 @@ implementation from one that agrees with itself.
 
 from __future__ import annotations
 
+import gzip
 import struct
 import zlib
+from pathlib import Path
 
 import pytest
 
 from mcbench.nbt import MAX_CHUNK_BYTES, NbtError, decompress_chunk, parse_nbt
-from mcbench.world import WorldError, fingerprint_world, iter_region_chunks
+from mcbench.world import (
+    WorldError,
+    create_world,
+    fingerprint_world,
+    iter_region_chunks,
+    parse_flat_layers,
+)
 
 # --------------------------------------------------------------------------
 # A minimal NBT writer, for fixtures only.
@@ -509,3 +517,88 @@ class TestPoolingRule:
         ])
         assert "world_fingerprint_mismatch" in cells["s/mod"][0]["flags"]
         assert cells["s/base"][0]["world"] == "aaa"
+
+
+class TestSuperflatLayers:
+    """Six scenarios declare world.generator_settings and nothing read it.
+
+    Every one of them was given the generator's built-in layers instead of the
+    ones it named — including fluid-and-lighting-cascade, which asks for sixty
+    layers of stone to cut channels into and was getting four blocks of ground,
+    with its fills landing in open air.
+    """
+
+    def test_reads_the_spelling_the_scenarios_use(self):
+        assert parse_flat_layers(
+            "minecraft:bedrock,3*minecraft:stone,minecraft:grass_block"
+        ) == [
+            ("minecraft:bedrock", 1),
+            ("minecraft:stone", 3),
+            ("minecraft:grass_block", 1),
+        ]
+
+    def test_a_deep_stack(self):
+        assert parse_flat_layers("minecraft:bedrock,60*minecraft:stone") == [
+            ("minecraft:bedrock", 1),
+            ("minecraft:stone", 60),
+        ]
+
+    def test_nonsense_is_refused_rather_than_skipped(self):
+        # Skipping a layer it could not read would build a shallower world than
+        # the scenario asked for and say nothing.
+        for bad in ("minecraft:stone,*", "0*minecraft:stone", "", "   ",
+                    "3x minecraft:stone"):
+            with pytest.raises(WorldError):
+                parse_flat_layers(bad)
+
+    def test_the_layers_reach_level_dat(self, tmp_path):
+        world = create_world(
+            tmp_path, name="w", seed=1, generator="flat",
+            generator_settings={
+                "layers": "minecraft:bedrock,60*minecraft:stone",
+            },
+        )
+        root = parse_nbt(gzip.decompress((world / "level.dat").read_bytes()))
+        settings = (
+            root["Data"]["WorldGenSettings"]["dimensions"]
+            ["minecraft:overworld"]["generator"]["settings"]
+        )
+        assert [(layer["block"], int(layer["height"])) for layer in settings["layers"]] == [
+            ("minecraft:bedrock", 1),
+            ("minecraft:stone", 60),
+        ]
+
+    def test_the_default_is_untouched_by_a_scenario_that_overrode_it(self, tmp_path):
+        # The generator table is shared, so writing a custom stack used to be
+        # one edit away from changing every world written afterwards.
+        create_world(
+            tmp_path, name="custom", seed=1, generator="flat",
+            generator_settings={"layers": "minecraft:bedrock,60*minecraft:stone"},
+        )
+        plain = create_world(tmp_path, name="plain", seed=1, generator="flat")
+        root = parse_nbt(gzip.decompress((plain / "level.dat").read_bytes()))
+        settings = (
+            root["Data"]["WorldGenSettings"]["dimensions"]
+            ["minecraft:overworld"]["generator"]["settings"]
+        )
+        assert [layer["block"] for layer in settings["layers"]] == [
+            "minecraft:bedrock", "minecraft:dirt", "minecraft:grass_block",
+        ]
+
+    def test_layers_on_a_generator_that_has_none_is_refused(self, tmp_path):
+        with pytest.raises(WorldError, match="nothing would read it"):
+            create_world(
+                tmp_path, name="w", seed=1, generator="default",
+                generator_settings={"layers": "minecraft:bedrock"},
+            )
+
+    def test_every_scenario_that_declares_layers_can_be_read(self):
+        from mcbench.scenario import load_scenarios
+
+        declared = 0
+        for scenario in load_scenarios(Path(__file__).resolve().parents[1] / "scenarios"):
+            layers = (scenario.world.get("generator_settings") or {}).get("layers")
+            if layers:
+                declared += 1
+                assert parse_flat_layers(str(layers))
+        assert declared >= 6, f"only {declared} scenarios declare layers"

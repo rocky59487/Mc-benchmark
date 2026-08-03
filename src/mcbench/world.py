@@ -24,7 +24,9 @@ exists to qualify.
 
 from __future__ import annotations
 
+import copy
 import hashlib
+import re
 import struct
 import zlib
 from array import array
@@ -43,6 +45,7 @@ __all__ = [
     "iter_region_chunks",
     "level_dat",
     "create_world",
+    "parse_flat_layers",
 ]
 
 SECTOR_BYTES = 4096
@@ -562,11 +565,49 @@ _PINNED_GAME_RULES = {
 }
 
 
+#: One superflat layer: an optional repeat count, then a block id.
+_FLAT_LAYER = re.compile(r"(?:(\d+)\*)?([a-z0-9_.:-]+)")
+
+
+def parse_flat_layers(spec: str) -> list[tuple[str, int]]:
+    """Read a superflat layer string into ``(block, height)``, bottom first.
+
+    The spelling the scenarios use, and the one Minecraft's own superflat
+    presets use: ``minecraft:bedrock,3*minecraft:stone,minecraft:grass_block``.
+
+    It exists because six scenarios declare ``world.generator_settings`` and
+    nothing read it. Every one of them got the generator's built-in layers
+    instead — including fluid-and-lighting-cascade, which asks for sixty layers
+    of stone to cut channels into and was being given four blocks of ground
+    with its fills landing in open air.
+    """
+    layers: list[tuple[str, int]] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        match = _FLAT_LAYER.fullmatch(part)
+        if not match:
+            raise WorldError(
+                f"cannot read superflat layer {part!r}; expected a block id, "
+                f"optionally as 'N*block'"
+            )
+        count, block = match.groups()
+        height = int(count) if count else 1
+        if height < 1:
+            raise WorldError(f"superflat layer {part!r} has no height")
+        layers.append((block, height))
+    if not layers:
+        raise WorldError(f"superflat layers {spec!r} describe no world")
+    return layers
+
+
 def level_dat(
     *,
     name: str,
     seed: int,
     generator: str = "default",
+    generator_settings: dict[str, Any] | None = None,
     game_type: int = 1,
     generate_features: bool = True,
     difficulty: int = 0,
@@ -586,12 +627,26 @@ def level_dat(
     """
     if game_type not in (0, 1, 2, 3):
         raise WorldError(f"game_type must be 0-3, got {game_type}")
-    overworld = _OVERWORLD_GENERATORS.get(generator)
-    if overworld is None:
+    if generator not in _OVERWORLD_GENERATORS:
         raise WorldError(
             f"unknown generator {generator!r}; expected one of "
             f"{sorted(_OVERWORLD_GENERATORS)}"
         )
+    # Copied, because the entry is shared and about to be edited. Returning the
+    # module-level dict and embedding it worked only for as long as nobody
+    # changed it.
+    overworld = copy.deepcopy(_OVERWORLD_GENERATORS[generator])
+
+    if layers := (generator_settings or {}).get("layers"):
+        if overworld["type"] != "minecraft:flat":
+            raise WorldError(
+                f"generator_settings.layers describes a superflat world and "
+                f"the generator is {generator!r}; nothing would read it"
+            )
+        overworld["settings"]["layers"] = [
+            {"block": block, "height": Int(height)}
+            for block, height in parse_flat_layers(str(layers))
+        ]
 
     dimensions = dict(_VANILLA_DIMENSIONS)
     dimensions["minecraft:overworld"] = {

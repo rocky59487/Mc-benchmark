@@ -474,16 +474,29 @@ class TestTheServerGeneratorReachesTheServer:
         """
         from mcbench.world import _OVERWORLD_GENERATORS
 
-        level_type, settings = Harness.SERVER_GENERATORS["flat"]
+        level_type, server = Harness.SERVER_GENERATORS["flat"]
         assert level_type == "minecraft:flat"
 
         client = _OVERWORLD_GENERATORS["flat"]["settings"]
-        server = json.loads(settings)
         assert server["biome"] == client["biome"]
         assert [
             (layer["block"], layer["height"]) for layer in server["layers"]
         ] == [
             (layer["block"], int(layer["height"])) for layer in client["layers"]
+        ]
+
+    def test_a_scenario_that_names_its_layers_gets_them(self, tmp_path):
+        # Six scenarios declare world.generator_settings and nothing read it,
+        # so each was given the generator's built-in layers. This one asks for
+        # three of stone where the default has two of dirt.
+        found = self.properties(tmp_path, "entity-mobcap-saturation")
+        settings = json.loads(found["generator-settings"])
+        assert [
+            (layer["block"], layer["height"]) for layer in settings["layers"]
+        ] == [
+            ("minecraft:bedrock", 1),
+            ("minecraft:stone", 3),
+            ("minecraft:grass_block", 1),
         ]
 
     def test_an_unmapped_generator_is_refused(self, tmp_path):

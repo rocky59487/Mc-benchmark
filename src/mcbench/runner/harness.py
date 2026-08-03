@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -131,6 +132,17 @@ CLIENT_LEVEL_NAME = "mcbench"
 #: flagged fast machines for rendering fast, which is the opposite of the
 #: condition the flag exists to catch.
 CLIENT_FPS_CAP = 260
+
+#: Window size a client run renders at, as (width, height).
+#:
+#: Stated, because it decides what is being measured. Minecraft's own default is
+#: 854x480, where a renderer is CPU-bound and a GPU sits idle; the same mod on
+#: the same machine at 1080p can show a completely different result. Left to the
+#: game, two runs on two machines would also render different numbers of pixels
+#: and be pooled as though they had not.
+#:
+#: A suite may override it with a ``resolution`` game setting, as ``1280x720``.
+CLIENT_RESOLUTION = (1920, 1080)
 
 
 
@@ -706,6 +718,10 @@ class Harness:
             "java": _java_version(),
             "launcher": str(self.headlessmc) if self.headlessmc else "",
             "client_max_fps": CLIENT_FPS_CAP,
+            "client_resolution": {
+                variant.name: "{}x{}".format(*self.effective_resolution(variant))
+                for variant in self.suite.variants
+            },
             "artifacts": artifacts,
             "jvm_args": {
                 variant.name: self.effective_jvm_args(variant)
@@ -967,13 +983,16 @@ class Harness:
 
         capabilities = self.launcher_capabilities()
         if capabilities.accepts("--gamedir"):
-            return self._flag_launch_command(instance, scenario, jvm_args, capabilities)
-        return self._headlessmc_launch_command(instance, scenario, jvm_args)
+            return self._flag_launch_command(
+                instance, scenario, variant, jvm_args, capabilities
+            )
+        return self._headlessmc_launch_command(instance, scenario, variant, jvm_args)
 
     def _flag_launch_command(
         self,
         instance: Path,
         scenario: Scenario,
+        variant: Variant | None,
         jvm_args: list[str],
         capabilities: LauncherCapabilities,
     ) -> list[str]:
@@ -999,22 +1018,27 @@ class Harness:
         if scenario.side is Side.SERVER:
             command.append("--server")
         elif scenario.side in (Side.CLIENT, Side.BOTH):
-            # Quick-play into the scenario's world. Without it the client sits
-            # at the title screen, no integrated server starts, and the probe
-            # never fires.
-            world = self._client_world_name(scenario)
+            # Quick-play into the scenario's world, at a stated window size.
+            # Without the first the client sits at the title screen, no
+            # integrated server starts, and the probe never fires; without the
+            # second it renders at whatever the game defaults to.
+            game_args = self._game_arguments(scenario, variant)
             if capabilities.accepts("--quickPlaySingleplayer"):
-                command += ["--quickPlaySingleplayer", world]
+                command += game_args
             else:
-                # The flag is a vanilla game argument; a launcher that does not
-                # name it may still forward what follows a bare `--`.
-                command += ["--", "--quickPlaySingleplayer", world]
+                # These are vanilla game arguments; a launcher that does not
+                # name them may still forward what follows a bare `--`.
+                command += ["--", *game_args]
 
         command += self.extra_launch_args
         return command
 
     def _headlessmc_launch_command(
-        self, instance: Path, scenario: Scenario, jvm_args: list[str]
+        self,
+        instance: Path,
+        scenario: Scenario,
+        variant: Variant | None,
+        jvm_args: list[str],
     ) -> list[str]:
         """HeadlessMC 2.x, which configures by property rather than by flag.
 
@@ -1057,7 +1081,7 @@ class Harness:
         # the game started, at the title screen, having ignored quick-play.
         if jvm_args:
             properties.append(f"-Dhmc.jvmargs={' '.join(jvm_args)}")
-        if game_args := self._game_arguments(scenario):
+        if game_args := self._game_arguments(scenario, variant):
             properties.append(f"-Dhmc.gameargs={' '.join(game_args)}")
 
         launch = ["launch", self._headlessmc_version_id(), *self.extra_launch_args]
@@ -1096,12 +1120,37 @@ class Harness:
             return f"{loader}-loader-{self.suite.loader_version}-{version}"
         return f"{loader}-loader-{version}"
 
-    def _game_arguments(self, scenario: Scenario) -> list[str]:
-        """Vanilla game arguments the scenario needs, for a launcher that
-        forwards them wholesale rather than naming each one."""
+    def _game_arguments(
+        self, scenario: Scenario, variant: Variant | None = None
+    ) -> list[str]:
+        """Vanilla game arguments a client run needs."""
         if scenario.side is Side.SERVER:
             return []
-        return ["--quickPlaySingleplayer", self._client_world_name(scenario)]
+        width, height = self.effective_resolution(variant)
+        return [
+            "--quickPlaySingleplayer", self._client_world_name(scenario),
+            "--width", str(width),
+            "--height", str(height),
+        ]
+
+    def effective_resolution(self, variant: Variant | None) -> tuple[int, int]:
+        """The window size a variant renders at.
+
+        Declared as ``resolution = "1280x720"`` in a suite's game settings, or
+        the harness default. Unparseable values are refused rather than ignored:
+        silently falling back would mean a suite that asked for 1440p and got
+        854x480, which is a different measurement wearing the same name.
+        """
+        declared = self.effective_game_settings(variant).get("resolution")
+        if declared is None:
+            return CLIENT_RESOLUTION
+        text = str(declared).lower().replace(" ", "")
+        match = re.fullmatch(r"(\d{3,5})x(\d{3,5})", text)
+        if not match:
+            raise HarnessError(
+                f"resolution {declared!r} is not WIDTHxHEIGHT, as in '1920x1080'"
+            )
+        return int(match.group(1)), int(match.group(2))
 
     @staticmethod
     def _client_world_name(scenario: Scenario) -> str:

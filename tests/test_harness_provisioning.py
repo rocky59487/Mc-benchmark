@@ -381,6 +381,55 @@ class TestTickSourceReachesTheMetrics:
         assert metrics.values["tick_headroom"] == pytest.approx(0.9)
 
 
+class TestWindowResolution:
+    """METHODOLOGY section 7 promises the resolution is recorded. It was not.
+
+    Nothing set it either, so a client run rendered at Minecraft's own 854x480
+    default, where a renderer mod is CPU-bound and the GPU is idle. The same
+    mod on the same machine at 1080p can show a completely different result,
+    and two machines whose windows differed were pooled as though they had not.
+    """
+
+    def _harness(self, tmp_path, **suite_overrides):
+        from mcbench.runner import Harness
+
+        suite = parse_suite({
+            "name": "t", "minecraft_version": "1.21.1", "loader": "fabric",
+            "scenarios": ["visual-biome-flyby"],
+            "variants": [{"name": "base", "mods": []}],
+            "baseline": "base",
+            **suite_overrides,
+        })
+        return Harness(suite, scenarios(), work_dir=tmp_path)
+
+    def test_a_default_is_stated_rather_than_left_to_the_game(self, tmp_path):
+        h = self._harness(tmp_path)
+        assert h.effective_resolution(h.suite.variants[0]) == (1920, 1080)
+
+    def test_a_suite_may_declare_one(self, tmp_path):
+        h = self._harness(tmp_path, game_settings={"resolution": "1280x720"})
+        assert h.effective_resolution(h.suite.variants[0]) == (1280, 720)
+
+    def test_an_unparseable_resolution_is_refused(self, tmp_path):
+        from mcbench.runner.harness import HarnessError
+
+        h = self._harness(tmp_path, game_settings={"resolution": "1080p"})
+        with pytest.raises(HarnessError, match="WIDTHxHEIGHT"):
+            h.effective_resolution(h.suite.variants[0])
+
+    def test_it_reaches_the_game_as_arguments(self, tmp_path):
+        h = self._harness(tmp_path, game_settings={"resolution": "1280x720"})
+        args = h._game_arguments(
+            scenarios()["visual-biome-flyby"], h.suite.variants[0]
+        )
+        assert "--width" in args and args[args.index("--width") + 1] == "1280"
+        assert "--height" in args and args[args.index("--height") + 1] == "720"
+
+    def test_a_server_run_has_no_window(self, tmp_path):
+        h = self._harness(tmp_path)
+        assert h._game_arguments(scenarios()["entity-mobcap-saturation"]) == []
+
+
 class TestFrameCapFlag:
     """The flag means "the limiter was measured", not "the machine is fast".
 

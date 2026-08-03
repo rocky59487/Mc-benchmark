@@ -1,8 +1,6 @@
 # Measurement methodology
 
-This is the specification mcbench's implementation must satisfy. It is the
-project's actual product: anyone can time a game loop, but a number is only
-authoritative if the procedure that produced it is defensible and reproducible.
+This is the specification mcbench's implementation must satisfy.
 
 Every rule below exists because a specific, known effect will otherwise produce
 a confident wrong answer.
@@ -32,17 +30,17 @@ reported "average FPS" is always `1 / mean(frametime)`.
 | `fps_1pct_low` | `1000 / mean(worst 1% of frametimes)` |
 | `fps_0p1pct_low` | `1000 / mean(worst 0.1% of frametimes)` |
 | `stutter_rate` | Frames exceeding 2× the running median, per 1000 frames |
-| `frametime_cv` | Coefficient of variation — smoothness, independent of speed |
+| `frametime_cv` | Coefficient of variation: smoothness, independent of speed |
 
 The "1% low" is defined as the **mean of the worst 1% of frames**, not the 99th
 percentile. Both definitions circulate; they are not the same number, and the
 mean-of-worst form is the one that responds to how bad the bad frames are. The
 definition is stated in every report so results are never ambiguous.
 
-`frametime_cv` deserves emphasis. It is the answer to "is this smooth", asked
-separately from "is this fast". A mod that raises average FPS while increasing
-frametime variance has made the game feel worse, and every FPS-only benchmark in
-the ecosystem will score it as an improvement.
+`frametime_cv` answers "is this smooth" separately from "is this fast". A mod
+that raises average FPS while increasing frametime variance has made the game
+feel worse, and every FPS-only benchmark in the ecosystem scores it as an
+improvement.
 
 ### Reported server metrics
 
@@ -50,21 +48,21 @@ the ecosystem will score it as an improvement.
 |---|---|
 | `mspt_mean` | Mean milliseconds per tick |
 | `mspt_p95/p99` | Tail tick cost |
-| `tick_headroom` | `1 - mspt_mean / 50` — fraction of the budget left unused |
+| `tick_headroom` | `1 - mspt_mean / 50`, the fraction of budget left unused |
 | `warp_throughput` | Ticks per wall-clock second under tick warp |
 | `tps_effective` | Only meaningful when the server is saturated |
 
 **TPS is deliberately demoted.** Any server under budget reports exactly 20 TPS,
-so TPS cannot distinguish a 5 ms/tick configuration from a 30 ms/tick one — both
+so TPS cannot distinguish a 5 ms/tick configuration from a 30 ms/tick one; both
 score "perfect". Headroom and MSPT are the informative quantities. TPS is
 reported only for saturated scenarios, where it becomes meaningful again.
 
 **MSPT means the tick's execution time**, bracketed from the start of the tick
 to its end, or read from a platform API that measures the tick itself. The
-interval between consecutive end-of-tick callbacks is *not* MSPT: the server
-loop sleeps out the remainder of the budget, so on an unsaturated server that
-interval sits at 50 ms whether the tick cost 5 ms or 30 ms — the exact
-distinction headroom exists to make.
+interval between consecutive end-of-tick callbacks is not MSPT: the server loop
+sleeps out the remainder of the budget, so on an unsaturated server that interval
+sits at 50 ms whether the tick cost 5 ms or 30 ms, which is the exact distinction
+headroom exists to make.
 
 A platform that can expose neither a bracket nor a duration publishes
 `tick_period_mean_ms`, `tick_period_p95_ms` and `tick_period_p99_ms` instead,
@@ -80,18 +78,18 @@ chunk generation and load throughput.
 
 **Pause percentiles come from individual collections.** They are read from the
 JVM's GC notifications, one event per collection, each with its own duration and
-its own heap readings before and after — so `heap_steady_mb` is the live set
-measured *at* the collection rather than at whatever point the next sampling
+its own heap readings before and after, so `heap_steady_mb` is the live set
+measured at the collection rather than at whatever point the next sampling
 interval fell. Where a JVM cannot supply per-event data, the total pause time is
 reported and the percentile is omitted: a percentile over per-interval sums
 describes the sampling cadence, not the collector.
 
-**Allocation is measured, or else it is called something else.** `alloc_rate_mb_s`
-comes from the JVM's allocation counter and is reported only where that counter
-exists. Where it does not, the figure published is `heap_growth_rate_mb_s`, which
-is a floor on allocation and not a measure of it — anything allocated and
-collected between two samples never appears, and on a busy tick that is most of
-it. Allocation matters independently of pause time: a mod that doubles allocation
+**Allocation is either measured or named differently.** `alloc_rate_mb_s` comes
+from the JVM's allocation counter and is reported only where that counter exists.
+Where it does not, the figure published is `heap_growth_rate_mb_s`, a floor on
+allocation rather than a measure of it: anything allocated and collected between
+two samples never appears, and on a busy tick that is most of it. Allocation
+matters independently of pause time, because a mod that doubles allocation
 without raising measured pauses has moved the cost onto whoever runs a smaller
 heap or a different collector.
 
@@ -104,18 +102,18 @@ seconds of any run measure the interpreter and the JIT compiler, not the mod.
 
 Every run has four phases:
 
-1. **Provision** — untimed. World load, mod init.
-2. **Setup** — untimed. The scenario's setup commands build the world it
-   describes. A phase of its own, and not part of warmup: setup that shared the
-   warmup budget meant a scenario whose setup ran long entered *measurement*
+1. **Provision**, untimed. World load, mod init.
+2. **Setup**, untimed. The scenario's setup commands build the world it
+   describes. It is a phase of its own rather than part of warmup: when setup
+   shared the warmup budget, a scenario whose setup ran long entered measurement
    with commands still changing the world, and two machines gave the same
    scenario different effective warmup purely because setup took longer on one.
-3. **Warmup** — timed but discarded. Default 60 s client, 2000 ticks server.
+3. **Warmup**, timed but discarded. Default 60 s client, 2000 ticks server.
    Begins only once every setup command has succeeded and the world has settled
-   for one second, with every warmup window and counter reset at that moment —
-   setup's own very uniform samples would otherwise satisfy the plateau test
+   for one second, with every warmup window and counter reset at that moment.
+   Setup's own very uniform samples would otherwise satisfy the plateau test
    immediately.
-4. **Measurement** — retained.
+4. **Measurement**, retained.
 
 Warmup ends when **all three** conditions hold:
 
@@ -139,9 +137,9 @@ lengthen the ceiling or to find a quieter machine. Silently accepting an
 unconverged run is how a slow-starting mod gets credited with the JIT's warmup
 cost.
 
-Never discard warmup by frame *count*. A slow configuration reaches a given
-frame count later in wall-clock time and therefore gets a longer real warmup —
-which biases the comparison toward the slow configuration.
+Never discard warmup by frame count. A slow configuration reaches a given frame
+count later in wall-clock time and therefore gets a longer real warmup, biasing
+the comparison toward the slow configuration.
 
 ---
 
@@ -168,12 +166,12 @@ round 3:  C  B  A
 
 Not blocked (`AAAAA BBBBB CCCCC`).
 
-This is the single most important control in the document, and no existing
-Minecraft benchmark does it. Blocked execution confounds variant with time, and
-time carries thermal throttling, background load, page-cache warming, and
-ambient temperature drift. A machine that throttles after ten minutes will hand
-a clean, repeatable, entirely fake win to whatever ran first. Interleaving
-converts that systematic bias into noise the statistics can see and account for.
+This is the most important control in the document, and no existing Minecraft
+benchmark does it. Blocked execution confounds variant with time, and time
+carries thermal throttling, background load, page-cache warming and ambient
+temperature drift. A machine that throttles after ten minutes hands a clean and
+repeatable win to whatever ran first. Interleaving converts that systematic bias
+into noise the statistics can account for.
 
 Seeds for the shuffle are recorded so the exact order is reproducible.
 
@@ -206,8 +204,8 @@ mcbench's rule:
 - **Across runs, robust detection only.** A whole run may be excluded if its
   summary statistic is more than **8 MAD** (median absolute deviation) from the
   median of runs in the same cell, using a Croux–Rousseeuw small-sample
-  correction to the MAD scale. This targets contaminated runs — an OS update, a
-  stray process — not slow frames.
+  correction to the MAD scale. This targets contaminated runs, such as an OS
+  update or a stray process, rather than slow frames.
 - **Every exclusion is reported**, with its value and its distance in MAD. A
   cell that loses more than 20% of its runs is flagged as unstable rather than
   quietly averaged.
@@ -220,21 +218,19 @@ screening. The choice is calibrated, not arbitrary.
 At benchmark sample sizes (5–10 runs) the centre and the scale are estimated
 from the same handful of points, which makes the studentised deviation
 heavy-tailed. Measured against clean Gaussian samples, a 3.5 threshold falsely
-flags roughly **13%** of seven-run cells; at 8 that falls to about **1.6%**,
-while gross contamination — the kind an OS update or a stray process produces,
-typically tens of MAD out — is still caught essentially every time.
+flags roughly **13%** of seven-run cells; at 8 that falls to about **1.6%**.
+Gross contamination, the kind an OS update or a stray process produces, is
+typically tens of MAD out and is still caught essentially every time.
 
-The two errors are not symmetric, and that asymmetry decides it. Falsely
-excluding a run removes a tail observation, narrows the confidence interval, and
-makes the benchmark **more confident than the data warrants**. Failing to
-exclude a mildly unusual run merely widens the interval and pushes the verdict
-toward `inconclusive`. One of those failure modes publishes a wrong answer; the
-other publishes an honest "we don't know". The threshold is set accordingly.
+The two errors are not symmetric, which is what decides the threshold. Falsely
+excluding a run removes a tail observation, narrows the confidence interval and
+makes the benchmark **more confident than the data warrants**. Failing to exclude
+a mildly unusual run widens the interval and pushes the verdict toward
+`inconclusive`.
 
-A consequence worth stating plainly: at 5–7 runs, distinguishing a genuinely
-contaminated run from ordinary variance is **statistically underpowered**, and
-no threshold fixes that. Cells needing that discrimination need more runs, not
-a more aggressive filter.
+At 5–7 runs, distinguishing a genuinely contaminated run from ordinary variance
+is **statistically underpowered**, and no threshold fixes that. Cells needing
+that discrimination need more runs rather than a more aggressive filter.
 
 ---
 
@@ -259,7 +255,7 @@ For a comparison between a baseline and a variant, mcbench reports:
   group beats a random run from the other. Robust to skew, meaningful for small
   samples, and it answers the question people actually have.
 
-### The ROPE rule — the verdict
+### The ROPE rule, and the verdict
 
 A statistically detectable difference and a difference worth caring about are
 different things. With enough runs, a 0.3% difference becomes detectable and is
@@ -273,29 +269,26 @@ and issues one of four verdicts:
 | `improvement` | Entire delta CI is beyond the ROPE, in the better direction |
 | `regression` | Entire delta CI is beyond the ROPE, in the worse direction |
 | `equivalent` | Entire delta CI lies inside the ROPE |
-| `inconclusive` | CI straddles a ROPE boundary — needs more runs |
-| `insufficient_data` | Fewer than 5 runs survived in an arm — no verdict at all |
+| `inconclusive` | CI straddles a ROPE boundary; needs more runs |
+| `insufficient_data` | Fewer than 5 runs survived in an arm; no verdict at all |
 
 `inconclusive` is a first-class outcome and is reported as prominently as the
-others. A benchmark that never says "we don't know" is not measuring, it is
-guessing. mcbench reports how many additional runs would be needed to resolve an
-inconclusive cell.
+others. mcbench also reports how many additional runs would resolve it.
 
-`insufficient_data` is distinct from it, and the distinction is load-bearing.
+`insufficient_data` is distinct, and the distinction is load-bearing.
 Inconclusive means the runs were made and disagreed; insufficient means the runs
 required to answer were never obtained. Conflating them lets a mostly-failed
-experiment read as a measured null — or worse: one surviving value against one
-surviving value is a difference of 100% with a zero-width interval, which is the
-most decisive-looking output the system can produce from the least evidence it
-can hold.
+experiment read as a measured null. In the worst case one surviving value against
+one surviving value is a difference of 100% with a zero-width interval, the most
+decisive-looking output the system can produce from the least evidence it holds.
 
-So the floor is enforced everywhere a verdict is issued, not merely documented:
-five surviving values per arm *for that metric*, after inadmissible runs and
-outlier rejection. Below it the direction is withheld, the interval is not
-printed, and the report says how many runs are missing. The same floor governs
-interaction terms — a difference of differences is the least robust quantity in
-the report — and the bisect oracle, which declines to convict on a probe that
-mostly failed to launch.
+The floor is therefore enforced wherever a verdict is issued rather than merely
+documented: five surviving values per arm for that metric, after inadmissible
+runs and outlier rejection. Below it the direction is withheld, the interval is
+not printed, and the report says how many runs are missing. The same floor
+governs interaction terms, a difference of differences being the least robust
+quantity in the report, and the bisect oracle, which declines to convict on a
+probe that mostly failed to launch.
 
 ### Multiple comparisons
 
@@ -306,9 +299,9 @@ across the family and reports both raw and adjusted verdicts.
 
 A family is one **(scenario, metric)**: the variants sharing a baseline cell and
 a metric, among which a chance extreme would be picked out and reported. Metrics
-are not pooled into a single suite-wide family — `frametime_mean_ms` and
-`fps_avg` are the same measurement twice, and correcting across strongly
-dependent tests is punitive rather than principled.
+are not pooled into a single suite-wide family: `frametime_mean_ms` and `fps_avg`
+are the same measurement twice, and correcting across strongly dependent tests is
+punitive rather than principled.
 
 Correction can only remove discoveries. A decisive verdict that does not survive
 is reported as `inconclusive`; a verdict the ROPE rule already declined to make
@@ -322,11 +315,11 @@ tell whether the correction ran at all.
 
 Mod performance is not additive, and the assumption that it is causes most
 real-world surprises. Two independently harmless mods can interact
-catastrophically — competing for the same lock, invalidating each other's
-caches, forcing a shared code path off its fast route.
+catastrophically by competing for the same lock, invalidating each other's
+caches, or forcing a shared code path off its fast route.
 
-For a declared interaction set `{A, B}`, mcbench measures four cells — `none`,
-`A`, `B`, `A+B` — and reports the **interaction term**:
+For a declared interaction set `{A, B}`, mcbench measures four cells (`none`,
+`A`, `B`, `A+B`) and reports the **interaction term**:
 
 ```
 interaction = (cost(A+B) - cost(none)) - [(cost(A) - cost(none)) + (cost(B) - cost(none))]
@@ -347,10 +340,10 @@ larger sets fall back to screening the baseline plus each pair.
 A scenario ships a seed, a generator configuration, a spawn point, and a scripted
 setup sequence. The world is generated on the operator's machine.
 
-This is a [licensing requirement](LICENSING.md) and independently the right
-engineering call: a distributed world save silently embeds the generator version
-of whoever made it, and mods that alter worldgen would be measured against a
-world their own generator never produced.
+This is a [licensing requirement](LICENSING.md), and independently correct: a
+distributed world save embeds the generator version of whoever made it, and mods
+that alter worldgen would be measured against a world their own generator never
+produced.
 
 Because worldgen output itself varies between game versions and between
 worldgen-altering mods, mcbench records a **world fingerprint** with every run.
@@ -363,10 +356,10 @@ run. Chunk coordinates are included, so the same terrain generated in a differen
 place is correctly a different world.
 
 Deliberately **excluded**: entities, block-entity contents, tick lists, lighting,
-structure references, and inhabited time. Every one of those differs between two
-runs of the *same* variant — random ticks fire differently, mobs spawn in
-different places, lighting is recomputed. Hashing them would flag every run as a
-mismatch, and a check that always fires is a check nobody reads.
+structure references and inhabited time. Every one of those differs between two
+runs of the same variant, because random ticks fire differently, mobs spawn in
+different places and lighting is recomputed. Hashing them would flag every run as
+a mismatch.
 
 Two consequences follow from reading the save rather than asking the game:
 
@@ -416,21 +409,17 @@ approach:
 
 A ratio to a same-session baseline cancels most hardware and environment
 differences, which is what makes cross-contributor aggregation legitimate.
-Cross-machine *absolute* comparison remains unsupported, on purpose — it cannot
-be done honestly, and claiming otherwise would be the fastest way to lose the
-credibility this project depends on.
+Cross-machine absolute comparison remains unsupported.
 
 ---
 
 ## 9. What mcbench will not claim
 
-Stated explicitly, because a standard is defined as much by its limits:
-
 - It does not produce a single scalar "mod performance score". Performance is
   multidimensional and collapsing it discards the information that matters.
 - It does not compare absolute numbers across machines.
-- It does not measure subjective feel, correctness, gameplay, or compatibility.
+- It does not measure subjective feel, correctness, gameplay or compatibility.
 - It does not extrapolate from a benchmark scenario to arbitrary real gameplay.
   A scenario is a controlled proxy, and reports name which proxy was used.
-- It does not report a result it cannot reproduce. `inconclusive` is preferred
-  to a confident guess, always.
+- It does not report a result it cannot reproduce. `inconclusive` is preferred to
+  a confident guess.

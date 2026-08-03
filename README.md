@@ -1,25 +1,19 @@
 # mcbench
 
-**A controlled, reproducible performance benchmark for Minecraft mods — client and server.**
+**A controlled, reproducible performance benchmark for Minecraft mods, client and server.**
 
-Almost every performance claim in the Minecraft ecosystem comes from a single
-unrepeated run, in blocked execution order, with no variance estimate. That
-procedure cannot tell a real effect from thermal drift. It will report a
-confident number, and the number will reproduce, and it can still be entirely an
-artefact of which configuration happened to run first.
+Most performance claims in the Minecraft ecosystem come from a single unrepeated
+run, in blocked execution order, with no variance estimate. That procedure cannot
+separate a real effect from thermal drift, and it will reproduce, because
+whatever ran first keeps running first.
 
-mcbench exists to make that distinction. It measures many mods in one pass,
-under one methodology, and it says `inconclusive` when the data does not support
-a verdict.
+mcbench measures many mods in one pass under one methodology, and reports
+`inconclusive` when the data does not support a verdict.
 
-> **Status: the full chain is built; it needs a machine that can run Minecraft.**
-> Methodology, statistics, scenarios, planner, mod resolution, headless run loop,
-> preflight gating, chart/table export, the scenario-to-command compiler, the
-> probe timing core, and adapters for Fabric and Paper are implemented and
-> tested across Python and Java, including conformance fixtures in both
-> directions of the harness/probe seam, a target layer that compiles one scenario
-> for any platform and version, and modpack diagnostics that need no game at all.
-> What remains is more platforms and real hardware. See [Roadmap](#roadmap).
+> **Status: the full chain is built and tested; it needs a machine that can run
+> Minecraft.** Everything below is implemented across Python and Java, including
+> conformance fixtures in both directions of the harness/probe seam. What remains
+> is real hardware. See [Roadmap](#roadmap).
 
 ## What makes it different
 
@@ -34,35 +28,33 @@ a verdict.
 | Scope | Client **or** server | Client **and** server, one methodology |
 | Says "I don't know" | Never | `inconclusive` is a first-class result |
 
-The interleaving row is the one that matters most. On a machine that throttles
-after ten minutes, blocked ordering hands a clean, repeatable, *entirely fake*
-win to whatever ran first — and because it reproduces, it looks like evidence.
+Interleaving is the row that matters most. On a machine that throttles after ten
+minutes, blocked ordering hands a clean and repeatable win to whatever ran first.
 
 ## What it measures
 
 **Client** — frametime mean and percentiles, average FPS, 1% and 0.1% lows,
 stutter rate, frametime coefficient of variation.
 
-All aggregation happens in the time domain. Averaging per-second FPS computes a
-harmonic mean of frametimes, over-weighting fast frames and hiding exactly the
-stutter players notice — so every FPS figure here is derived as
-`1000 / mean(frametime_ms)`. "1% low" means the mean of the worst 1% of frames,
-not the 99th percentile; both definitions circulate and they are not the same
-number.
+Aggregation happens in the time domain. Averaging per-second FPS computes a
+harmonic mean of frametimes, which over-weights fast frames and hides stutter, so
+every FPS figure is derived as `1000 / mean(frametime_ms)`. "1% low" means the
+mean of the worst 1% of frames, not the 99th percentile; both definitions
+circulate and they are not the same number.
 
 **Server** — MSPT mean and percentiles, **tick headroom**, tick-warp throughput,
 chunk generation and load rates.
 
-TPS is deliberately demoted. Any server under budget reports exactly 20 TPS, so
-TPS cannot distinguish 5 ms/tick from 30 ms/tick — both score "perfect".
-Headroom (`1 - mspt/50`) separates them, and TPS is reported only for
-deliberately saturated scenarios where it becomes meaningful again.
+TPS is demoted deliberately. Any server under budget reports exactly 20 TPS, so
+TPS cannot distinguish 5 ms/tick from 30 ms/tick. Headroom (`1 - mspt/50`)
+separates them, and TPS is reported only for saturated scenarios where it
+becomes meaningful again.
 
 **Both** — allocation rate, GC pause total and p99, steady-state and peak heap.
 
 ## Scenarios
 
-Eleven scenarios ship today, covering every axis:
+Eleven scenarios ship today:
 
 | Scenario | Side | Targets |
 |---|---|---|
@@ -78,14 +70,12 @@ Eleven scenarios ship today, covering every axis:
 | `chunkio-load-throughput` | server | Deserialisation, NBT, region I/O |
 | `tick-stability-saturated` | server | **Tick stability** — degradation past budget |
 
-Villager AI is separated from general mob ticking on purpose: it stresses
-entirely different code, and optimisation mods frequently improve one while
-regressing the other. A combined scenario would hide that.
+Villager AI is separated from general mob ticking because it stresses different
+code, and optimisation mods frequently improve one while regressing the other.
 
-Scenarios are **recipes, not world saves** — a seed plus a scripted setup
-sequence, generated on your machine. That is a licensing requirement and also
-the right call: a distributed save silently embeds the generator version of
-whoever produced it.
+Scenarios are **recipes, not world saves**: a seed plus a scripted setup
+sequence, generated on your machine. Distributing a save is a licensing problem,
+and it would also embed the generator version of whoever produced it.
 
 ## Quick start
 
@@ -99,9 +89,9 @@ mcbench validate --suite suites/example-performance-mods.toml
 mcbench plan suites/example-performance-mods.toml  # inspect the schedule
 mcbench resolve suites/example-performance-mods.toml --download
 
-# Build the probe for your platform once; every instance needs it, including
-# the mod-free baseline. Without it nothing in the game reads the scenario and
-# no run produces a measurement stream at all.
+# Build the probe for your platform once. Every instance needs it, including the
+# mod-free baseline: without it nothing in the game reads the scenario and no run
+# produces a measurement stream.
 (cd probe/adapters/probe-fabric && ../../gradlew build)
 
 mcbench run suites/example-performance-mods.toml -o results.json \
@@ -109,18 +99,17 @@ mcbench run suites/example-performance-mods.toml -o results.json \
 mcbench analyse results.json --export-dir report/  # charts + tables + HTML
 ```
 
+On Windows use `gradlew.bat`; every Gradle project here ships both wrappers.
+
 `--probe-jar` can be omitted when running from a checkout that has already built
-it — the harness looks in the usual build directory. It is never *assumed*: a
+it, since the harness looks in the usual build directory. It is never assumed: a
 missing probe is a preflight blocker naming the build command, because a suite
 that discovers it two hours in has produced nothing.
 
-No runtime dependencies. A measurement standard people are asked to trust should
-be verifiable with a stock interpreter.
-
 ### Headless use
 
-`mcbench run` is designed to be driven by a developer in one command or by CI
-with no terminal at all:
+`mcbench run` is meant to be driven by a developer in one command, or by CI with
+no terminal at all:
 
 ```bash
 mcbench run suite.toml --json-events -o results.json   # NDJSON progress for CI
@@ -128,8 +117,8 @@ mcbench doctor --json                                  # machine-readable gating
 mcbench analyse results.json --format json             # structured verdicts
 ```
 
-Benchmarking a build that is not published yet — the usual case during
-development — uses a local jar:
+Benchmarking a build that is not published yet, the usual case during
+development, uses a local jar:
 
 ```toml
 [[variants]]
@@ -137,28 +126,29 @@ name = "my-dev-build"
 mods = [{ platform = "local", project = "build/libs/mymod.jar", version = "1.2.0-dev" }]
 ```
 
-It runs exactly like any other variant and its file is hashed into the
-provenance, but the suite is reported as **not publishable**: nobody else can
-obtain that jar, so the result is reproducible only on your machine.
+It runs like any other variant and its file is hashed into the provenance, but
+the suite is reported as **not publishable**: nobody else can obtain that jar.
 
 ### Preflight gating
 
 `mcbench doctor` decides whether the machine can produce a number worth
 believing, and `run` refuses to start if it cannot. It checks for a real GPU,
 forced software rendering, a display, competing Minecraft processes, CPU
-governor, battery, memory against the configured heap, disk, virtualisation, a
-licensed account, HeadlessMC, and the probe artefact for the selected platform.
+frequency scaling, battery, memory against the configured heap, disk,
+virtualisation, a licensed account, HeadlessMC, and the probe artefact for the
+selected platform.
 
-Its full readings travel into the results bundle, not just a publishable/not
-verdict. Two runs on machines differing in CPU governor, virtualisation and free
-memory would otherwise serialise identically, which makes results look more
-comparable than they are.
+Its full readings travel into the results bundle, not just a publishable verdict.
+Two runs on machines differing in frequency scaling, virtualisation and free
+memory would otherwise serialise identically.
 
-The most important thing it does is **refuse**. Benchmarking a rendering mod on
-a machine with no GPU is the easiest way to publish a meaningless Minecraft
-number: software rasterisation does not just make things slower, it moves the
-work the mod exists to optimise onto a completely different bottleneck. That is
-a hard block, not a warning.
+The checks can block. Benchmarking a rendering mod on a machine with no GPU is
+the easiest way to publish a meaningless Minecraft number: software rasterisation
+does not just make things slower, it moves the work the mod exists to optimise
+onto a different bottleneck.
+
+Readings are taken per platform (`runner/hostinfo.py`), so the same gate applies
+on Linux, Windows and macOS rather than degrading to "unknown" off Linux.
 
 ## Exporting charts and tables
 
@@ -172,20 +162,19 @@ comparisons.csv / cells.csv / runs.csv     data tables (also tsv/md/html)
 ```
 
 `runs.csv` carries every individual run before aggregation, so a reader can redo
-the analysis instead of taking ours on trust. A benchmark that publishes only
-summaries cannot be independently checked.
+the analysis instead of taking ours on trust.
 
-The charts are hand-built SVG — no plotting dependency, colourblind-safe
-palette, light and dark themes:
+The charts are hand-built SVG, with no plotting dependency, a colourblind-safe
+palette, and light and dark themes:
 
 - **Forest plot** — relative changes with intervals against a shaded ROPE band.
-  The most important chart here, because it draws the verdict rule directly:
-  an interval touching the band has not established anything.
+  It draws the verdict rule directly: an interval touching the band has not
+  established anything.
 - **Interval bars** — absolute values with confidence whiskers, zero-based.
 - **Frametime CDF** — the whole distribution. Two variants can share a mean and
-  differ sharply in the tail where stutter lives; a bar chart hides that.
-- **Order-effect scatter** — metric against execution position, so you can audit
-  whether interleaving actually held on your machine.
+  differ sharply in the tail where stutter lives.
+- **Order-effect scatter** — metric against execution position, to audit whether
+  interleaving held on your machine.
 - **Interaction plot** — observed pair cost against the additive prediction.
 
 ## Defining a suite
@@ -215,19 +204,18 @@ name = "sodium+entityculling"
 mods = ["modrinth:sodium@mc1.21.1-0.6.0-fabric", "modrinth:entityculling@1.7.2"]
 ```
 
-Mods are named by coordinate. mcbench resolves and hash-verifies them at run
-time on your machine — it never redistributes jars.
+Mods are named by coordinate. mcbench resolves and hash-verifies them at run time
+on your machine; it never redistributes jars.
 
-Run `mcbench validate` and it will tell you whether a suite is **publishable**:
-interleaved ordering, at least 5 runs per cell, and every mod version pinned. A
-suite failing any of these still runs, but its numbers are not comparable to
-anyone else's.
+`mcbench validate` reports whether a suite is **publishable**: interleaved
+ordering, at least 5 runs per cell, and every mod version pinned. A suite failing
+any of these still runs, but its numbers are not comparable to anyone else's.
 
 ## Mod interactions
 
-Two independently harmless mods can interact badly — competing for a lock,
-invalidating each other's caches, forcing a shared path off its fast route. This
-is the usual explanation for a modpack that runs far worse than its parts
+Two independently harmless mods can interact badly, competing for a lock,
+invalidating each other's caches, or forcing a shared path off its fast route.
+This is the usual explanation for a modpack that runs far worse than its parts
 suggest, and no existing benchmark measures it.
 
 Declare a factorial group and mcbench measures all four cells (`none`, `A`, `B`,
@@ -237,28 +225,26 @@ Declare a factorial group and mcbench measures all four cells (`none`, `A`, `B`,
 interaction = (cost(A+B) − cost(none)) − [(cost(A) − cost(none)) + (cost(B) − cost(none))]
 ```
 
-Zero means the costs add. Positive means the pair is more expensive together
-than their individual costs predict.
+Zero means the costs add. Positive means the pair is more expensive together than
+their individual costs predict.
 
 ## Reading a verdict
 
 Every comparison carries a relative change with a bootstrap CI, a Cliff's delta
-effect size, and one of four verdicts judged against a region of practical
-equivalence (default ±2%):
+effect size, and a verdict judged against a region of practical equivalence
+(default ±2%):
 
 - `improvement` / `regression` — the whole interval clears the ROPE
 - `equivalent` — the whole interval sits inside the ROPE
 - `inconclusive` — the interval straddles a boundary; more runs needed
+- `insufficient_data` — fewer than five runs survived in an arm
 
-A statistically detectable difference and a difference worth caring about are
-not the same thing. With enough runs a 0.3% difference becomes detectable and is
-still irrelevant, and a benchmark that reports it as a victory teaches people to
-game it.
+A statistically detectable difference is not the same as one worth caring about.
+With enough runs a 0.3% difference becomes detectable and is still irrelevant.
 
 **Absolute numbers are comparable only within one session on one machine.**
 Cross-machine comparison goes through ratios to `reference-hardware-baseline`,
-run in the same session. Cross-machine absolute comparison is unsupported on
-purpose — it cannot be done honestly.
+run in the same session. Cross-machine absolute comparison is unsupported.
 
 ## The probe
 
@@ -266,50 +252,47 @@ purpose — it cannot be done honestly.
 timing. It is split so that almost none of it depends on Minecraft.
 
 `probe-core` has **zero Minecraft imports**. Phase control, steady-state
-detection, sample buffering, the runtime monitor, and protocol emission all live
-there, and its 39 JUnit tests run in a second with no game present.
+detection, sample buffering, the runtime monitor and protocol emission live
+there, and its JUnit tests run in seconds with no game present.
 
-A platform adapter implements three methods — a timing hook, a command
-executor, and a shutdown request. That is the entire version-coupled surface,
-which is what makes "every version, every platform" tractable: a new Minecraft
-version normally needs no code change, only a rebuild.
+A platform adapter implements three methods: a timing hook, a command executor,
+and a shutdown request. That is the entire version-coupled surface, which is what
+makes "every version, every platform" tractable — a new Minecraft version
+normally needs no code change, only a rebuild.
 
-Four adapters exist, and they are the evidence the SPI is the right size.
-Fabric, NeoForge and Forge are mod loaders with clients; Paper is a server
-plugin platform with no client at all. Four unrelated ecosystems, four nearly
-identical files, none containing a single line of methodology.
+Four adapters exist. Fabric, NeoForge and Forge are mod loaders with clients;
+Paper is a server plugin platform with no client at all. Four unrelated
+ecosystems, four nearly identical files, none containing methodology.
 
-Underneath them sits a **JVM agent** that needs no loader at all. It times
-frames on any version and any loader — including vanilla — by instrumenting
+Underneath them sits a **JVM agent** that needs no loader. It times frames on any
+version and any loader, including vanilla, by instrumenting
 `org.lwjgl.glfw.GLFW.glfwSwapBuffers`: LWJGL is a third-party library, so its
-names are never obfuscated and are byte-identical across every Minecraft
-version and mapping scheme. It is a timing source rather than a platform — it
-cannot run commands, which is precisely the price of referencing no game class.
-See [docs/PLATFORMS.md](docs/PLATFORMS.md).
+names are never obfuscated and are byte-identical across every Minecraft version
+and mapping scheme. It is a timing source rather than a platform, and cannot run
+commands, which is the price of referencing no game class. See
+[docs/PLATFORMS.md](docs/PLATFORMS.md).
 
 The hot path is treated as hot: `recordFrame` allocates nothing, never blocks on
-I/O, and hands off through a double-buffered `long[]`. A probe that perturbs the
-frame it is timing produces numbers about the probe.
+I/O, and hands off through a double-buffered `long[]`.
 
 ```bash
-cd probe && ./gradlew test          # 52 tests, no Minecraft required
+cd probe && ./gradlew test          # no Minecraft required
 ./gradlew jar
 java -cp probe-core/build/libs/probe-core-0.1.0.jar \
     dev.mcbench.probe.core.SelfTest /tmp/out client 42
 ```
 
 `SelfTest` drives a real `ProbeSession` with synthetic timings and writes a real
-probe stream. It exists because the wire protocol has two independent
-implementations — the Java writer and the Python reader — and a format with two
-implementations drifts unless something checks. `tests/test_conformance.py`
-parses fixtures generated by it, and independently re-derives the warmup
-convergence that the Java side claimed. Adapter authors can validate against it
-without a GPU, an account, or a working instance.
+probe stream. The wire protocol has two independent implementations, the Java
+writer and the Python reader, and a format with two implementations drifts unless
+something checks. `tests/test_conformance.py` parses fixtures generated by it and
+independently re-derives the warmup convergence the Java side claimed. Adapter
+authors can validate against it without a GPU, an account, or a working instance.
 
 ## Diagnosing a modpack
 
-Knowing a pack is slow is not actionable. Knowing *which of its ninety mods* is
-responsible is. Two tools, deliberately in that order — the cheap one first.
+Knowing a pack is slow is not actionable; knowing which of its ninety mods is
+responsible is. Two tools, cheapest first.
 
 ### Static health check
 
@@ -319,38 +302,36 @@ mcbench inspect mods/ --json     # for CI
 mcbench inspect mods/ --loader fabric --minecraft-version 1.21.1
 ```
 
-Runs on jars alone: no game, no account, no GPU. The fastest useful answer about
-a pack is the one you get before spending two hours benchmarking something that
-was never going to load.
+Runs on jars alone: no game, no account, no GPU.
 
 - **Declared incompatibilities, evaluated by version.** Authors already record
-  what they break — Fabric's `breaks`, NeoForge's `incompatible` dependencies,
-  Bukkit's `depend` — and it is machine-readable and routinely ignored. Ranges
-  are *evaluated*, not merely noted: `breaks lib <2` against an installed `lib 3`
-  is not a conflict, and checking by presence alone reported it as one.
+  what they break in Fabric's `breaks`, NeoForge's `incompatible` dependencies
+  and Bukkit's `depend`, and it is machine-readable and routinely ignored. Ranges
+  are evaluated rather than merely noted: `breaks lib <2` against an installed
+  `lib 3` is not a conflict, and checking by presence alone reported it as one.
 - **Structural problems.** Missing dependencies, duplicate mod ids, jars fighting
-  over the same id, and dependencies satisfied at an incompatible version —
+  over the same id, and dependencies satisfied at an incompatible version.
   `lib >=2` with `lib 1` present will not launch, and presence-only checking
   certified it as fine. Fabric API's module dependencies collapse into one
-  finding, because six missing modules are one absent jar and a tool that cries
-  wolf gets ignored. Fabric API itself is *not* assumed present: it is an
-  ordinary mod, and treating it as ambient hid the one dependency most Fabric
-  packs actually miss.
+  finding, because six missing modules are one absent jar. Fabric API itself is
+  not assumed present: it is an ordinary mod, and treating it as ambient hid the
+  one dependency most Fabric packs actually miss.
 - **Bundled jars.** Fabric libraries shipped inside their dependents count as
   present, so a complete pack stops being reported as missing them.
 - **Mixin contention.** Which Minecraft classes more than one mod transforms,
   read from each mixin's declared configuration and its `@Mixin` annotation
   targets. Where no annotation can be read, the weaker constant-pool footprint is
   shown under its own heading rather than passed off as a declared target.
-  Overlap is not proof of a conflict — mods coexist on the same class all the
-  time — but it is where conflicts come from, so it ranks *where to look next*.
+  Overlap is not proof of a conflict, but it is where conflicts come from, so it
+  ranks where to look next.
 
 Pass `--loader` and `--minecraft-version` to check the constraints that depend on
 them; without a target those are reported as recorded-but-unverified rather than
-silently passed. Anything the tool could not read is an error, not a warning: a
-preflight gate that exits zero on input it failed to parse is not a gate.
+silently passed. Anything the tool could not read is an error rather than a
+warning, because a gate that exits zero on input it failed to parse is not a
+gate.
 
-Exit code is non-zero on blocking problems, so it drops straight into CI.
+Exit code is non-zero on blocking problems, so it drops into CI.
 
 ### Culprit isolation
 
@@ -358,50 +339,38 @@ Exit code is non-zero on blocking problems, so it drops straight into CI.
 mcbench bisect suite.toml --scenario visual-biome-flyby -o diagnosis.json
 ```
 
-When a pack really is slow, this isolates the minimal responsible subset by
-delta debugging. Three things make it more than a bisection:
+When a pack really is slow, this isolates the minimal responsible subset by delta
+debugging. Four things make it more than a bisection.
 
-**The oracle is statistical.** A subset is slower by some amount with some
-confidence, and the same subset measured twice can disagree. So probes return
-regression, clean, *inconclusive*, or *invalid* — and only the first two are
-evidence. If the full pack's regression cannot even be confirmed, the search
-refuses to start rather than hunting for an effect it never established.
+**The oracle is statistical.** The same subset measured twice can disagree, so
+probes return regression, clean, inconclusive or invalid, and only the first two
+are evidence. If the full pack's regression cannot be confirmed, the search
+refuses to start.
 
-**Subsets are dependency-closed.** An arbitrary half of a modpack is usually not
-installable, and the failure that causes is specific: a culprit `bad` that needs
-`library` cannot be tested alone — `{bad}` will not launch and `{library}` does
-not reproduce — so a search reading both failures as "does not reproduce"
-concludes the two *interact*, and two mod authors get a bug report about a
-conflict that does not exist. Every subset is closed over its declared
-dependencies before launch, and the support mods that pulls in are reported
-separately from the suspects, because they were never independently implicated.
+**Subsets are dependency-closed.** A culprit `bad` that needs `library` cannot be
+tested alone: `{bad}` will not launch and `{library}` does not reproduce. Reading
+both failures as "does not reproduce" concludes the two interact, and two mod
+authors get a bug report about a conflict that does not exist. Every subset is
+closed over its declared dependencies before launch, and the support mods that
+pulls in are reported separately from the suspects.
 
 **The culprit is often a pair.** Two mods can each be harmless and be
-catastrophic together. A plain bisection splits them, sees neither half regress,
-and concludes nothing is wrong. The complement phase of ddmin is what survives
-that, and it is usually the finding worth reporting loudest — neither author
-would ever find it alone.
+catastrophic together; a plain bisection splits them, sees neither half regress,
+and concludes nothing is wrong. The complement phase of ddmin survives that. An
+interaction is claimed only after minimality is checked by re-measuring the
+candidate and testing every single removal, because ddmin's stopping condition
+("no split narrowed anything") can also be reached by a run of unresolved probes.
+A set that stopped there is reported as narrowed-but-unconfirmed.
 
-An interaction is claimed only once minimality has been *checked*: the candidate
-is re-measured and every single removal is tested. ddmin's own stopping condition
-is "no split narrowed anything", which on a statistical oracle can be reached by
-a run of unresolved probes rather than by having found the answer — and a set
-that stopped there is reported as narrowed-but-unconfirmed, not announced as two
-mods fighting.
-
-**The baseline is re-measured for every probe.** The obvious design measures the
-mod-free baseline once and compares everything against it — but a bisection runs
-for hours, so a probe at hour three would be compared against a machine state
-from hour zero, and thermal drift would be attributed to a mod. Each probe
-therefore interleaves baseline and subset, alternating with a shuffled order. It
-doubles the cost and it is the difference between a culprit and an artefact of
-when the probe happened to run. `--reuse-baseline` takes the cheap path and says
-loudly that the result is exploratory.
+**The baseline is re-measured for every probe.** Measuring it once would compare
+an hour-three probe against an hour-zero machine state and attribute thermal
+drift to a mod. Each probe interleaves baseline and subset in shuffled order,
+which doubles the cost; `--reuse-baseline` takes the cheap path and marks the
+result exploratory.
 
 Each probe is a full benchmark cell, so the search is budgeted and reports what
-it spent — probes *and* game launches. Isolating one bad mod out of 64 takes well
-under 40 probes instead of 2^64 subsets. Every probe's numbers are kept, so
-`diagnosis.json` lets someone check the conclusion rather than trust it.
+it spent in probes and in game launches. Isolating one bad mod out of 64 takes
+well under 40 probes. Every probe's numbers are kept in `diagnosis.json`.
 
 ### World fingerprinting
 
@@ -410,26 +379,24 @@ mcbench world work/instances/*/mcbench     # do these runs share a world?
 ```
 
 Scenarios ship a seed and a setup script rather than a world save, so the world
-is an *output* of a run, not a fixed input. Two variants can therefore quietly
-measure different terrain, and averaging across that is not a comparison at all.
+is an output of a run rather than a fixed input. Two variants can therefore
+measure different terrain, and averaging across that is not a comparison.
 
 Every run is fingerprinted from its saved region files, and runs whose worlds
-differ are flagged inadmissible — enforcing [METHODOLOGY.md](docs/METHODOLOGY.md)
-§7 rather than merely asserting it. The hash covers block palettes, packed block
-indices, biomes and chunk coordinates, and deliberately **excludes** entities,
-tick lists and lighting: those differ between two runs of the same variant, so
-including them would flag everything and the check would stop being read.
+differ are flagged inadmissible, which makes
+[METHODOLOGY.md](docs/METHODOLOGY.md) §7 enforceable. The hash covers block
+palettes, packed block indices, biomes and chunk coordinates, and **excludes**
+entities, tick lists and lighting: those differ between two runs of the same
+variant, so including them would flag everything.
 
 Reading the save needs no game API, so it works on every version and platform
-including those with no adapter, and it runs after the process exits so it
-cannot perturb what it qualifies. The NBT and Anvil readers are ~500 lines of
-standard library, which keeps the promise that a stock interpreter can verify a
-published result.
+including those with no adapter, and it runs after the process exits so it cannot
+perturb what it qualifies.
 
 ## One scenario, every platform
 
-Scenarios are platform-neutral. Compilation takes a target, and the dialect layer
-handles the differences — `/replaceitem` became `/item replace block` in 1.17,
+Scenarios are platform-neutral. Compilation takes a target and the dialect layer
+handles the differences: `/replaceitem` became `/item replace block` in 1.17,
 `/tick warp` is vanilla from 1.20.3 but needs Carpet before that, and Paper has
 no client at all.
 
@@ -440,16 +407,16 @@ mcbench targets --target paper:1.20.4 --json
 
 A target that cannot express a scenario **refuses it with a reason** rather than
 compiling something that half-executes. Adding a scenario means writing it once;
-the matrix tells you immediately where it runs and why not elsewhere. See
+the matrix says where it runs and why not elsewhere. See
 [docs/PLATFORMS.md](docs/PLATFORMS.md).
 
 ## Documentation
 
 - **[docs/METHODOLOGY.md](docs/METHODOLOGY.md)** — the specification. Start here.
 - **[docs/RESEARCH.md](docs/RESEARCH.md)** — prior-art survey and the gap.
-- **[docs/SECURITY.md](docs/SECURITY.md)** — threat model. mcbench downloads
-  code and executes it; that is the function, not a flaw. Read before handling
-  any external input.
+- **[docs/SECURITY.md](docs/SECURITY.md)** — threat model. mcbench downloads code
+  and executes it; that is the function, not a flaw. Read before handling any
+  external input.
 - **[docs/PLATFORMS.md](docs/PLATFORMS.md)** — how one scenario runs on every
   platform and version.
 - **[docs/LICENSING.md](docs/LICENSING.md)** — legal constraints that shaped the
@@ -457,30 +424,23 @@ the matrix tells you immediately where it runs and why not elsewhere. See
 
 ## Roadmap
 
-**Done** — methodology spec; statistics engine (bootstrap CIs, calibrated MAD
-outlier rejection, Cliff's delta, ROPE verdicts, interaction terms, FDR control);
-metric registry and per-run reduction; scenario schema, loader, and 11
-definitions; run planner with interleaved randomised ordering; suite manifests
-with publishability checks; Modrinth and local-jar resolution with hash
-verification; environment preflight gating; the headless run loop; the probe
-wire protocol; SVG charts, table export in four formats, and the self-contained
-HTML report. 410 tests.
+**Done**
 
-Plus the probe's timing core: hot-path sample buffers, phase control with
-steady-state detection, JMX runtime monitoring, the protocol writer, and the
-adapter SPI — with cross-implementation conformance tests between the Java
-writer and the Python reader.
-
-Plus the scenario-to-command compiler that joins the harness to the probe, and
-adapters for Fabric, NeoForge, Forge and Paper — every loader anyone runs —
-each built against a real toolchain. Plus the JVM agent that times frames on any
-version and any loader, including vanilla, by instrumenting LWJGL instead of the
-game. Security hardening with a threat model, and CI enforcing tests, lint,
-protocol conformance, security regressions and licence compliance.
-
-Plus world fingerprinting, which makes METHODOLOGY §7 enforceable rather than
-aspirational: runs whose worlds differ are flagged inadmissible and never
-pooled.
+- *Analysis* — bootstrap CIs, calibrated MAD outlier rejection, Cliff's delta,
+  ROPE verdicts, interaction terms, FDR control; metric registry and per-run
+  reduction; SVG charts, tables in four formats, self-contained HTML report.
+- *Orchestration* — scenario schema, loader and 11 definitions; interleaved
+  randomised planner; suite manifests with publishability checks; Modrinth and
+  local-jar resolution with hash verification; preflight gating on Linux, Windows
+  and macOS; the headless run loop.
+- *Probe* — hot-path sample buffers, phase control with steady-state detection,
+  JMX runtime monitoring, the wire protocol, and the adapter SPI. Adapters for
+  Fabric, NeoForge, Forge and Paper, each built against a real toolchain, plus
+  the LWJGL-instrumenting JVM agent that needs no loader at all.
+- *Correctness* — the scenario-to-command compiler joining harness to probe;
+  world fingerprinting, which makes METHODOLOGY §7 enforceable rather than
+  asserted; a threat model and security hardening; CI enforcing tests, lint,
+  protocol conformance, security regressions and licence compliance.
 
 **Next** — CurseForge provider (opt-in, no caching); cross-loader and
 cross-version comparison; bot-driven player load; the public results corpus.
@@ -488,16 +448,15 @@ cross-version comparison; bot-driven player load; the public results corpus.
 ## Contributing
 
 The methodology document is normative. A change to how a number is produced is a
-change to `docs/METHODOLOGY.md` first, and to the code second.
+change to `docs/METHODOLOGY.md` first and to the code second.
 
 Before adding a dependency or data file, check the compliance checklist at the
 end of [docs/LICENSING.md](docs/LICENSING.md). The short version: no game files,
-no mod jars, no third-party world saves, and nothing GPL-licensed linked into
-the harness.
+no mod jars, no third-party world saves, and nothing GPL-licensed linked into the
+harness.
 
 ## Licence
 
-Apache-2.0. Chosen over MIT for its explicit patent grant — a measurement
-standard should not leave adopters exposed — and over any copyleft licence
-because mod authors, hosts, and platforms need to be able to adopt it freely.
-See [NOTICE](NOTICE) for third-party attribution.
+Apache-2.0, chosen over MIT for its explicit patent grant and over any copyleft
+licence so that mod authors, hosts and platforms can adopt it freely. See
+[NOTICE](NOTICE) for third-party attribution.

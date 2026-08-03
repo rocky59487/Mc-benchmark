@@ -6,16 +6,16 @@ nobody has assembled them into a controlled comparative benchmark.
 
 ## Client-side
 
-### FPS Benchmark — the closest existing thing
+### FPS Benchmark: the closest existing thing
 
 <https://modrinth.com/project/Cfyw5WXC>
 
 The most benchmark-shaped tool in the ecosystem, and the one whose scenario
 taxonomy is worth learning from. It creates a temporary fixed-seed world, drives
 a scripted camera sequence, and emits Markdown/JSON/CSV plus system metadata. 41
-tests across 12 categories — showcase flyby, particles, entities, physics
+tests across 12 categories (showcase flyby, particles, entities, physics
 (TNT/falling sand), redstone (observer clocks, piston arrays), lighting, fluids,
-block entities (hoppers, comparators) — each with Quick/Full/Long presets. It can
+block entities (hoppers, comparators)), each with Quick/Full/Long presets. It can
 diff two saved sessions into a `compare-A-vs-B.md`.
 
 What it establishes: fixed seeds and scripted deterministic sequences are the
@@ -50,12 +50,12 @@ Benchmarks resource packs, not mods. Different problem.
 
 <https://www.curseforge.com/minecraft/mc-mods/betterfps>
 
-Historical. Its "benchmark" selects between sin/cos table implementations — a
-micro-benchmark of one algorithm, not a system benchmark.
+Historical. Its "benchmark" selects between sin/cos table implementations, which
+is a micro-benchmark of one algorithm rather than a system benchmark.
 
 ## Server-side
 
-### spark — the standard profiler
+### spark: the standard profiler
 
 <https://github.com/lucko/spark>
 
@@ -67,7 +67,7 @@ It is not a benchmark: it observes whatever load happens to exist. There is no
 reproducible workload, no controlled comparison, no repetition. Two spark
 reports from two servers are not comparable in any rigorous sense.
 
-Note also that spark's core is GPLv3 — see [LICENSING.md](LICENSING.md).
+Note also that spark's core is GPLv3; see [LICENSING.md](LICENSING.md).
 
 ### MCBenchmark / ServerBenchmark / Performance Checker
 
@@ -80,7 +80,7 @@ NeoForge mods at all, which excludes most of the modding ecosystem; and their
 purpose is capacity diagnosis ("how many players will this box hold") rather
 than comparative measurement between software configurations.
 
-### Carpet's `/tick warp` — the key primitive
+### Carpet's `/tick warp`: the key primitive
 
 <https://github.com/gnembon/fabric-carpet>
 
@@ -89,8 +89,8 @@ permits. This converts "how much work is N game-ticks of this scenario" into a
 clean wall-clock measurement, unclamped by the 20 TPS ceiling.
 
 This matters more than it first appears. Under normal ticking, any server
-comfortably under budget reports exactly 20 TPS — so TPS **cannot distinguish**
-a mod that uses 5 ms/tick from one that uses 30 ms/tick. Both look perfect. Tick
+comfortably under budget reports exactly 20 TPS, so TPS **cannot distinguish** a
+mod that uses 5 ms/tick from one that uses 30 ms/tick. Both look perfect. Tick
 warp exposes the headroom that TPS hides.
 
 Nobody has packaged this into a benchmark suite. mcbench does. Carpet is MIT, so
@@ -121,9 +121,9 @@ deterministically; no performance dimension.
 
 <https://github.com/brucethemoose/Minecraft-Performance-Flags-Benchmarks>
 
-The only prior work found that automates *consecutive configurations with
-averaged repeated runs, unattended* — which is the correct instinct. But it
-benchmarks **JVM flags, not mods**, and its methodology document is marked
+The only prior work found that automates consecutive configurations with averaged
+repeated runs, unattended, which is the correct instinct. But it benchmarks **JVM
+flags, not mods**, and its methodology document is marked
 work-in-progress with the statistical treatment undocumented.
 
 ### packwiz
@@ -154,7 +154,7 @@ No public methodology found in the Minecraft space reports repetition counts,
 variance, confidence intervals, or effect sizes. Comparisons are routinely
 declared from differences well inside plausible run-to-run noise.
 
-## Conclusion — the gap
+## Conclusion: the gap
 
 The primitives exist and are nearly all permissively licensed. What does not
 exist anywhere:
@@ -167,7 +167,7 @@ exist anywhere:
 3. **Order and drift control.** Interleaved randomised execution so that thermal
    throttling and background load cannot masquerade as a mod's effect.
 4. **Client and server measured by one harness** under one methodology.
-5. **Cross-loader and cross-version comparison** — the same mod on Fabric versus
+5. **Cross-loader and cross-version comparison**: the same mod on Fabric versus
    NeoForge, or across game versions.
 6. **Interaction effects.** Measuring A, B, and A+B to detect when mods are
    non-additive. Universally ignored today, and the single most common source of

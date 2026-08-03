@@ -1,8 +1,8 @@
 # Security model
 
-mcbench downloads code from the internet and executes it. That is not a flaw to
-be mitigated — it is the entire function of the tool. Everything below follows
-from taking that seriously.
+mcbench downloads code from the internet and executes it. That is the function
+of the tool rather than a flaw to be mitigated. Everything below follows from
+taking that seriously.
 
 ## What is trusted, and what is not
 
@@ -15,9 +15,9 @@ from taking that seriously.
 | Modrinth API responses | **Untrusted** | Determine what gets downloaded and from where |
 | The harness itself | Trusted | It is the thing making the decisions |
 
-The uncomfortable one is the second row. Scenarios look like configuration, so
-they invite being treated as data — but they compile into commands that run
-inside the game. A shared scenario is code.
+The second row is the one that surprises people. Scenarios look like
+configuration, so they invite being treated as data, but they compile into
+commands that run inside the game. A shared scenario is code.
 
 ## The central limitation, stated plainly
 
@@ -51,8 +51,8 @@ The probe plan is a newline-delimited file. A scenario action of
 ```
 
 compiled to one entry in memory and **three commands on disk**, because the
-writer appends a newline per entry. A shared scenario — which this project
-actively encourages — could therefore run commands it did not appear to declare.
+writer appends a newline per entry. A shared scenario, which this project
+actively encourages, could therefore run commands it did not appear to declare.
 
 Fixed by rejecting control characters in any emitted command, and by sweeping
 *every* emitted line rather than only the pass-through `command` op: structure
@@ -66,7 +66,7 @@ malicious or broken, and rewriting it into something that looks valid hides both
 ### Zip bombs in mod inspection
 
 `mcbench inspect` reads every mixin class in a jar. A 204 KB archive whose
-entries expand to 200 MB exhausted memory — and inspection is often the *first*
+entries expand to 200 MB exhausted memory, and inspection is often the first
 thing run against a pack of unknown origin, so it must survive a hostile jar
 rather than be the thing that falls over.
 
@@ -92,7 +92,7 @@ matching parses the URL rather than matching substrings, so
 ### Path traversal through a suite manifest
 
 A `local:` mod path is taken straight from a suite manifest, and
-`../../../../etc/hostname` resolved outside the working root — reading an
+`../../../../etc/hostname` resolved outside the working root, reading an
 arbitrary host file and copying it into the instance. Low severity for a
 developer benchmarking their own build; not low at all for a CI job or corpus
 service that benchmarks suites other people submit.
@@ -109,21 +109,21 @@ mysteriously ignored your mod" into an error that names the problem.
 `docs/SECURITY.md` listed result documents as untrusted, but the ingestion path
 did not validate them. JSON has no infinity, yet `1e400` parses to one, and it
 travelled through aggregation into a report whose own JSON then contained
-`Infinity` — invalid per the spec, unreadable by strict consumers, and presented
+`Infinity`: invalid per the spec, unreadable by strict consumers, and presented
 as though it were a measurement.
 
 A single infinity happened to be absorbed by the MAD outlier filter, which looked
 like protection but was coincidence: that filter catches contaminated runs, not
 malformed input, and it left the reader seeing `n=4` rather than "your data
-contained infinity". Documents are now validated on load, and nothing is coerced
-— a malformed document is malformed, and quietly repairing one produces a result
-that looks valid.
+contained infinity". Documents are now validated on load and nothing is coerced,
+because quietly repairing a malformed document produces a result that looks
+valid.
 
 ## Deliberate design decisions
 
 **Hash verification is mandatory, not optional.** A resolved mod without a
 sha512 is refused rather than downloaded unverified. Two runs whose mod hashes
-differ did not measure the same software, whatever their version strings said —
+differ did not measure the same software, whatever their version strings said,
 so this is a correctness property as much as a security one.
 
 **Credentials are never handled.** Mojang authentication belongs to HeadlessMC.
@@ -135,7 +135,7 @@ are JSON, plans are properties files and command lists. Nothing is `eval`'d, and
 no format supports references, includes, or object instantiation.
 
 **Downloads land outside version control.** Everything fetched goes under a
-gitignored working directory, so a jar cannot be committed by accident — which is
+gitignored working directory, so a jar cannot be committed by accident, which is
 a licensing requirement as well (see [LICENSING.md](LICENSING.md)).
 
 ## Reporting a vulnerability
@@ -144,13 +144,14 @@ Open a private security advisory on the repository rather than a public issue.
 Include the version, a reproduction, and what an attacker gains.
 
 Findings that would let a **scenario, suite, or result document** cause
-unintended execution, network access, or filesystem writes are in scope and
-treated as high severity — those are the inputs users are encouraged to share.
+unintended execution, network access or filesystem writes are in scope and
+treated as high severity, because those are the inputs users are encouraged to
+share.
 
 A malicious *mod jar* misbehaving when benchmarked is **not** in scope: running
 it is the tool's purpose, and the sandboxing guidance above is the only real
-answer. What *is* in scope is any path by which mcbench runs a jar the operator
-did not choose — a resolver pointed at the wrong host, a hash check that can be
+answer. What is in scope is any path by which mcbench runs a jar the operator did
+not choose: a resolver pointed at the wrong host, a hash check that can be
 bypassed, a cache poisoned across suites.
 
 ## Checklist for contributors

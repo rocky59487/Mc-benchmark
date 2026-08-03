@@ -24,10 +24,10 @@ Apache-2.0 over MIT for two reasons:
 
 Apache-2.0 is one-way compatible with the MIT-licensed components we depend on
 (MIT code may be incorporated into an Apache-2.0 work). It is **not** compatible
-with GPLv2, and combining it with GPLv3 code produces a GPLv3 work — which is
-why the spark boundary below matters.
+with GPLv2, and combining it with GPLv3 code produces a GPLv3 work, which is why
+the spark boundary below matters.
 
-## Hard constraint 1 — Minecraft itself may not be redistributed
+## Hard constraint 1: Minecraft itself may not be redistributed
 
 The [Minecraft EULA](https://www.minecraft.net/en-us/eula) and
 [Usage Guidelines](https://www.minecraft.net/en-us/usage-guidelines) prohibit
@@ -49,7 +49,7 @@ exploitation without permission.
 numbers you measured, which is fine. Do not let the service become a way for
 users to obtain the game or mods.
 
-## Hard constraint 2 — mods under test may not be redistributed
+## Hard constraint 2: mods under test may not be redistributed
 
 Every mod is its own copyright work under its author's chosen licence. A great
 many popular mods are all-rights-reserved. mcbench must therefore never mirror,
@@ -57,8 +57,8 @@ cache-and-serve, vendor, or commit mod jars.
 
 **Architectural consequence:** mods are named in a manifest by
 `(platform, project, version)` and resolved at runtime on the operator's own
-machine into a gitignored working directory. The manifest — which is just a list
-of identifiers — is the shareable, version-controllable artefact. The jars are
+machine into a gitignored working directory. The manifest, which is just a list
+of identifiers, is the shareable and version-controllable artefact. The jars are
 not.
 
 ### Modrinth (primary source)
@@ -83,8 +83,8 @@ are materially stricter, and three clauses directly constrain us:
    lookups are always live.
 2. **Authors control third-party distribution per project.** Where a project
    disallows external distribution, the API does not return a download URL.
-   mcbench must treat that as a clean, explanatory skip — never as a bug to
-   route around, and never by scraping the website instead.
+   mcbench must treat that as a clean, explanatory skip, never as a bug to route
+   around, and never by scraping the website instead.
 3. **The API may not be used to build a competing product.** mcbench measures
    performance; it is not a mod distribution platform or launcher. Keeping the
    CurseForge path opt-in and key-per-operator keeps that line clear.
@@ -93,7 +93,7 @@ Because of (1) and (2), CurseForge is **not** the default. Suites intended for
 the public leaderboard should prefer Modrinth-hosted versions so that results
 are reproducible by third parties.
 
-## Hard constraint 3 — benchmark worlds must be generated, not distributed
+## Hard constraint 3: benchmark worlds must be generated, not distributed
 
 Worlds you create are yours, but distributing a world save that was produced by
 someone else, or that embeds game content, is not safe ground.
@@ -103,12 +103,12 @@ someone else, or that embeds game content, is not safe ground.
 sequence of world edits and actions. The world is generated deterministically on
 the operator's machine at run time.
 
-This constraint turned out to be a gift. A distributed world save would have
-been a reproducibility hazard anyway — it silently bakes in the generator
-version of whoever produced it. Generating from a recipe makes the world's
+A distributed world save would have been a reproducibility hazard regardless,
+because it bakes in the generator version of whoever produced it. Generating
+from a recipe makes the world's
 provenance explicit and diffable.
 
-## Hard constraint 4 — the spark GPLv3 boundary
+## Hard constraint 4: the spark GPLv3 boundary
 
 [spark](https://github.com/lucko/spark) is the ecosystem's standard profiler and
 is an obvious thing to want to build on. It is **GPLv3**. Only its `spark-api`
@@ -124,7 +124,7 @@ of this document.
   `spark-common`, or any spark platform module.
 - Depending on `spark-api` (MIT) is permitted.
 - Where an operator has spark installed, mcbench may interoperate only across a
-  loose boundary — a separate process, a command invocation, or reading a file
+  loose boundary: a separate process, a command invocation, or reading a file
   spark wrote. mcbench does not distribute spark and does not link it.
 - mcbench's own instrumentation is written from scratch. Do not copy spark's
   source, including its sampling logic, as a "reference implementation".

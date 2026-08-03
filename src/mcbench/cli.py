@@ -96,16 +96,22 @@ def cmd_validate(args: argparse.Namespace) -> int:
     scenarios = load_scenarios(root)
     print(f"✓ {len(scenarios)} scenario(s) valid in {root}")
 
-    # Valid and still measuring something other than what it describes.
+    suite = load_suite(args.suite) if args.suite else None
+
+    # Valid and still measuring something other than it describes. Narrowed to
+    # the suite when there is one: advisories about scenarios an operator is
+    # not running are noise, and noise is how a real one gets scrolled past.
+    wanted = set(suite.scenarios) if suite else {s.id for s in scenarios}
     for scenario in scenarios:
+        if scenario.id not in wanted:
+            continue
         for gap in (scenario.worldgen_reach_gap(), scenario.fingerprint_margin_gap()):
             if gap:
                 print(f"⚠ {scenario.id}: {gap}", file=sys.stderr)
 
-    if not args.suite:
+    if suite is None:
         return 0
 
-    suite = load_suite(args.suite)
     print(f"✓ suite {suite.name!r} valid")
     print(f"  {suite.minecraft_version} / {suite.loader.value}")
     print(f"  {len(suite.variants)} variant(s), {len(suite.scenarios)} scenario(s)")

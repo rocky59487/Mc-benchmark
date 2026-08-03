@@ -22,16 +22,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * move between versions; the fewer of them an adapter touches, the more versions one
  * implementation covers unchanged. See {@code docs/PLATFORMS.md}.
  *
- * <p><b>Frames are timed between hook calls; ticks are not.</b> For a frame the interval
- * between successive buffer swaps <em>is</em> the frame time — the renderer is presenting as
- * fast as it can, so there is no idle to include. A server tick is the opposite case: the loop
- * sleeps out whatever remains of the 50 ms budget, so the interval between end-of-tick
- * callbacks tends to 50 ms whether the work took 5 ms or 30 ms. Measuring ticks that way made
- * {@code mspt_mean}, the percentiles and {@code tick_headroom} all measurements of the
- * scheduler. Adapters therefore call {@link #onTickStart()} and {@link #onTickEnd()} around the
- * tick, or report a platform-supplied duration through {@link #recordPlatformTick(long)}; where
- * neither is possible {@link #onTickPeriod()} is available and its samples are published under
- * a different metric name.
+ * <p><b>Frames are timed between hook calls; ticks are bracketed.</b> The interval between
+ * buffer swaps <em>is</em> the frame time, since the renderer presents as fast as it can. A
+ * server tick is the opposite: the loop sleeps out the rest of the 50 ms budget, so the
+ * interval between end-of-tick callbacks tends to 50 ms whether the work took 5 ms or 30 ms.
+ * Adapters call {@link #onTickStart()} and {@link #onTickEnd()}, or report a platform duration
+ * through {@link #recordPlatformTick(long)}; {@link #onTickPeriod()} is the last resort and its
+ * samples are published under a different metric name.
  */
 public abstract class ProbeAdapter {
 
@@ -47,11 +44,10 @@ public abstract class ProbeAdapter {
     /**
      * Ticks to wait between the last setup command and the start of warmup.
      *
-     * <p>A second at 20 TPS. Setup leaves work in flight — chunk saves, lighting propagation,
-     * block entities initialising — and warmup that began on the same tick as the last
-     * {@code /fill} would spend its opening seconds measuring the tail of world construction.
-     * The alternative, waiting for a quiescence signal, would need a per-platform API for
-     * something a fixed settle handles adequately and identically everywhere.
+     * <p>A second at 20 TPS. Setup leaves chunk saves, lighting and block entities in flight,
+     * so warmup starting on the same tick as the last {@code /fill} would spend its opening
+     * seconds measuring the tail of world construction. A quiescence signal would need a
+     * per-platform API for something a fixed settle handles identically everywhere.
      */
     public static final int SETTLE_TICKS = 20;
 
@@ -77,11 +73,9 @@ public abstract class ProbeAdapter {
      * commands is safe. Running one from the wrong thread is a classic way to corrupt world
      * state in the middle of a measurement.
      *
-     * @return whether the game accepted and ran the command. A command can be rejected without
-     *     throwing anything — a syntax error, an unknown selector, a missing permission — so
-     *     catching exceptions is not enough. The previous signature returned nothing, and a
-     *     scenario built on a mistyped command therefore ran to completion and measured an
-     *     empty world as though setup had succeeded.
+     * @return whether the game accepted and ran it. A command can be rejected without throwing
+     *     — a syntax error, an unknown selector, a missing permission — so catching exceptions
+     *     is not enough.
      */
     protected abstract boolean executeCommand(String command);
 
@@ -123,9 +117,7 @@ public abstract class ProbeAdapter {
     /**
      * Call at the start of a server tick, before the server does any of its work.
      *
-     * <p>Paired with {@link #onTickEnd()}. Together they bracket the tick, which is what MSPT
-     * means; the interval between end-of-tick callbacks is the tick period and is a different
-     * number entirely on any server that is not saturated.
+     * <p>Paired with {@link #onTickEnd()} to bracket the tick, which is what MSPT means.
      */
     public final void onTickStart() {
         tickStartNanos = System.nanoTime();
@@ -135,9 +127,8 @@ public abstract class ProbeAdapter {
     public final void onTickEnd() {
         long start = tickStartNanos;
         if (start == 0) {
-            // No paired start — the adapter registered only an end hook, or the run began
-            // mid-tick. Recording the interval here would silently substitute the period for
-            // the execution time, which is the whole error being corrected.
+            // No paired start: the adapter registered only an end hook, or the run began
+            // mid-tick. Recording the interval would substitute the period for the duration.
             return;
         }
         tickStartNanos = 0;
@@ -147,9 +138,8 @@ public abstract class ProbeAdapter {
     /**
      * Record a tick duration a platform API measured itself.
      *
-     * <p>For platforms that expose the figure directly — Paper's tick times, for instance —
-     * which is better than bracketing, since the platform's own boundaries include work that
-     * happens outside any event an adapter can hook.
+     * <p>Better than bracketing where available: the platform's boundaries include work
+     * outside any event an adapter can hook.
      */
     public final void recordPlatformTick(long durationNanos) {
         session.recordTick(durationNanos, TickSource.PLATFORM);
@@ -158,10 +148,9 @@ public abstract class ProbeAdapter {
     /**
      * Call once per server tick when the platform can offer neither a bracket nor a duration.
      *
-     * <p>Records the interval between consecutive calls. This is the tick <em>period</em>: on
-     * an unsaturated server it converges on 50 ms regardless of how much work the tick did. The
-     * samples are published as {@code tick_period_*} rather than as MSPT, and the run is
-     * flagged {@code tick_period_only} so nothing downstream can mistake one for the other.
+     * <p>The interval between consecutive calls, which on an unsaturated server converges on
+     * 50 ms regardless of the work done. Published as {@code tick_period_*} with the run
+     * flagged {@code tick_period_only}.
      */
     public final void onTickPeriod() {
         long now = System.nanoTime();
@@ -183,9 +172,8 @@ public abstract class ProbeAdapter {
             return;
         }
         if (!setupIssued) {
-            // Setup runs untimed, in its own phase before warmup: it builds the world the
-            // scenario describes, and timing that work would measure world construction rather
-            // than the mod.
+            // Setup runs untimed in its own phase: timing it would measure world
+            // construction rather than the mod.
             //
             // Batched rather than drained in one go. A scenario that places hundreds of
             // structures compiles to five figures of commands, and running all of them inside
@@ -207,10 +195,8 @@ public abstract class ProbeAdapter {
         }
 
         if (settleTicks > 0) {
-            // Let the world quiet down before warmup starts measuring it. Setup leaves chunk
-            // saves, lighting updates and block-entity initialisation in flight, and beginning
-            // warmup on top of that hands the first seconds of the timing series a workload no
-            // variant will see again.
+            // Let the world quiet down: setup leaves chunk saves, lighting and block-entity
+            // initialisation in flight.
             settleTicks--;
             if (settleTicks == 0) {
                 session.setupFinished();
@@ -231,14 +217,11 @@ public abstract class ProbeAdapter {
     private void safely(String command) {
         try {
             boolean ok = executeCommand(command);
-            // Reported either way. A command the dispatcher rejected raises nothing, so
-            // catching exceptions alone let a mistyped scenario run to completion having built
-            // none of the world it describes.
+            // Reported either way: a rejected command raises nothing.
             session.commandCompleted(command, ok, ok ? "" : "rejected by the game");
         } catch (RuntimeException e) {
-            // A failed command must not take down the game mid-run — the samples already
-            // collected are still worth keeping — but the run is no longer measuring the
-            // scenario that was asked for, and the session marks it accordingly.
+            // Must not take down the game mid-run — the samples so far are worth keeping —
+            // but the run is no longer measuring the scenario asked for.
             session.commandCompleted(command, false, e.toString());
         }
     }

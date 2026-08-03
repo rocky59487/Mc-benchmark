@@ -97,10 +97,8 @@ public final class ProbeSession implements AutoCloseable {
     /**
      * Emit the hello event and enter the setup phase. Idempotent.
      *
-     * <p>Setup, not warmup. Warmup used to begin here and the adapter then pumped setup
-     * commands into it, so building the world spent the warmup budget and a long enough setup
-     * pushed the run into measurement while commands were still running. Warmup now begins at
-     * {@link #setupFinished()}.
+     * <p>Setup, not warmup: building the world must not spend the warmup budget. Warmup begins
+     * at {@link #setupFinished()}.
      */
     public void start(Map<String, String> metadata) {
         if (!started.compareAndSet(false, true)) {
@@ -136,8 +134,8 @@ public final class ProbeSession implements AutoCloseable {
             return;
         }
         if (failedSetupCommands.get() > 0) {
-            // The world is not the world the scenario describes. Measuring it anyway would
-            // produce numbers that look valid and describe a different experiment.
+            // The world is not the one the scenario describes, so any numbers from it are
+            // valid-looking measurements of a different experiment.
             writer.flag("setup_failed");
         }
         phases.beginWarmup();
@@ -167,8 +165,7 @@ public final class ProbeSession implements AutoCloseable {
         // samples would make the convergence claim untestable, and an unverifiable warmup is
         // how the JIT's cost silently gets charged to a mod.
         //
-        // Setup samples are not recorded at all: they time world construction, and keeping
-        // them would put the cost of placing ten thousand blocks into the warmup series.
+        // Setup samples are dropped: they time world construction.
         if (phases.phase() != Phase.SETUP) {
             frames.record(durationNanos);
         }
@@ -179,10 +176,8 @@ public final class ProbeSession implements AutoCloseable {
      * Record one server tick.
      *
      * @param durationNanos time for this tick
-     * @param source        what that duration measures — see {@link TickSource}. A period
-     *                      sample is published under a different metric name than a bracketed
-     *                      one, because they are different quantities and treating the first
-     *                      as MSPT made the primary server metrics measure the scheduler.
+     * @param source        what the duration measures; see {@link TickSource}. Period samples
+     *                      are published under different metric names than bracketed ones.
      */
     public void recordTick(long durationNanos, TickSource source) {
         if (durationNanos <= 0 || !started.get() || finished.get()) {
@@ -205,9 +200,8 @@ public final class ProbeSession implements AutoCloseable {
         // at a value, so a run whose very first sample is a period would compare
         // equal and never announce itself.
         if (!source.measuresExecution() && !tickSourceFlagEmitted) {
-            // Not a failure — some platforms genuinely cannot bracket a tick — but the numbers
-            // must not travel as MSPT, so the harness is told explicitly rather than left to
-            // infer it.
+            // Not a failure — some platforms cannot bracket a tick — but the numbers must not
+            // travel as MSPT, so the harness is told rather than left to infer it.
             writer.flag("tick_period_only");
             tickSourceFlagEmitted = true;
         }
@@ -270,13 +264,11 @@ public final class ProbeSession implements AutoCloseable {
 
         List<RuntimeMonitor.GcEvent> events = runtime.drainEvents();
         if (!events.isEmpty()) {
-            // Individual collections, each with its own duration and its own before/after
-            // heap. Emitting one aggregate per interval turned three short collections into
-            // one long pause and made the pause percentile a percentile of interval totals.
+            // Individual collections, each with its own duration and before/after heap.
             writer.gcEvents(events);
         } else if (!runtime.hasGcEvents() && sample.pauseMs() > 0) {
-            // No notification support on this JVM. The aggregate delta is all there is, and it
-            // is marked as such so the harness does not compute a pause percentile from it.
+            // No notification support: the aggregate delta is all there is, marked so the
+            // harness does not derive a percentile from it.
             writer.gcAggregate(sample.pauseMs(), sample.collections());
         }
     }
@@ -301,10 +293,9 @@ public final class ProbeSession implements AutoCloseable {
     /**
      * Report the outcome of one command the adapter executed.
      *
-     * <p>Every command reports, not just the ones that threw. A command can be rejected by the
-     * dispatcher without raising anything at all — a syntax error, an unknown selector, a
-     * permission failure — and the previous code caught exceptions only, so a scenario built on
-     * a mistyped command ran to completion and measured an empty world.
+     * <p>Every command reports, not just the ones that threw: a command can be rejected by the
+     * dispatcher without raising anything — a syntax error, an unknown selector, a permission
+     * failure — so catching exceptions alone lets a mistyped scenario measure an empty world.
      *
      * @param command   the command as issued
      * @param succeeded whether the game accepted and ran it
@@ -324,8 +315,8 @@ public final class ProbeSession implements AutoCloseable {
                 (duringSetup ? "setup" : "workload") + " command failed: " + command
                         + (detail == null || detail.isBlank() ? "" : ": " + detail));
         if (!duringSetup && failedWorkloadCommands.get() == 1) {
-            // The workload is what keeps the scenario's load sustained; a command that stopped
-            // running means the later part of the window measured something lighter.
+            // The workload sustains the scenario's load, so the later part of the window
+            // measured something lighter.
             writer.flag("workload_failed");
         }
     }
@@ -394,9 +385,8 @@ public final class ProbeSession implements AutoCloseable {
                         writer.error("sample buffer overflowed; some samples were dropped");
                     }
                     if (!phases.isMeasuring()) {
-                        // Never reached measurement. Recorded explicitly: a stream that parsed
-                        // cleanly and holds nothing is otherwise indistinguishable from a run
-                        // that measured a genuinely idle scenario.
+                        // A stream that parsed cleanly and holds nothing is otherwise
+                        // indistinguishable from a genuinely idle scenario.
                         writer.error(
                                 "the run ended in phase " + phases.phase().wireName()
                                         + "; the measurement window never opened");

@@ -3,28 +3,19 @@ package dev.mcbench.probe.core;
 /**
  * Decides when setup ends, when warmup ends, and when measurement is complete.
  *
- * <p>Implements the warmup rule from {@code docs/METHODOLOGY.md} section 2. Two things changed
- * here relative to what the probe previously did, and both were places where the code and the
- * documented rule disagreed.
+ * <p>Implements the warmup rule from {@code docs/METHODOLOGY.md} section 2.
  *
- * <p><b>Setup is a phase.</b> Warmup used to begin the instant the session started, and the
- * adapter then pumped the scenario's setup commands into it. Setup therefore spent the warmup
- * budget, and a scenario whose setup outlasted that budget entered <em>measurement</em> while
- * commands were still building the world. The same scenario could receive materially different
- * effective warmup on two machines purely because setup took longer on one. Warmup now begins
- * only when the caller declares setup finished, and every warmup window and counter is reset at
- * that moment so nothing observed during setup can satisfy the gate.
+ * <p><b>Setup is a phase.</b> Warmup begins only when the caller declares setup finished, and
+ * every warmup window and counter is reset then. Setup sharing the warmup budget meant a
+ * scenario whose setup ran long entered <em>measurement</em> with commands still building the
+ * world, and identical scenarios got different effective warmup on different machines.
  *
- * <p><b>The gate has two halves.</b> Warmup ends when a minimum duration has elapsed, the
- * timing series has plateaued, <em>and</em> compilation has settled. The methodology specified
- * all three; the implementation checked the first two. A series can look flat while tiered
- * compilation is still promoting hot methods, and measurement started there charges the mod for
- * the compiler's remaining work.
+ * <p><b>The gate has three conditions:</b> a minimum duration, a timing plateau, and settled
+ * compilation. A series can look flat while tiered compilation is still promoting hot methods.
  *
- * <p>If the gate is never satisfied by a hard ceiling, the run is <em>kept</em> but flagged.
- * Discarding it would quietly bias the sample toward configurations that happen to converge
- * quickly; accepting it silently would charge the mod for the JIT's warmup. Reporting it is the
- * only honest option, and {@link #gateReason()} says which half opened it.
+ * <p>If the gate is never satisfied by a hard ceiling the run is <em>kept</em> but flagged —
+ * discarding it would bias the sample toward configurations that converge quickly — and
+ * {@link #gateReason()} says which condition failed.
  *
  * <p>Durations are counted in whatever unit the caller advances: seconds for client scenarios,
  * ticks for server ones. The controller is deliberately agnostic — a client run measures
@@ -36,10 +27,8 @@ public final class PhaseController {
     /**
      * Samples between compilation observations.
      *
-     * <p>Reading the compiler counter is cheap but not free, and this runs on
-     * the render or server thread. Once every few dozen samples gives the
-     * plateau test tens of observations across any realistic warmup while
-     * costing nothing measurable per frame.
+     * <p>The counter read is cheap but not free and runs on the render or server thread. Once
+     * every few dozen samples gives tens of observations across a realistic warmup.
      */
     static final int OBSERVE_EVERY_SAMPLES = 16;
 
@@ -111,9 +100,8 @@ public final class PhaseController {
     /**
      * Setup is finished and settled; begin the timed warmup.
      *
-     * <p>Every warmup reference is reset here rather than carried forward. Samples taken while
-     * setup was placing blocks describe world construction, and letting them fill the
-     * steady-state window would let setup's own uniformity open the warmup gate immediately.
+     * <p>Every warmup reference is reset here. Samples taken while setup was placing blocks
+     * describe world construction, and setup's uniformity would open the gate immediately.
      */
     public void beginWarmup() {
         if (phase == Phase.PROVISION) {
@@ -148,11 +136,8 @@ public final class PhaseController {
         steadyState.accept(sampleNanos);
 
         if (phase == Phase.WARMUP) {
-            // The compiler is observed from here rather than from the caller's
-            // flush loop. Driving it externally made the gate depend on a
-            // cadence the controller could not see, so a run that never flushed
-            // during warmup would sit at zero observations and be held to its
-            // ceiling on every attempt.
+            // Observed here rather than from the caller's flush loop, so the gate does not
+            // depend on a cadence the controller cannot see.
             if (++samplesSinceObservation >= OBSERVE_EVERY_SAMPLES) {
                 samplesSinceObservation = 0;
                 compilation.observe();
@@ -246,9 +231,8 @@ public final class PhaseController {
     /**
      * Why warmup ended, in words.
      *
-     * <p>Recorded because "converged: false" does not tell an operator what to change. A run
-     * that timed out because compilation never settled wants a longer ceiling; one that timed
-     * out on a series that never plateaued wants a different scenario or a quieter machine.
+     * <p>"converged: false" does not say what to change: a run that timed out on compilation
+     * wants a longer ceiling, one that never plateaued wants a quieter machine.
      */
     public String gateReason() {
         return gateReason;

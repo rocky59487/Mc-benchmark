@@ -70,9 +70,8 @@ def _spawn_of(scenario: Scenario) -> tuple[int, int, int]:
 def _sha256(path: Path | None) -> str:
     """Hash an artefact, or "" when it cannot be read.
 
-    SHA-256 alongside the provider's SHA-512: the provider's hash proves the
-    download matched what the index promised, and this one identifies the file
-    that was actually installed, including local jars a provider never saw.
+    Alongside the provider's SHA-512, which only proves the download matched
+    the index. This identifies what was installed, local jars included.
     """
     import hashlib
 
@@ -118,23 +117,14 @@ def _repository_root() -> Path:
 #: guesses.
 SERVER_LEVEL_NAME = "mcbench"
 
-#: The world a client run is bootstrapped into. The Fabric probe only begins
-#: once the integrated server has started, so a client that sits at the title
-#: screen produces no stream at all — the run has to enter a world by itself.
+#: Prefix for the world a client run is bootstrapped into. The probe starts on
+#: SERVER_STARTED, so a client left at the title screen produces no stream.
 CLIENT_LEVEL_NAME = "mcbench"
 
-#: Frame cap written into options.txt.
-#:
-#: 260 is the top of vanilla's slider, where the launcher's UI reads
-#: "Unlimited" and the frame limiter is disabled. That is why it is the value
-#: written — but it is a number in a file, not an absence of one, and mods and
-#: forks are free to honour it literally. The code previously wrote it while
-#: describing the client as uncapped, so a run that genuinely sat at the cap was
-#: indistinguishable from one that never approached it.
-#:
-#: The value is now recorded in provenance, and :func:`~mcbench.metrics
-#: .frame_cap_suspected` checks the frametime distribution for a run that piled
-#: up against it.
+#: Frame cap written into options.txt. 260 is the top of vanilla's slider,
+#: where the limiter is disabled — but it is still a number in a file, and mods
+#: are free to honour it literally. Recorded in provenance, and
+#: :func:`~mcbench.metrics.frame_cap_suspected` checks for runs that hit it.
 CLIENT_FPS_CAP = 260
 
 
@@ -164,11 +154,9 @@ class RunOutcome:
     def status(self) -> str:
         """How this attempt ended, in one word.
 
-        Four outcomes, kept distinct because they need different responses.
         ``failed`` means no metrics at all — the launch died, timed out, or the
-        probe never wrote a stream. ``inadmissible`` means the run produced
-        numbers that the methodology refuses to pool, which is a measurement
-        that happened and must not be used. ``completed`` is the normal case.
+        probe never wrote a stream. ``inadmissible`` means it produced numbers
+        the methodology refuses to pool.
         """
         if self.metrics is None:
             return "failed"
@@ -177,11 +165,8 @@ class RunOutcome:
     def to_record(self) -> dict[str, Any]:
         """Serialise this attempt, whether or not it produced a measurement.
 
-        Every planned attempt appears in the results document. A failed launch
-        that vanished from serialisation made a seven-run cell with two failures
-        indistinguishable from a clean five-run cell, which understates failure
-        rate, instability, and the real cost of the suite — and hides the one
-        signal that most often explains a surprising result.
+        Every planned attempt appears in the results document: a seven-run cell
+        with two failures must not serialise as a clean five-run cell.
         """
         record: dict[str, Any] = {
             "status": self.status,
@@ -200,10 +185,8 @@ class RunOutcome:
         if self.log_path is not None:
             record["log"] = str(self.log_path)
         if self.stream is not None and self.stream.summary:
-            # How the run reached measurement: setup and warmup durations, which
-            # half of the warmup gate opened, and what the tick and allocation
-            # sources were. Without it a reader cannot tell a run that converged
-            # from one that hit its ceiling, or an MSPT figure from a tick period.
+            # Setup and warmup durations, which half of the warmup gate opened,
+            # and the tick and allocation sources.
             record["probe"] = dict(self.stream.summary)
         return record
 
@@ -220,18 +203,11 @@ class ResolvedVariant:
 class ProbeArtifacts:
     """The probe jar for a target, plus whatever that probe itself requires.
 
-    The harness writes ``MCBENCH_PROBE_CONFIG`` into the launch environment and
-    then waits for a ``probe.jsonl`` that only exists if something inside the
-    game is reading it. Nothing was ever installing that something: instances
-    received the variant's mods and nothing else, so a vanilla baseline had no
-    in-game consumer for the configuration at all and could not produce a
-    stream. The documented end-to-end command could not work.
-
-    This resolves the artefact for the selected platform and, for Fabric, the
-    Fabric API the probe hard-depends on. Nothing is downloaded silently: a
-    missing artefact is a preflight blocker naming the build command, because
-    discovering it after a two-hour suite has produced nothing is the worst
-    possible moment to find out.
+    The harness writes ``MCBENCH_PROBE_CONFIG`` and waits for a ``probe.jsonl``
+    that only exists if something in the game reads it. This resolves that
+    something for the selected platform, plus the Fabric API the probe
+    hard-depends on. A missing artefact is a preflight blocker naming the build
+    command rather than a suite that runs for two hours and produces nothing.
     """
 
     #: Where each platform's probe jar is built, relative to the repository.
@@ -267,10 +243,8 @@ class ProbeArtifacts:
     def install_dir(self) -> str:
         """Where the platform loads its extensions from.
 
-        Paper reads ``plugins/``; a plugin jar dropped into ``mods/`` is simply
-        never loaded, which is exactly what was happening — every Paper run
-        installed its plugins into a directory the server does not read, so the
-        server started cleanly and measured nothing.
+        Paper reads ``plugins/``. A plugin dropped into ``mods/`` is never
+        loaded, and the server starts cleanly having measured vanilla.
         """
         return "plugins" if self.loader in ("paper", "spigot", "bukkit") else "mods"
 
@@ -469,10 +443,8 @@ class Harness:
     def _find_probe_jar(self) -> Path | None:
         """Locate a locally built probe for this platform, if there is one.
 
-        Convenience for the common case of running from a checkout that has just
-        built the probe. Never a substitute for the preflight check: finding
-        nothing here returns None and the blocker fires, rather than the run
-        proceeding and failing later for a reason that looks unrelated.
+        For the common case of running from a checkout that just built it.
+        Finding nothing returns None and the preflight blocker fires.
         """
         relative = ProbeArtifacts.BUILD_PATHS.get(self.suite.loader.value)
         if relative is None:
@@ -563,10 +535,8 @@ class Harness:
             )
         )
 
-        # Without a probe in the instance there is no measurement to be had, on
-        # any variant including the mod-free baseline. Checked here so the suite
-        # refuses up front rather than launching for hours and producing empty
-        # streams that look like crashes.
+        # No probe means no measurement on any variant, baseline included.
+        # Checked up front so the suite refuses before launching.
         gaps = self.probe.missing()
         result.checks.append(
             Check(
@@ -612,12 +582,9 @@ class Harness:
     def resolve_probe(self) -> ProbeArtifacts:
         """Make sure the probe — and what the probe needs — is on disk.
 
-        Fabric API is fetched from Modrinth when it was not supplied, because
-        the alternative is telling every Fabric operator to hunt down a specific
-        build of a library that only exists to satisfy our own mod. It is
-        recorded in provenance like any other artefact: it is installed in every
-        instance including the baseline, so it is part of what was measured and
-        a result that hid it would be describing a configuration nobody ran.
+        Fabric API is fetched from Modrinth when not supplied, and recorded in
+        provenance like any other artefact — it is installed in every instance
+        including the baseline, so it is part of what was measured.
         """
         if not self.probe.needs_fabric_api or self.probe.api_jar is not None:
             return self.probe
@@ -630,9 +597,8 @@ class Harness:
                 loader=self.suite.loader.value,
             )
         except ModrinthError as exc:
-            # Not fatal here: preflight reports the gap with a remedy, and an
-            # operator who has the jar locally can pass it directly rather than
-            # needing the network at all.
+            # Not fatal: preflight reports the gap, and --fabric-api-jar
+            # avoids needing the network at all.
             self.on_event("resolve.done", {
                 "variant": "<probe>", "error": f"Fabric API: {exc}",
             })
@@ -652,17 +618,10 @@ class Harness:
     def provenance(self, preflight: Preflight | None = None) -> dict[str, Any]:
         """Everything needed to reconstruct what was actually launched.
 
-        A result bundle previously recorded the host, the Minecraft version, the
-        loader name and a publishability string. That is not enough to tell two
-        materially different runs apart: different loader builds, different JVM
-        flags, different artefacts, and different host conditions all produced
-        bundles that looked equivalent, so the reproducibility the schema implies
-        was not something the data could support.
-
-        What is recorded now is the *effective* configuration — the resolved
-        artefacts with their hashes, the exact JVM arguments per variant, the
-        probe and its dependencies, the scenario content hashes, and the client
-        frame cap by value rather than by adjective.
+        The *effective* configuration: resolved artefacts with hashes, the JVM
+        arguments per variant, the probe and its dependencies, scenario content
+        hashes, and the client frame cap by value. Host, Minecraft version and a
+        publishability string are not enough to tell two different runs apart.
         """
         from .. import __version__
 
@@ -749,9 +708,7 @@ class Harness:
         if instance.exists():
             shutil.rmtree(instance)
 
-        # Plugins go in plugins/, mods go in mods/. Paper does not read mods/ at
-        # all, so every plugin previously installed there was silently ignored
-        # and the "variant" being measured was in fact vanilla Paper.
+        # Plugins go in plugins/, mods in mods/. Paper does not read mods/.
         install_dir = instance / self.probe.install_dir
         install_dir.mkdir(parents=True, exist_ok=True)
 
@@ -764,9 +721,8 @@ class Harness:
                 )
             jars = resolved.jars
 
-        # The probe goes into every instance, before the variant's own jars and
-        # regardless of which variant this is. A baseline without it produces no
-        # stream, so there would be nothing to compare against.
+        # Into every instance, baseline included: without it there is no stream
+        # to compare against.
         for jar in [*self.probe.jars(), *jars]:
             shutil.copy2(jar, install_dir / jar.name)
 
@@ -788,11 +744,8 @@ class Harness:
             probe_output="mcbench/probe.jsonl",
         )
 
-        # Render and simulation distance are not commands in vanilla, so they are
-        # applied as instance configuration rather than silently dropped. The
-        # variant's own game_settings are layered on top: they were accepted by
-        # the suite model and then never applied anywhere, so a suite that set
-        # them measured something other than what it declared.
+        # Render and simulation distance are not commands, so they go into the
+        # instance config, with the variant's own game_settings layered on top.
         self._apply_instance_settings(
             instance, scenario,
             {**plan.instance_settings, **self.effective_game_settings(variant)},
@@ -824,10 +777,7 @@ class Harness:
     def effective_game_settings(self, variant: Variant | None) -> dict[str, Any]:
         """Game settings actually applied to a variant's instances.
 
-        The model is **global settings, overridden per variant**. Stating it
-        matters: the fields existed on the suite model and were applied nowhere,
-        so whether a variant's settings replaced or extended the suite's was
-        undefined and the answer was in practice "neither".
+        The model is global settings, overridden per variant.
         """
         base = dict(self.suite.game_settings)
         if variant is not None:
@@ -837,11 +787,7 @@ class Harness:
     def effective_jvm_args(self, variant: Variant | None) -> list[str]:
         """JVM arguments actually applied to a variant's launches.
 
-        Same model: the suite's arguments, then the variant's. Launch
-        construction previously used the *baseline* variant's arguments for
-        every variant, so a variant declaring its own flags was launched without
-        them — and a suite that varied JVM flags on purpose measured the same
-        configuration twice while reporting a difference between two mod sets.
+        The suite's arguments, then the variant's.
         """
         args = [f"-Xmx{self.suite.heap_mb}m", "-XX:+UseG1GC"]
         args.extend(self.suite.jvm_args)
@@ -878,10 +824,7 @@ class Harness:
             )
 
         if scenario.side in (Side.CLIENT, Side.BOTH):
-            # Author the world the launch command quick-plays into. Without it
-            # the client stops at the world-selection screen, no integrated
-            # server starts, and the probe — which waits for SERVER_STARTED —
-            # never fires. The run then times out having measured a menu.
+            # Author the world quick-play enters; it must exist beforehand.
             create_world(
                 instance / "saves",
                 name=self._client_world_name(scenario),
@@ -891,16 +834,10 @@ class Harness:
             )
 
             options = instance / "options.txt"
-            # Vsync off: a vsync-locked client measures the display rather than
-            # the renderer, so every variant would score the refresh rate and the
-            # benchmark would report equivalence it never measured.
-            #
-            # maxFps is set to the top of vanilla's slider, which vanilla treats
-            # as no limiter. It is still a number in a file, so it is written
-            # from a named constant, recorded in provenance, and checked for
-            # afterwards — describing this as "uncapped" without recording the
-            # value made a run that piled up against it indistinguishable from
-            # one that never came near it.
+            # Vsync off: a vsync-locked client measures the display, not the
+            # renderer. maxFps is the top of vanilla's slider, which disables
+            # the limiter — written from a named constant and recorded, not
+            # described as "uncapped".
             values: dict[str, Any] = {
                 "maxFps": CLIENT_FPS_CAP,
                 "enableVsync": "false",
@@ -967,19 +904,17 @@ class Harness:
             "--gamedir", str(instance),
             "--jvm", " ".join(jvm_args),
         ]
-        # The suite could pin a loader version and nothing ever asked for it, so
-        # two runs on materially different Fabric builds produced bundles that
-        # claimed the same configuration.
+        # A pinned loader version has to be requested, or two runs on different
+        # loader builds serialise as the same configuration.
         if self.suite.loader_version:
             command += ["--loader-version", str(self.suite.loader_version)]
 
         if scenario.side is Side.SERVER:
             command.append("--server")
         elif scenario.side in (Side.CLIENT, Side.BOTH):
-            # Quick-play straight into the scenario's world. Without it the
-            # client sits at the title screen: no integrated server starts, the
-            # Fabric probe never fires (it waits for SERVER_STARTED), and the
-            # run times out having measured the main menu.
+            # Quick-play into the scenario's world. Without it the client sits
+            # at the title screen, no integrated server starts, and the probe
+            # never fires.
             command += ["--quickPlaySingleplayer", self._client_world_name(scenario)]
         return command
 
@@ -987,9 +922,8 @@ class Harness:
     def _client_world_name(scenario: Scenario) -> str:
         """The save directory a client run enters.
 
-        Named after the scenario rather than a constant, so an instance holding
-        more than one save is never ambiguous — and so ``_world_dir`` can find
-        the right one to fingerprint instead of guessing.
+        Named after the scenario so an instance holding more than one save is
+        unambiguous, and ``_world_dir`` knows which to fingerprint.
         """
         safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in scenario.id)
         return f"{CLIENT_LEVEL_NAME}-{safe}" if safe else CLIENT_LEVEL_NAME
@@ -1162,11 +1096,9 @@ class Harness:
     def _world_dir(self, instance: Path, scenario: Scenario) -> Path | None:
         """Where this run's world was saved, or None if it cannot be located.
 
-        A dedicated server writes to the ``level-name`` directory the harness
-        set. A client writes under ``saves/``, where the world's name comes from
-        the scenario rather than from us — so the directory is discovered rather
-        than assumed, and ambiguity is reported as "cannot locate" instead of
-        being resolved by picking one.
+        A dedicated server writes to the ``level-name`` directory; a client
+        writes under ``saves/``. Ambiguity is reported rather than resolved by
+        picking one.
         """
         if scenario.side is Side.SERVER:
             candidate = instance / SERVER_LEVEL_NAME
@@ -1175,11 +1107,7 @@ class Harness:
         saves = instance / "saves"
         if not saves.is_dir():
             return None
-        # The harness authors the save, so its name is known rather than
-        # guessed. The old code compared a directory name against
-        # ``scenario.world``, which is the world *description* object — a
-        # comparison that could never match, so the disambiguating branch never
-        # fired and an instance with two saves silently fingerprinted nothing.
+        # The harness authors the save, so the name is known.
         expected = saves / self._client_world_name(scenario)
         if (expected / "region").is_dir():
             return expected
@@ -1252,11 +1180,9 @@ class Harness:
     def _reduce(stream: ProbeStream, scenario: Scenario) -> RunMetrics:
         """Reduce a probe stream to metrics, merging client and server samples.
 
-        A stream that reported errors is reduced and then marked inadmissible.
-        Reducing it anyway is deliberate — the numbers are worth seeing while
-        diagnosing why the run failed — but they must not be pooled: a probe
-        that said "setup command failed" produced values describing a world the
-        scenario never built, and those values look entirely ordinary.
+        A stream that reported errors is reduced and then marked inadmissible:
+        the numbers are worth seeing while diagnosing, but they describe a world
+        the scenario never built and look entirely ordinary.
         """
         stream.server.saturated = stream.server.saturated or scenario.saturated
         stream.server.measures_execution = stream.tick_source.measures_execution
@@ -1282,10 +1208,8 @@ class Harness:
             if flag not in metrics.flags:
                 metrics.flags.append(flag)
 
-        # The probe's own error reports were parsed, retained, and then ignored,
-        # so a run that announced its own failure was pooled with the healthy
-        # ones. A stream carrying errors is not a measurement of the scenario
-        # that was requested.
+        # A stream carrying errors is not a measurement of the scenario asked
+        # for, whatever numbers it also carries.
         if stream.errors and RunFlag.PROBE_ERROR not in metrics.flags:
             metrics.flags.append(RunFlag.PROBE_ERROR)
 
@@ -1394,13 +1318,11 @@ def outcomes_to_cells(
 ) -> dict[str, list[dict[str, Any]]]:
     """Convert run outcomes into the analysis input format.
 
-    **Every planned attempt is serialised**, including the ones that produced no
-    metrics. Skipping failures made the results document describe the runs that
-    worked rather than the experiment that was run: a seven-run cell with two
-    launch failures serialised as a clean five-run cell, so failure rate,
-    instability and the true cost of the suite all read better than they were.
-    Failed attempts carry ``status: "failed"`` and an empty ``values``, which
-    keeps them out of every numerical estimate and visible in every report.
+    **Every planned attempt is serialised**, including ones that produced no
+    metrics: skipping them made the document describe the runs that worked
+    rather than the experiment that was run. Failed attempts carry
+    ``status: "failed"`` and empty ``values``, so they stay out of every
+    estimate and visible in every report.
 
     Keeps the execution position on every run so the report can plot order
     effects and an operator can audit whether interleaving actually held.
@@ -1422,12 +1344,10 @@ def outcomes_to_cells(
 def run_counts(outcomes: Sequence[RunOutcome]) -> dict[str, dict[str, int]]:
     """Per cell: attempted, completed, admissible, and failed.
 
-    Four counts rather than one, because they answer different questions and the
-    gaps between them are the interesting part. ``attempted`` is what the plan
-    scheduled and what the suite cost; ``completed`` is what produced numbers;
-    ``admissible`` is what may enter a comparison. A large gap between the first
-    two is an unstable environment, and between the last two a methodology
-    violation — and reporting only the last of the three hid both.
+    The gaps between them are the interesting part: ``attempted`` is what the
+    suite cost, ``completed`` what produced numbers, ``admissible`` what may
+    enter a comparison. A gap between the first two is an unstable environment;
+    between the last two, a methodology violation.
     """
     counts: dict[str, dict[str, int]] = {}
     for outcome in outcomes:

@@ -1,33 +1,17 @@
 """Version comparison and range evaluation, per loader dialect.
 
-``mcbench inspect`` reads what mods declare about each other and decides whether
-a pack will load. Until this module existed it decided that on *presence*: a
-dependency was satisfied if some jar claimed the id, whatever version it was.
-That gets the two most important cases exactly backwards. A pack declaring
-``lib >=2`` and shipping ``lib 1`` was certified as fine and would not launch,
-and a pack declaring ``breaks lib <2`` while shipping ``lib 3`` was reported as
-broken and was fine. Both failures point the same way: the check said something
-confident about a question it had not asked.
+Two dialects, because the ecosystem has two:
 
-Two range dialects are implemented because the ecosystem has two.
+* **Fabric** — npm-style semver ranges: ``*``, ``1.2.3``, ``>=1.2``, ``~1.2.3``,
+  ``^1.2.3``, ``1.2.x``, space-separated conjunctions, ``||`` alternatives.
+* **Forge/NeoForge** — Maven ranges: ``[1.0,2.0)``, ``[1.0,]``, and a bare
+  ``1.0`` meaning "1.0 or later" rather than "exactly 1.0". Reading that as
+  equality inverts most dependency declarations in the ecosystem.
 
-**Fabric** uses npm-style semver ranges: ``*``, ``1.2.3``, ``>=1.2``, ``~1.2.3``
-(patch-level changes), ``^1.2.3`` (compatible-with), ``1.2.x``, space-separated
-conjunctions, and ``||`` for alternatives.
-
-**Forge and NeoForge** use Maven version ranges: ``[1.0,2.0)`` half-open,
-``[1.0,]`` unbounded above, bare ``1.0`` meaning "1.0 or later" by Forge's own
-convention rather than "exactly 1.0" — a distinction that inverts the meaning of
-most dependency declarations in the ecosystem if you get it wrong.
-
-Version *comparison* is deliberately more forgiving than either specification.
-Mod versions in the wild are not clean semver: ``1.21.1-0.6.0``, ``mc1.20.1-2.3``,
-``4.0.0+1.21``, ``0.90.0+1.20.4`` and worse are all common. A strict parser would
-reject a large fraction of real packs, and refusing to answer for most of the
-ecosystem is not a safer failure than answering approximately — it just moves
-the problem somewhere the operator cannot see it. So versions are compared
-segment by segment, numerics numerically and the rest lexically, with a
-pre-release rule that matches both specifications where they agree.
+Comparison is looser than either specification. Real mod versions are not clean
+semver — ``mc1.20.1-2.3``, ``0.90.0+1.20.4``, ``4.0.0+1.21`` — and a strict
+parser would decline to answer for a large fraction of real packs. Versions are
+compared segment by segment, numerics numerically and the rest lexically.
 """
 
 from __future__ import annotations
@@ -67,12 +51,9 @@ class Dialect(str, Enum):
 class Satisfaction(str, Enum):
     """Whether a declared constraint holds.
 
-    ``UNKNOWN`` is a first-class answer and the reason this is not a boolean. A
-    range this module cannot parse, or a version string with no comparable
-    structure, must not silently become "satisfied" — that is the presence-only
-    behaviour this module replaced. It also must not become "violated", which
-    would fill a report with errors about packs that are fine. Reported as
-    unknown, it becomes a warning that names what could not be decided.
+    ``UNKNOWN`` is why this is not a boolean: an unparseable range must not
+    become "satisfied" (the presence-only behaviour this replaced) nor
+    "violated" (which would flag packs that are fine). Callers report it.
     """
 
     SATISFIED = "satisfied"
@@ -85,11 +66,9 @@ _SEGMENT = re.compile(r"(\d+|[A-Za-z]+)")
 #: A leading ``v``, as in ``v1.4``.
 _PREFIX = re.compile(r"^(?:v|version)[-_. ]?(?=\d)", re.IGNORECASE)
 
-#: The ``mc<game version>-`` tag Modrinth-published mods routinely prefix their
-#: own version with: ``mc1.21-0.6.0`` is Sodium 0.6.0 for Minecraft 1.21, not
-#: version 1.21 with a pre-release of 0.6.0. Stripped only when the marker is
-#: literally present, because ``1.20.1-2.3`` without it is genuinely ambiguous
-#: with a pre-release and guessing there would silently reorder real versions.
+#: ``mc1.21-0.6.0`` is Sodium 0.6.0 for Minecraft 1.21, not version 1.21 with a
+#: pre-release. Stripped only when the ``mc`` marker is present: bare
+#: ``1.20.1-2.3`` is ambiguous with a pre-release.
 _GAME_TAG = re.compile(r"^mc\d[\w.]*-(?=\d)", re.IGNORECASE)
 
 
@@ -110,13 +89,11 @@ class Version:
 
 
 def parse_version(raw: str) -> Version | None:
-    """Parse a version string, or None when there is nothing comparable in it.
+    """Parse a version string, or None when nothing in it is comparable.
 
-    Build metadata after ``+`` is discarded, as both specifications require: it
-    is by definition not part of precedence. That matters here more than usual,
-    because Fabric mods routinely encode the Minecraft version there
-    (``0.92.0+1.20.1``) and comparing it would order mods by which game version
-    they target rather than by which release they are.
+    Build metadata after ``+`` is discarded per both specifications. Fabric mods
+    encode the game version there (``0.92.0+1.20.1``), so comparing it would
+    order mods by target version rather than by release.
     """
     text = str(raw).strip()
     if not text:
@@ -129,9 +106,8 @@ def parse_version(raw: str) -> Version | None:
 
     release = _segments(release_text)
     if not release or not isinstance(release[0], int):
-        # Nothing numeric to anchor on — "unknown", "SNAPSHOT", a git hash. It
-        # is not comparable, and pretending otherwise would order versions by
-        # spelling.
+        # "SNAPSHOT", a git hash: nothing numeric to anchor on, so not
+        # comparable. Ordering these would order by spelling.
         return None
     return Version(
         raw=str(raw).strip(),
@@ -155,9 +131,7 @@ def _compare_segments(
             continue
         if isinstance(a, int) and isinstance(b, int):
             return -1 if a < b else 1
-        # A numeric segment sorts below an alphabetic one, matching semver's
-        # rule for pre-release identifiers and the usual reading of "1.0" versus
-        # "1.0rc".
+        # Numeric sorts below alphabetic, per semver's pre-release rule.
         if isinstance(a, int):
             return -1
         if isinstance(b, int):
@@ -219,9 +193,7 @@ def _fabric_clause(clause: str, version: Version) -> Satisfaction:
 
     order = compare_versions(version, wanted)
     if operator == "=":
-        # Fabric treats a bare version as a prefix match, not equality: a
-        # dependency on "1.2" is satisfied by 1.2.4. Reading it as equality
-        # would report most working packs as broken.
+        # Fabric reads a bare version as a prefix match: "1.2" accepts 1.2.4.
         head = version.release[: len(wanted.release)]
         return (
             Satisfaction.SATISFIED
@@ -324,9 +296,7 @@ def _maven_range(spec: str, version: Version) -> Satisfaction:
         return Satisfaction.SATISFIED
 
     if not spec.startswith(("[", "(")):
-        # Forge's documented convention: a bare version is a minimum, not an
-        # equality. Reading it as equality would report almost every Forge pack
-        # in existence as having an unsatisfied dependency.
+        # Forge's convention: a bare version is a minimum, not an equality.
         wanted = parse_version(spec)
         if wanted is None:
             return Satisfaction.UNKNOWN
@@ -372,17 +342,14 @@ def satisfies(
 ) -> Satisfaction:
     """Whether ``installed`` satisfies the range ``spec``.
 
-    Returns :attr:`Satisfaction.UNKNOWN` rather than guessing when either side
-    cannot be parsed. Every caller must then report the constraint as
-    undecidable instead of quietly treating it as met, which is the whole point:
-    the previous behaviour treated *every* constraint as met.
+    Returns ``UNKNOWN`` rather than guessing when either side cannot be parsed;
+    callers must report that rather than treat it as met.
     """
     spec = (spec or "*").strip()
     if not spec or spec in ("*", "any"):
         return Satisfaction.SATISFIED
     if dialect is Dialect.BUKKIT:
-        # plugin.yml has no version syntax at all. There is nothing to check,
-        # and inventing a check would be worse than admitting that.
+        # plugin.yml has no version syntax; there is nothing to check.
         return Satisfaction.UNKNOWN
 
     version = parse_version(installed)

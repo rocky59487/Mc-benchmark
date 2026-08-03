@@ -96,9 +96,8 @@ public final class ProbeWriter implements AutoCloseable {
     /**
      * A batch of server tick durations. {@code values[0..count)} are used.
      *
-     * <p>The source travels with every batch. Tick period and tick execution time are
-     * different quantities, and the harness publishes them under different metric names —
-     * emitting them indistinguishably is what let the period be reported as MSPT.
+     * <p>The source travels with every batch: period and execution time are different
+     * quantities and the harness publishes them under different names.
      */
     public void ticks(long[] values, int count, TickSource source) {
         emitDurations("tick", values, count, source.wireName());
@@ -107,9 +106,8 @@ public final class ProbeWriter implements AutoCloseable {
     /**
      * Individual garbage collections.
      *
-     * <p>One event per collection, each with its own duration and its own heap readings, so a
-     * pause percentile is a percentile over pauses. The previous aggregate-per-interval form
-     * merged several short collections into one long apparent pause.
+     * <p>One event per collection, so a pause percentile is a percentile over pauses rather
+     * than over per-interval sums.
      */
     public void gcEvents(java.util.List<RuntimeMonitor.GcEvent> events) {
         if (events.isEmpty()) {
@@ -141,9 +139,8 @@ public final class ProbeWriter implements AutoCloseable {
     /**
      * Total collection time since the last sample, when per-event data is unavailable.
      *
-     * <p>Marked as an aggregate so the harness reports total pause time and declines to
-     * compute a pause percentile from it — a percentile over interval sums describes the
-     * sampling cadence, not the collector.
+     * <p>Marked as an aggregate so the harness reports the total and declines to derive a
+     * percentile from it.
      */
     public void gcAggregate(long totalPauseMs, long collections) {
         if (totalPauseMs <= 0) {
@@ -159,10 +156,8 @@ public final class ProbeWriter implements AutoCloseable {
     /**
      * A heap sample.
      *
-     * <p>{@code allocated_bytes} and {@code heap_growth_bytes} are both reported, and
-     * {@code real_allocation} says whether the first came from an allocation counter or is a
-     * copy of the second. Publishing heap growth as an allocation rate made a mod that
-     * allocates heavily and collects promptly look free.
+     * <p>Both figures are reported, and {@code real_allocation} says whether the first came
+     * from an allocation counter or is a copy of the second.
      */
     public void memory(
             double heapMb,

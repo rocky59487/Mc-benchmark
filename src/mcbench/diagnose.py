@@ -4,28 +4,22 @@ Knowing a modpack is slow is not actionable. Knowing *which of its ninety mods*
 makes it slow is. Testing all subsets is 2^90, so this implements delta debugging
 (Zeller & Hildebrandt's ddmin) adapted to a benchmark's constraints.
 
-Three adaptations matter, and they are why this is not just a binary search:
+Three adaptations, and they are why this is not just a binary search:
 
-**The oracle is statistical, not deterministic.** A subset does not simply pass
-or fail; it is slower by some amount with some confidence, and the same subset
-measured twice can disagree. So the oracle returns four answers — regression, no
-regression, *inconclusive*, and *invalid* — and only the first two are evidence.
+**The oracle is statistical.** A subset is slower by some amount with some
+confidence, and the same subset measured twice can disagree. So probes return
+four answers — regression, clean, *inconclusive*, *invalid* — and only the first
+two are evidence.
 
-**A subset must be a loadable configuration.** Mods have dependencies, and an
-arbitrary half of a modpack usually is not installable. A culprit ``bad`` that
-requires ``library`` cannot be tested on its own: ``{bad}`` fails to launch for
-want of its library, ``{library}`` fails to reproduce because it is not the
-culprit, and a search that reads either failure as "does not reproduce" concludes
-the two interact — a false interaction claim about a single-mod fault. So every
-subset is closed over its declared dependencies before it is launched, and the
-support mods added that way are reported separately from the suspects.
+**Subsets must be loadable.** An arbitrary half of a modpack usually is not.
+A culprit ``bad`` needing ``library`` cannot be tested alone: ``{bad}`` will not
+launch, ``{library}`` does not reproduce, and reading both as "does not
+reproduce" reports an interaction between them. Every subset is closed over its
+declared dependencies, and the support that pulls in is reported separately.
 
-**The culprit is often a combination.** Two mods can each be harmless and be
-catastrophic together, which is precisely the interaction effect the rest of this
-project exists to measure. A plain bisection breaks on that case: it splits the
-pair, sees neither half regress, and concludes nothing is wrong. ddmin's
-complement phase is what handles it, and the ``granularity`` escalation is what
-finds culprits that a single split keeps separating.
+**The culprit is often a pair.** Two mods can each be harmless and catastrophic
+together. A plain bisection splits them, sees neither half regress, and
+concludes nothing is wrong; ddmin's complement phase is what handles it.
 
 Every probe costs a full benchmark cell — several fresh game launches — so the
 search is budgeted and reports what it spent.
@@ -60,15 +54,11 @@ class Outcome(str, Enum):
     INCONCLUSIVE = "inconclusive"
     """The runs were made and did not settle the question. Never evidence."""
     INVALID = "invalid"
-    """The subset is not a configuration that can be measured at all — a
-    dependency it needs is absent, or every launch of it failed while the
-    baseline launched fine in the same probe.
+    """Not measurable at all: a dependency is absent, or every launch failed
+    while the baseline launched fine in the same probe.
 
-    Kept distinct from ``CLEAN`` because the difference is the whole failure this
-    search has to avoid. "It did not reproduce the regression" and "it never
-    ran" look identical to a caller that only checks ``is not REGRESSION``, and
-    conflating them lets an unlaunchable half of a pack exonerate the mod it
-    contains.
+    Distinct from ``CLEAN`` because "did not reproduce" and "never ran" look
+    identical to a caller checking ``is not REGRESSION``.
     """
 
     @property
@@ -82,10 +72,8 @@ class SubsetClosure:
     """A candidate subset expanded to something that can actually be launched.
 
     ``members`` is what gets installed; ``subset`` is what is under suspicion.
-    The two are reported separately for a practical reason: a support mod pulled
-    in to satisfy a dependency is present in the instance and could in principle
-    be contributing, and a result that quietly folded it into the culprit list
-    would name a mod the search never independently implicated.
+    A support mod is present and could be contributing, but the search never
+    independently implicated it, so the two are reported separately.
     """
 
     subset: tuple[str, ...]
@@ -103,10 +91,8 @@ class SubsetClosure:
 def identity_closure(subset: Sequence[str]) -> SubsetClosure:
     """Closure for a mod set with no known dependency metadata.
 
-    Used when the caller has nothing to build a graph from. It assumes every
-    subset is launchable, which is the old behaviour and is unsafe on a real
-    modpack — :func:`isolate` says so in its result note rather than letting the
-    assumption pass unremarked.
+    Assumes every subset is launchable, which is unsafe on a real modpack;
+    :func:`isolate` notes the assumption in its result.
     """
     members = tuple(dict.fromkeys(subset))
     return SubsetClosure(subset=members, members=members)
@@ -152,9 +138,8 @@ class IsolationResult:
     inconclusive_probes: int = 0
     invalid_probes: int = 0
     minimal: bool = False
-    """True only when every single removal from the culprit set was tested and
-    stopped reproducing. False means the set may not be minimal — which is not
-    the same as being wrong, and is reported as the weaker claim it is."""
+    """True only when every single removal was tested and stopped reproducing.
+    False means the set may not be minimal, not that it is wrong."""
     revalidated: bool = False
     """True when the final candidate was re-measured and reproduced again."""
     note: str = ""
@@ -172,10 +157,8 @@ class IsolationResult:
     def is_interaction(self) -> bool:
         """True when no single mod reproduces it — the pair or group is at fault.
 
-        Only claimed once the set is confirmed minimal. Without that, a group of
-        two could just as easily be one culprit and one passenger the search
-        never managed to test apart, and "these two mods interact" is precisely
-        the kind of finding that gets reported to two mod authors.
+        Claimed only once minimality is confirmed: without that, a pair could
+        be one culprit and one passenger the search never tested apart.
         """
         return len(self.culprits) > 1 and self.minimal
 
@@ -218,12 +201,9 @@ def isolate(
     minimality costs exponentially more probes, and each probe here is several
     full game launches.
 
-    Minimality is now something the result claims only when it was checked.
-    ddmin's own stopping condition is "no split narrowed anything", and on a
-    statistical oracle that can be reached by a run of unresolved probes rather
-    than by having found the answer. So the candidate is verified explicitly at
-    the end, and a set that could not be verified is reported as unconfirmed
-    rather than announced as minimal.
+    Minimality is claimed only when checked. ddmin stops when no split narrows
+    anything, which on a statistical oracle can happen through a run of
+    unresolved probes rather than through having found the answer.
 
     Args:
         max_probes: Hard cap. Each probe is a full benchmark cell, so an
@@ -254,9 +234,8 @@ def isolate(
 
     def test(subset: Sequence[str]) -> Outcome:
         resolved = close(subset)
-        # Keyed on what would actually be installed, not on what was asked for.
-        # Two different suspect sets with the same closure are the same launch,
-        # and paying for it twice would burn a benchmark cell to learn nothing.
+        # Keyed on what gets installed: two suspect sets with the same closure
+        # are the same launch.
         key = tuple(sorted(resolved.members))
         if resolved.satisfiable and key in cache:
             return cache[key]
@@ -267,9 +246,8 @@ def isolate(
             )
 
         if not resolved.satisfiable:
-            # Never launched: there is no configuration here to measure. Recording
-            # it is essential — an unsatisfiable subset is why a search fails to
-            # narrow, and the operator needs to see that rather than infer it.
+            # Never launched. Recorded because an unsatisfiable subset is why a
+            # search fails to narrow.
             outcome = Outcome.INVALID
             detail = "unsatisfiable: missing " + ", ".join(resolved.missing)
         else:
@@ -348,20 +326,13 @@ def _confirm(
 ) -> None:
     """Re-measure the candidate and check every single removal.
 
-    Two separate claims are being checked and they fail differently. Re-measuring
-    the candidate guards against a regression that was never there: ddmin follows
-    REGRESSION verdicts, and one lucky verdict early can steer the whole search.
-    Testing each removal is what 1-minimality actually means, and it is the claim
-    a report makes when it names a mod.
+    Re-measuring guards against a regression that was never there: ddmin follows
+    REGRESSION verdicts and one lucky early verdict steers the whole search.
+    Testing each removal is what 1-minimality means.
 
-    A removal that comes back unresolved is fatal to the minimality claim but not
-    to the result: the candidate still reproduces, we simply cannot say nothing
-    smaller does.
-
-    Members that cannot be removed at all — because another member declares a
-    dependency on them — are separated out here rather than counted against
-    minimality. They are support, and the search never had the option of testing
-    the set without them.
+    An unresolved removal is fatal to the minimality claim but not to the
+    result. Members that cannot be removed at all — another member depends on
+    them — are separated out as support rather than counted against it.
     """
     installed = list(close(culprits).members)
     if not installed:
@@ -401,9 +372,7 @@ def _confirm(
         reduced = [m for m in installed if m != mod]
         outcome = test(reduced)
         if outcome is Outcome.REGRESSION:
-            # A smaller set still reproduces: whatever ddmin returned, this is
-            # not 1-minimal, and saying so beats quietly shrinking the answer
-            # after the fact on a single probe.
+            # A smaller set still reproduces, so this is not 1-minimal.
             result.minimal = False
             result.note = (
                 f"removing {mod} left a set that still reproduces, so the "
@@ -472,19 +441,13 @@ def _ddmin(
 ) -> list[str]:
     """The ddmin core: split, test parts, test complements, refine.
 
-    Only ``REGRESSION`` narrows. Every other outcome — clean, inconclusive, or
-    an unlaunchable subset — leaves the current set alone, which means an
-    unresolved probe costs a launch and buys nothing rather than silently
-    steering the search. The caller counts those and reports them.
+    Only ``REGRESSION`` narrows; every other outcome leaves the current set
+    alone, so an unresolved probe costs a launch and buys nothing.
 
-    The working set is kept **dependency-closed** throughout, and a narrowing is
-    accepted only when it strictly shrinks that closed set. Both rules exist for
-    the same reason. When a chunk that reproduces needs a library from the other
-    half, what was launched is the chunk *plus the library* — so narrowing to the
-    chunk alone would drop a mod that was installed and never ruled out. And when
-    removing a chunk of pure libraries re-adds every one of them, the "smaller"
-    set is the set we already had; accepting it would loop forever on a search
-    that is not progressing.
+    The working set stays dependency-closed, and a narrowing is accepted only
+    when it strictly shrinks that closed set. Narrowing to a chunk whose closure
+    pulled in a library would drop a mod that was installed and never ruled out,
+    and a complement whose closure re-adds everything is the set we already had.
     """
     current = list(close(candidates).members) or list(candidates)
     if len(current) <= 1:

@@ -1,24 +1,14 @@
 """Dependency graphs over a mod set, and the subset closures a bisect needs.
 
-A bisect launches subsets of a modpack, and an arbitrary subset of a modpack is
-usually not installable. This module is what turns "these five mods" into "these
-five mods and the four libraries they need", so that a probe measures a
-configuration the game will actually load.
+An arbitrary subset of a modpack is usually not installable, so a bisect has to
+close each subset over its declared dependencies before launching it. Without
+that, a culprit `bad` that needs `library` cannot be tested: `{bad}` fails to
+launch and `{library}` fails to reproduce, and a search reading both as "does
+not reproduce" reports an interaction between them.
 
-The failure this prevents is specific and it is the reason issue #11 exists. A
-mod ``bad`` requires ``library``. Testing ``{bad}`` alone fails to launch, and
-testing ``{library}`` alone fails to reproduce, so a search that reads both
-failures as "does not reproduce" concludes that neither mod is individually at
-fault and reports an *interaction* between them. Two mod authors then receive a
-bug report about a conflict that does not exist, and the actual single-mod fault
-goes unfixed.
-
-Nothing here resolves versions. That is deliberate: :mod:`mcbench.inspect` owns
-version-range evaluation over a *complete* pack, and re-deciding compatibility
-per subset would let a bisect quietly install a combination the pack's own
-metadata rejects. What this module answers is narrower and purely structural —
-given these mods are already known to work together, which of them does a subset
-have to bring along.
+Nothing here resolves versions. :mod:`mcbench.inspect` owns that over a
+complete pack; this answers the narrower structural question of which mods a
+subset must bring along.
 """
 
 from __future__ import annotations
@@ -40,16 +30,11 @@ class DependencyGraph:
     """Which mods a mod needs, restricted to the pack under test.
 
     Args:
-        requires: mod id to the ids it hard-depends on. Only ids that some mod
-            in the pack provides are retained; anything supplied by the
-            environment (``minecraft``, the loader itself) is not a bisect
-            candidate and cannot be toggled.
-        provided_by: id to the mod that provides it, covering ``provides``
-            aliases so a dependency on a module resolves to the jar shipping it.
-        unresolved: mod id to the ids it needs that nothing in the pack provides
-            and the environment does not supply. A subset containing such a mod
-            cannot be launched, and a search must be told so rather than
-            discovering it as a mysterious run of failed launches.
+        requires: mod id to the ids it hard-depends on, restricted to ids some
+            mod in the pack provides. Ambient ids cannot be toggled.
+        provided_by: id to the mod providing it, including ``provides`` aliases.
+        unresolved: mod id to ids nothing provides. A subset containing such a
+            mod is unlaunchable and the search is told so.
     """
 
     requires: Mapping[str, frozenset[str]]
@@ -62,10 +47,8 @@ class DependencyGraph:
     def closure(self, subset: Sequence[str]) -> SubsetClosure:
         """Expand ``subset`` to everything it needs in order to load.
 
-        Support mods are appended after the requested ones so that a caller
-        rendering the set shows the suspects first, and the ordering is
-        deterministic (sorted) so two runs of the same search produce byte-equal
-        audit records.
+        Support is appended after the requested mods, sorted, so a probe label
+        reads as the question asked and two runs produce identical audit records.
         """
         requested = list(dict.fromkeys(subset))
         members = list(requested)
@@ -90,8 +73,6 @@ class DependencyGraph:
         support = tuple(sorted(m for m in members if m not in set(requested)))
         return SubsetClosure(
             subset=tuple(requested),
-            # Requested first, then support, so a probe label reads as the
-            # question that was asked rather than as the pile that was installed.
             members=tuple(requested) + support,
             support=support,
             missing=tuple(sorted(missing)),
@@ -105,15 +86,11 @@ def graph_from_metadata(
 ) -> DependencyGraph:
     """Build a graph from jars already read by :mod:`mcbench.inspect`.
 
-    ``candidates`` names the ids the bisect can actually toggle — normally the
-    suite's mod list. A dependency on something outside that set but present in
-    the pack is not a missing dependency, it is a fixture: it is installed in
-    every probe regardless, so it neither needs adding nor counts as absent.
+    ``candidates`` names the ids the bisect can toggle, normally the suite's
+    mod list. A dependency outside that set but present in the pack is a
+    fixture: installed in every probe regardless.
 
-    Bundled jars count as present. A library shipped inside its dependent is
-    installed whenever that dependent is, so a subset containing the dependent
-    already satisfies the dependency and adding a separate copy would be a
-    duplicate install rather than a fix.
+    Bundled jars count as present, since they are installed with their host.
     """
     mods = flatten_mods(mods)
     toggleable = set(candidates) if candidates is not None else {m.mod_id for m in mods}

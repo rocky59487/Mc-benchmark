@@ -58,9 +58,7 @@ MAX_RUNS_PER_CELL = 10_000
 MAX_CELLS = 5_000
 
 #: How an attempt ended. ``failed`` runs carry no values and are excluded from
-#: every estimate, but they are ingested and counted: a document that only
-#: contained successes would describe the runs that worked rather than the
-#: experiment that was run.
+#: every estimate, but they are ingested and counted.
 RUN_STATUSES = frozenset({"completed", "inadmissible", "failed"})
 
 
@@ -149,10 +147,8 @@ def parse_results_document(raw: Any) -> tuple[str, str, dict[str, list[dict[str,
                     f"{sorted(RUN_STATUSES)}"
                 )
             if status == "completed" and not checked:
-                # A run claiming to have completed with nothing to show for it
-                # would be counted toward the run floor and contribute no values,
-                # which is the one way to make a cell look better-evidenced than
-                # it is. Rejected rather than silently reclassified.
+                # Would count toward the run floor while contributing no
+                # values, making a cell look better-evidenced than it is.
                 raise ResultsError(
                     f"{where}: status is 'completed' but no metric values are "
                     f"present; a run that produced nothing is 'failed'"
@@ -196,15 +192,13 @@ class CellResult:
     outliers: dict[str, OutlierReport] = field(default_factory=dict)
     flags: set[RunFlag] = field(default_factory=set)
     runs_attempted: int = 0
-    """Runs the plan scheduled for this cell, including ones that never produced
-    metrics. Distinct from ``runs_total``: a cell whose launches failed is not a
-    smaller experiment, it is a broken one, and the two must not look alike."""
+    """Runs the plan scheduled, including ones that produced no metrics. A cell
+    whose launches failed is not a smaller experiment."""
     runs_total: int = 0
     """Runs that produced a metrics document, admissible or not."""
     runs_admissible: int = 0
     runs_failed: int = 0
-    """Attempts that produced no metrics at all — crashes, timeouts, launch
-    failures. Recorded so failure rate is visible rather than inferred."""
+    """Attempts that produced no metrics: crashes, timeouts, launch failures."""
 
     @property
     def unstable(self) -> bool:
@@ -223,10 +217,8 @@ class CellResult:
 
         Returns an empty string when the cell is fine.
 
-        Checked per metric rather than per cell because outlier rejection runs
-        per metric: a run spoiled by a GC storm loses its pause values and keeps
-        its frametimes, and suppressing every metric because one was affected
-        would discard good measurements.
+        Per metric, because outlier rejection is: a run spoiled by a GC storm
+        loses its pause values and keeps its frametimes.
         """
         retained = self.retained(metric)
         if retained < MIN_ADMISSIBLE_RUNS:
@@ -253,9 +245,8 @@ class MetricComparison:
     comparison: Comparison
     additional_runs_needed: int | None = None
     suppressed_reason: str = ""
-    """Set when a decisive verdict was withheld because a cell could not support
-    one. The underlying comparison is kept intact so the numbers remain
-    auditable; only the verdict is downgraded."""
+    """Why a decisive verdict was withheld. The comparison is kept intact; only
+    the verdict is downgraded."""
     family: str = ""
     """Which multiplicity family this test belongs to (see :func:`assign_families`)."""
     q_value: float | None = None
@@ -327,10 +318,9 @@ def aggregate_cell(
     operates per metric, because a run can be contaminated in one dimension —
     a stray GC storm inflating pause metrics — while remaining valid in others.
 
-    ``attempted`` and ``failed`` describe runs that never reached this function
-    because they produced no metrics at all. They are carried onto the result so
-    that a cell of five values out of five planned and a cell of five values out
-    of twelve planned do not serialise identically.
+    ``attempted`` and ``failed`` cover runs that produced no metrics and so
+    never reached here, so five values out of five and five out of twelve do not
+    serialise identically.
     """
     result = CellResult(
         cell=cell,
@@ -378,12 +368,10 @@ def compare_to_baseline(
 ) -> list[MetricComparison]:
     """Compare every shared metric between a baseline cell and a variant cell.
 
-    A decisive verdict is issued only when both cells can support one. Where
-    they cannot — too few surviving runs, or too many excluded as outliers — the
-    verdict is downgraded to ``insufficient_data`` and the reason is recorded on
-    the comparison. This is suppression rather than annotation on purpose: a
-    caveat beside a red "regression" badge is read as a regression, and the
-    whole point of the run floor is that such a cell has not established one.
+    A decisive verdict needs both cells to support one. Where they cannot — too
+    few surviving runs, or too many excluded as outliers — it is downgraded to
+    ``insufficient_data`` with the reason recorded. Suppression rather than
+    annotation, because a caveat beside a red badge is read as a regression.
     """
     if baseline.cell.scenario != variant.cell.scenario:
         raise ValueError(
@@ -467,10 +455,7 @@ def build_interaction(
     than reporting a term derived from a partial design.
 
     The run floor applies to all four arms. An interaction is a difference of
-    differences, so it is the *least* robust quantity in the report: whatever
-    imprecision each arm carries accumulates into it. A four-cell design where
-    one cell survived twice is exactly where a spurious "these mods fight" claim
-    would come from.
+    differences and so the least robust quantity in the report.
     """
     try:
         samples = [cells[k].samples[metric] for k in (none_key, a_key, b_key, ab_key)]
@@ -481,13 +466,9 @@ def build_interaction(
 
     term = interaction_term(*samples, rope=rope, seed=seed)
 
-    # The sign of the term is in raw metric units, so what it *means* depends on
-    # the metric's polarity. A positive non-additivity in frametime is the pair
-    # costing more together; the identical positive term in FPS is the pair being
-    # better than additive. Reading one as the other inverts the finding — the
-    # exact failure the metric registry exists to prevent, and worth guarding
-    # here because an interaction is the headline claim in any report that has
-    # one.
+    # The sign is in raw metric units, so its meaning depends on polarity: a
+    # positive term is the pair costing more on frametime and doing better than
+    # additive on FPS.
     definition = METRICS.get(metric)
     worse_when_larger = definition.lower_is_better if definition else True
     larger = "costs more together" if worse_when_larger else "helps more together"
@@ -529,16 +510,10 @@ DEFAULT_FDR = 0.05
 def family_of(comparison: MetricComparison) -> str:
     """Which hypothesis family a comparison belongs to.
 
-    METHODOLOGY section 5 defines the family as the set of variants compared
-    against a common baseline. So one family is one (scenario, metric): the
-    tests that share a baseline cell and a metric, and among which a chance
-    extreme would be picked out and reported as a finding.
-
-    Metrics are *not* pooled into one family across the suite. They are
-    strongly dependent — ``frametime_mean_ms`` and ``fps_avg`` are the same
-    measurement twice — and pooling dependent tests would make the correction
-    punitive rather than principled, burying real effects to control a false
-    discovery rate that was never in danger.
+    One family is one (scenario, metric): the tests sharing a baseline cell and
+    a metric. Metrics are not pooled across the suite — ``frametime_mean_ms``
+    and ``fps_avg`` are the same measurement twice, and correcting across
+    strongly dependent tests is punitive rather than principled.
     """
     return f"{comparison.scenario}::{comparison.metric}"
 
@@ -548,19 +523,12 @@ def apply_fdr(
 ) -> dict[str, Any]:
     """Correct each family for multiplicity, in place.
 
-    Every comparison gains its family id, its adjusted q-value, and an
-    FDR-adjusted verdict. A decisive verdict that does not survive correction is
-    demoted to ``inconclusive``: the effect was not shown to be distinguishable
-    from the several other tests in its family, which is uncertainty about the
-    effect rather than a shortfall in the experiment.
+    Each comparison gains its family, its q-value, and an adjusted verdict. A
+    decisive verdict that does not survive is demoted to ``inconclusive``.
+    Nothing is promoted: correction only removes discoveries.
 
-    Nothing is ever *promoted*. Correction can only remove discoveries, so a
-    comparison the ROPE rule called equivalent or inconclusive keeps that
-    verdict whatever its q-value says.
-
-    :returns: a summary of the families and what correction changed, for the
-        report's method section — a correction nobody can see applied is
-        indistinguishable from one that never ran.
+    :returns: a summary for the report's method section — a correction nobody
+        can see applied is indistinguishable from one that never ran.
     """
     families: dict[str, list[MetricComparison]] = {}
     for entry in comparisons:
@@ -592,10 +560,9 @@ def apply_fdr(
 def _adjusted_q(p_values: Sequence[float], p: float) -> float:
     """Benjamini-Hochberg adjusted p-value for one member of a family.
 
-    The step-up form: ``q_(i) = min over k >= i of (m/k) * p_(k)``, clamped to
-    1. Reported alongside the accept/reject decision because a bare boolean
-    hides how close a test was to the threshold, and a q of 0.051 and one of
-    0.9 are not the same finding.
+    Step-up form: ``q_(i) = min over k >= i of (m/k) * p_(k)``, clamped to 1.
+    Reported alongside the decision because a q of 0.051 and one of 0.9 are not
+    the same finding.
     """
     m = len(p_values)
     if m == 0:
@@ -630,15 +597,11 @@ def reference_ratios(
     """Express every cell's metrics as a ratio to the same-session reference.
 
     METHODOLOGY section 8: absolute figures do not compose across machines, so
-    the corpus is defined in ratios to a fixed mod-free scenario measured on the
-    same machine in the same session. A ratio cancels most of what differs
-    between two contributors' hardware; an absolute millisecond count cancels
-    nothing.
+    the corpus is defined in ratios to a fixed mod-free scenario measured in the
+    same session.
 
-    Returns an empty list when the suite did not run the reference scenario,
-    which is the honest outcome — there is nothing to normalise against, and
-    inventing a denominator would produce ratios that look comparable and are
-    not.
+    Empty when the suite did not run the reference scenario — there is nothing
+    to normalise against, and a made-up denominator would look comparable.
     """
     reference = cells.get(Cell(reference_scenario, baseline))
     if reference is None or not reference.estimates:

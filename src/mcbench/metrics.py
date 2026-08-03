@@ -112,11 +112,9 @@ METRICS: dict[str, MetricDef] = {
            "1 - mspt_mean/50. Fraction of the tick budget left unused."),
         # --- server, when the platform can only report tick period ---
         #
-        # Separately named because they are a different measurement. The period
-        # between end-of-tick callbacks includes whatever the server loop waits
-        # out, so on an unsaturated server it sits at the 50 ms budget however
-        # cheap the tick was. Published under mspt_* it made a 5 ms tick and a
-        # 30 ms tick indistinguishable while claiming to tell them apart.
+        # A different measurement, separately named. The period includes what
+        # the server loop waits out, so on an unsaturated server it is the 50 ms
+        # budget however cheap the tick was.
         _m("tick_period_mean_ms", "Mean tick period", "ms", LOWER,
            "Mean interval between ticks. NOT MSPT: on an unsaturated server it "
            "measures the tick budget, not the work inside the tick."),
@@ -177,20 +175,15 @@ class RunFlag(str, Enum):
     WORLD_FINGERPRINT_MISMATCH = "world_fingerprint_mismatch"
     CRASHED = "crashed"
     SETUP_FAILED = "setup_failed"
-    """A scenario setup command was rejected, so the world the run measured is
-    not the world the scenario describes. Inadmissible: the numbers are real and
-    they describe a different experiment."""
+    """A setup command was rejected, so the world measured is not the world the
+    scenario describes. The numbers are real and describe a different run."""
     WORKLOAD_FAILED = "workload_failed"
-    """A workload command was rejected, so the load was not sustained for the
-    whole window. Inadmissible for the same reason."""
+    """A workload command was rejected, so the load was not sustained."""
     PROBE_ERROR = "probe_error"
-    """The probe reported an error during the run. Retained in the stream and
-    previously ignored by the reducer, which meant a run could report its own
-    failure and still be pooled."""
+    """The probe reported an error during the run."""
     TICK_PERIOD_ONLY = "tick_period_only"
-    """The platform could not measure tick execution time, so tick figures are
-    periods. Not inadmissible — the metrics are named accordingly — but it means
-    this run carries no MSPT and cannot be compared against one that does."""
+    """Tick figures are periods, not execution time. Admissible — the metrics
+    are named accordingly — but this run carries no MSPT."""
 
 
 @dataclass
@@ -251,10 +244,8 @@ class RunMetrics:
     flags: list[RunFlag] = field(default_factory=list)
     sample_count: int = 0
 
-    #: Flags that make a run unusable. A run carrying any of these produced real
-    #: numbers describing something other than the experiment that was asked
-    #: for, which is precisely why it must not be pooled: the values look
-    #: perfectly ordinary and nothing downstream would notice.
+    #: Flags that make a run unusable: it produced real numbers describing
+    #: something other than the experiment asked for, and they look ordinary.
     INADMISSIBLE_FLAGS = frozenset({
         RunFlag.CRASHED,
         RunFlag.TOO_FEW_SAMPLES,
@@ -299,20 +290,14 @@ def _stutter_rate(frametimes_ms: Sequence[float], *, window: int = 120) -> float
 def _memory_metrics(samples: ClientSamples | ServerSamples) -> dict[str, float]:
     """Reduce the memory signals, naming each for what it actually measures.
 
-    Three decisions here, each undoing a case where a number was published under
-    a name it did not have:
+    Three rules, each keeping a number under a name it has:
 
-    * Pause percentiles are computed only from *individual* pauses. Where the
-      JVM could report nothing but per-interval totals, the total is reported
-      and the percentile is omitted — a percentile over interval sums is a
-      description of the sampling cadence.
-    * Allocation is reported as ``alloc_rate_mb_s`` only when it came from an
-      allocation counter, and as ``heap_growth_rate_mb_s`` otherwise. The two
-      differ by everything allocated and collected between samples, which on a
-      busy tick is most of it.
-    * The live set comes from post-collection heap readings taken at the
-      collection, so it is the occupancy an operator would have to size a heap
-      against.
+    * Pause percentiles come only from individual pauses; where the JVM reported
+      per-interval totals, the total is given and the percentile omitted.
+    * Allocation is ``alloc_rate_mb_s`` only from an allocation counter, and
+      ``heap_growth_rate_mb_s`` otherwise. The two differ by everything
+      allocated and collected between samples.
+    * The live set comes from heap readings taken at the collection.
     """
     duration_s = (
         samples.duration_s
@@ -408,21 +393,17 @@ def reduce_server_run(
             "mspt_mean": tick_mean,
             "mspt_p95": percentile(ticks_ms, 95.0),
             "mspt_p99": percentile(ticks_ms, 99.0),
-            # Headroom is the metric TPS should have been. Below budget every
-            # configuration reports 20 TPS, so TPS cannot tell 5 ms/tick from
-            # 30 ms/tick; headroom separates them cleanly. Clamped at zero so a
-            # saturated server reads "no headroom" rather than a negative figure.
+            # Headroom is the metric TPS should have been: below budget every
+            # configuration reports 20 TPS. Clamped at zero so a saturated
+            # server reads "no headroom" rather than a negative figure.
             #
-            # It is only computed from bracketed or platform-supplied durations.
-            # Derived from the tick *period* it would read as near-zero headroom
-            # on an idle server — the interval is the whole 50 ms budget — which
-            # is the precise opposite of the truth.
+            # Only from bracketed or platform durations: from the period it
+            # would read as near-zero headroom on an idle server.
             "tick_headroom": max(0.0, 1.0 - tick_mean / TICK_BUDGET_MS),
         }
     else:
-        # The platform could not expose tick execution time. Published under its
-        # own names rather than as MSPT: an honest measurement of something else
-        # beats a mislabelled measurement of the scheduler.
+        # No tick execution time available. Published under its own names: an
+        # honest measurement of something else beats a mislabelled MSPT.
         values = {
             "tick_period_mean_ms": tick_mean,
             "tick_period_p95_ms": percentile(ticks_ms, 95.0),
@@ -490,19 +471,15 @@ def frame_cap_suspected(
 ) -> bool:
     """Whether the client spent most of the run against its frame limiter.
 
-    The same failure mode as vsync and a separate cause. The harness writes a
-    ``maxFps`` value into ``options.txt`` and previously described the result as
-    "uncapped"; on a fast machine and a light scenario the client can genuinely
-    reach that value, and then every variant scores the cap, the intervals are
-    tight, and the benchmark reports equivalence between mods it never compared.
+    Same failure mode as vsync, different cause: on a fast machine and a light
+    scenario every variant scores the cap and the benchmark reports equivalence
+    between mods it never compared.
 
-    The threshold is a bare majority rather than the 80% vsync uses, because a
-    frame limiter produces a floor rather than a lock — frames faster than the
-    cap are delayed to it while slower frames pass through untouched, so a run
-    can be badly cap-bound while a large minority of frames sit above it.
+    A bare majority rather than vsync's 80%, because a limiter is a floor rather
+    than a lock — slower frames pass through untouched, so a run can be badly
+    cap-bound with a large minority above it.
 
-    Never blocks a run. It is a flag, and a reader who sees it knows to lower the
-    settings or raise the cap.
+    A flag, never a block.
     """
     if cap_fps <= 0 or len(frametimes_ms) < 200:
         return False

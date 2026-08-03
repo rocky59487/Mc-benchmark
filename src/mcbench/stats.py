@@ -52,17 +52,10 @@ DEFAULT_ROPE = 0.02  # +/-2% region of practical equivalence
 DEFAULT_MAD_THRESHOLD = 8.0  # deliberately conservative; see reject_outlying_runs
 MAD_TO_SIGMA = 1.4826  # scale factor making MAD consistent for normal data
 
-#: The single minimum-admissible-run policy, shared by every path that issues a
-#: verdict: reporting, interaction terms, and the bisect oracle.
-#:
-#: METHODOLOGY.md section 3 states five independent runs per cell as the floor,
-#: and until this constant existed each consumer enforced it — or failed to —
-#: separately. The failure that motivated centralising it is specific and bad: a
-#: cell planned for seven runs that loses six to launch failures has one value
-#: left, and one value against one value produces the most decisive-looking
-#: output the system can emit (``+100% [+100%, +100%]``) from the least evidence
-#: it can hold. A mostly-failed experiment must not be able to look like the
-#: strongest possible finding.
+#: The minimum-admissible-run policy, shared by reporting, interaction terms and
+#: the bisect oracle. METHODOLOGY section 3 states five runs per cell as the
+#: floor; one value against one value otherwise yields ``+100% [+100%, +100%]``,
+#: the most decisive output the system can emit from the least evidence.
 MIN_ADMISSIBLE_RUNS = 5
 
 
@@ -72,11 +65,9 @@ class Verdict(str, Enum):
     ``INCONCLUSIVE`` is a first-class result, not a failure. A benchmark that
     never declines to answer is guessing.
 
-    ``INSUFFICIENT_DATA`` is distinct from it and the distinction matters:
-    inconclusive means the runs were made and disagreed, insufficient means the
-    runs required to answer were never obtained. The first is a statement about
-    the effect, the second about the experiment, and conflating them lets a
-    failed suite read as a measured null.
+    ``INSUFFICIENT_DATA`` is distinct: inconclusive means the runs were made
+    and disagreed, insufficient means they were never obtained. Conflating them
+    lets a failed suite read as a measured null.
     """
 
     IMPROVEMENT = "improvement"
@@ -171,14 +162,9 @@ class Comparison:
     min_runs: int = MIN_ADMISSIBLE_RUNS
     """The run floor this comparison was judged against."""
     p_value: float = 1.0
-    """Two-sided bootstrap p-value for "the relative change is zero".
-
-    Derived from the same delta replicates the interval comes from, so it needs
-    no additional resampling and no distributional assumption. It exists so that
-    a suite testing many metrics can be corrected for multiplicity
-    (:func:`benjamini_hochberg`); the verdict itself remains a ROPE decision on
-    the interval, not a significance test.
-    """
+    """Two-sided bootstrap p-value for a zero relative change, from the same
+    delta replicates as the interval. Feeds multiplicity correction; the verdict
+    itself remains a ROPE decision, not a significance test."""
 
     @property
     def percent(self) -> float:
@@ -518,13 +504,10 @@ def compare(
     enough runs a 0.3% difference becomes detectable and is still irrelevant,
     and a standard that reports it as a victory teaches people to game it.
 
-    Before any of that, the run floor applies. With fewer than ``min_runs``
-    retained values in either arm the verdict is ``insufficient_data`` and no
-    direction is asserted, however clean the arithmetic looks. The descriptive
-    numbers are still computed and returned — a reader is entitled to see what
-    little was measured — but they are labelled as what they are rather than
-    presented as a finding. Pass ``min_runs=1`` to opt out deliberately; nothing
-    in mcbench does.
+    The run floor applies first: below ``min_runs`` retained values in either
+    arm the verdict is ``insufficient_data`` and no direction is asserted. The
+    descriptive numbers are still returned, labelled rather than presented as a
+    finding. ``min_runs=1`` opts out; nothing in mcbench does.
     """
     if not baseline or not variant:
         raise ValueError("compare() requires non-empty samples")
@@ -585,11 +568,9 @@ def compare(
 def _bootstrap_p_value(replicates: Sequence[float]) -> float:
     """Two-sided bootstrap p-value for a delta of zero.
 
-    The standard percentile-bootstrap inversion: the smaller tail mass on either
-    side of zero, doubled. Both tails are counted with a +1 correction so the
-    result can never be exactly zero — an achieved significance level below the
-    resolution of the resampling is not evidence of an infinitely small one, and
-    a literal 0.0 would sail through any multiplicity correction unchallenged.
+    Percentile-bootstrap inversion: the smaller tail mass either side of zero,
+    doubled. The +1 correction keeps it above zero — a level below the
+    resampling's resolution is not evidence of an infinitely small one.
     """
     n = len(replicates)
     if n == 0:
@@ -624,9 +605,8 @@ def runs_needed_for_resolution(
     exceeds ``max_runs`` and the honest answer is that more runs will not settle
     it — the effect is too close to the boundary to distinguish.
 
-    An ``insufficient_data`` verdict is answered without projecting anything:
-    what it needs is the run floor, and extrapolating an interval width from
-    one or two values would be arithmetic performed on noise.
+    ``insufficient_data`` returns the floor without projecting: extrapolating
+    an interval width from one or two values is arithmetic on noise.
     """
     if comparison.verdict is Verdict.INSUFFICIENT_DATA:
         return comparison.min_runs

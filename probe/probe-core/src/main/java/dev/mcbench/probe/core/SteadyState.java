@@ -56,11 +56,9 @@ public final class SteadyState {
     /**
      * Discard every sample seen so far.
      *
-     * <p>Called when warmup begins, so that samples taken while the scenario's setup commands
-     * were running cannot fill the comparison windows. Setup work is often very uniform — a
-     * long run of {@code /setblock} calls costs about the same each tick — so without this the
-     * window arrives at warmup already looking perfectly plateaued and the gate opens on the
-     * first sample.
+     * <p>Called when warmup begins. Setup work is very uniform — a long run of
+     * {@code /setblock} costs about the same each tick — so without this the window arrives at
+     * warmup already looking plateaued.
      */
     public void reset() {
         written = 0;

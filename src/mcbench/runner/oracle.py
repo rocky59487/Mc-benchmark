@@ -67,11 +67,8 @@ class ProbeRecord:
     def usable(self) -> bool:
         """Whether this probe retained enough runs to support a verdict.
 
-        The floor applies per arm. Checking only that both lists are non-empty
-        is what let a probe with four failures out of five in each arm report a
-        regression of ``+100% [+100%, +100%]`` from one value against one — the
-        most decisive-looking output the system can produce, from an experiment
-        that almost entirely failed.
+        Per arm. Checking only that both lists are non-empty let a probe with
+        four failures out of five in each arm report ``+100% [+100%, +100%]``.
         """
         return (
             len(self.baseline_values) >= self.min_runs
@@ -82,10 +79,8 @@ class ProbeRecord:
     def unlaunchable(self) -> bool:
         """True when the subset never produced a measurement and the baseline did.
 
-        Same machine, same probe, interleaved order: if every launch of the
-        subset failed while the baseline's succeeded, the difference is the mod
-        set, not the machine. That is a broken configuration rather than a
-        statistical dead end, and the two must not both read as "no regression".
+        Same machine, same interleaved probe: if every subset launch failed
+        while the baseline's succeeded, the difference is the mod set.
         """
         return bool(self.baseline_values) and not self.subset_values
 
@@ -99,19 +94,15 @@ class BenchmarkOracle:
             inventing a value would be fabricating a measurement.
         metric: Which metric decides. Its polarity comes from the registry, so a
             throughput metric is not mistaken for a cost metric.
-        runs_per_probe: Replicates of *each* arm. The floor is
-            :data:`~mcbench.stats.MIN_ADMISSIBLE_RUNS` from METHODOLOGY section
-            3, and it is enforced rather than merely documented — the previous
-            minimum of 2 accepted a probe that could not produce an admissible
-            verdict under the project's own rules, so every probe it ran was
-            wasted before it started.
+        runs_per_probe: Replicates of *each* arm, floored at
+            :data:`~mcbench.stats.MIN_ADMISSIBLE_RUNS`. A probe planned below
+            the floor cannot reach a verdict even if nothing fails.
         interleave_baseline: Keep True for anything you intend to act on.
         rope: Region of practical equivalence. A subset must be worse by more
             than this before it is called a culprit — otherwise the search would
             chase differences too small to matter and never converge.
-        allow_underpowered: Escape hatch for tests and dry runs. Probes issued
-            under it can only ever return ``INCONCLUSIVE`` for want of runs, so
-            it buys speed and no answers.
+        allow_underpowered: For tests and dry runs. Probes issued under it can
+            only return ``INCONCLUSIVE``.
     """
 
     def __init__(
@@ -185,10 +176,8 @@ class BenchmarkOracle:
                 else:
                     record.subset_attempts += 1
                 if value is None:
-                    # A failed run is dropped, never substituted. Filling it in
-                    # would be inventing a measurement — but the attempt is still
-                    # counted, because it cost a launch and it is evidence about
-                    # whether this configuration runs at all.
+                    # Dropped, never substituted — but still counted: it cost a
+                    # launch, and it is evidence about whether this runs at all.
                     continue
                 if name == "baseline":
                     record.baseline_values.append(value)
@@ -239,10 +228,8 @@ class BenchmarkOracle:
         subset_values = record.subset_values
 
         if record.unlaunchable:
-            # Every launch of this subset failed while the baseline launched in
-            # the same interleaved probe on the same machine. That is a property
-            # of the mod set, and calling it "no regression" would exonerate a
-            # configuration that never ran.
+            # Every subset launch failed while the baseline's succeeded in the
+            # same probe: a property of the mod set, not a clean result.
             record.outcome = Outcome.INVALID
             record.note = (
                 f"the subset never produced a measurement in "
@@ -297,9 +284,8 @@ class BenchmarkOracle:
         ``improvement`` is also CLEAN: a subset that is *faster* plainly is not
         the culprit being hunted.
 
-        ``insufficient_data`` becomes INCONCLUSIVE rather than CLEAN, for the
-        same reason the whole four-state model exists: the runs to answer were
-        never obtained, which is not an answer of "no".
+        ``insufficient_data`` becomes INCONCLUSIVE, not CLEAN: runs that were
+        never obtained are not an answer of "no".
         """
         if verdict is Verdict.REGRESSION:
             return Outcome.REGRESSION
@@ -313,11 +299,8 @@ class BenchmarkOracle:
     def total_runs(self) -> int:
         """Game launches spent, the number that actually bounds a diagnosis.
 
-        Counts every measurement invocation, including the ones that failed. A
-        failed launch costs the same minutes as a successful one, so a cost
-        figure that omitted them would understate the price of a diagnosis
-        exactly when the diagnosis was going badly — ten launches with eight
-        failures previously reported as two.
+        Counts every measurement invocation, failures included: a failed launch
+        costs the same minutes as a successful one.
         """
         return self.measurement_calls
 

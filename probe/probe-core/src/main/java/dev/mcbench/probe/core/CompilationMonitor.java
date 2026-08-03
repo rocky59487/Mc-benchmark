@@ -6,23 +6,17 @@ import java.lang.management.ManagementFactory;
 /**
  * The JIT half of the warmup gate.
  *
- * <p>{@code docs/METHODOLOGY.md} section 2 states that warmup ends when the timing series has
- * plateaued <em>and</em> compilation has settled. Only the first half was implemented: the
- * probe compared rolling medians of tick or frame time and never consulted the compiler at all,
- * so the stated JIT-stability guarantee was not enforced anywhere. The failure it was meant to
- * prevent is a series that looks flat because the workload is momentarily uniform while the
- * compiler is still promoting hot methods — measurement then starts, tiered compilation
- * finishes a few seconds in, and the mod is charged for the difference.
+ * <p>{@code docs/METHODOLOGY.md} section 2 ends warmup when the timing series has plateaued
+ * <em>and</em> compilation has settled. A series can look flat because the workload is
+ * momentarily uniform while the compiler is still promoting hot methods; measurement started
+ * there charges the mod for the compiler's remaining work.
  *
- * <p>{@link CompilationMXBean#getTotalCompilationTime()} is the portable signal: monotonic
- * milliseconds spent compiling, present on every JVM that has a JIT. A plateau is defined as
- * consecutive observations whose growth stays under a small threshold — not zero growth, since
- * background recompilation never entirely stops in a running game and demanding zero would mean
- * warmup never converges.
+ * <p>{@link CompilationMXBean#getTotalCompilationTime()} is the portable signal. A plateau is
+ * consecutive observations whose growth stays under a small threshold — not zero, since
+ * background recompilation never entirely stops in a running game.
  *
- * <p>Where the bean is absent — an interpreted-only or AOT-only JVM — the gate opens rather
- * than blocking forever, and the caller records that the compilation half was unavailable
- * rather than claiming it passed.
+ * <p>Where the bean is absent the gate opens rather than blocking forever, and the caller
+ * records that the half was unavailable rather than claiming it passed.
  */
 public final class CompilationMonitor {
 
@@ -30,10 +24,8 @@ public final class CompilationMonitor {
      * Compilation growth per observation, in milliseconds, below which the compiler counts as
      * settled.
      *
-     * <p>Deliberately non-zero. A steady-state Minecraft server still compiles a few
-     * milliseconds' worth per second as new code paths are reached, so a zero threshold would
-     * hold warmup open until the ceiling on every run and flag every run unconverged — turning
-     * a real gate into a permanent false alarm, which is worse than no gate.
+     * <p>Non-zero: a steady-state server still compiles a few milliseconds' worth per second,
+     * so a zero threshold would hold every run to its ceiling.
      */
     public static final double DEFAULT_TOLERANCE_MS = 10.0;
 
@@ -73,10 +65,8 @@ public final class CompilationMonitor {
     /**
      * A monitor that never blocks the gate.
      *
-     * <p>For tests exercising the timing half alone, and for callers that have
-     * deliberately opted out. Distinguishable from a real one through
-     * {@link #available()}, so a run that used it does not record a compilation
-     * gate it never applied.
+     * <p>For tests exercising the timing half alone. {@link #available()} stays false, so a
+     * run does not record a gate it never applied.
      */
     public static CompilationMonitor alwaysSettled() {
         return new CompilationMonitor(null, DEFAULT_TOLERANCE_MS, 1);
@@ -141,9 +131,8 @@ public final class CompilationMonitor {
     /**
      * Whether compilation has settled.
      *
-     * <p>True when the bean is unavailable: a gate that can never open would hold every run at
-     * its warmup ceiling on such a JVM. The caller records the reason warmup ended, so an
-     * unavailable half is visible rather than passed off as a satisfied one.
+     * <p>True when the bean is unavailable, since a gate that can never open would hold every
+     * run to its ceiling. The caller records the reason warmup ended.
      */
     public boolean settled() {
         return !available || quietObservations >= required;

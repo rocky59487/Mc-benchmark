@@ -7,6 +7,7 @@ tested is whether we can read what mod authors actually ship.
 from __future__ import annotations
 
 import json
+import os
 import struct
 import zipfile
 from pathlib import Path
@@ -357,13 +358,27 @@ class TestMixinOverlap:
         assert result.overlaps == {}
 
 
-REAL_JAR = Path(
-    "/root/.claude/uploads/185810f2-003c-50db-9b8b-cdb95e052274/"
-    "f789e4ae-sodiumfabric0.9.1mc26.1.2.jar"
-)
+def _real_jar() -> Path | None:
+    """A real shipped mod to test against, if one is available.
+
+    Set MCBENCH_SAMPLE_JAR to a mod jar to enable these. Absent, they skip:
+    the jar is not redistributable (docs/LICENSING.md), so it cannot live in
+    the repository.
+    """
+    raw = os.environ.get("MCBENCH_SAMPLE_JAR")
+    if not raw:
+        return None
+    try:
+        path = Path(raw)
+        return path if path.is_file() else None
+    except OSError:
+        return None
 
 
-@pytest.mark.skipif(not REAL_JAR.exists(), reason="sample jar not present")
+REAL_JAR = _real_jar()
+
+
+@pytest.mark.skipif(REAL_JAR is None, reason="set MCBENCH_SAMPLE_JAR to enable")
 class TestAgainstARealMod:
     """Verifies against a real shipped mod rather than only fixtures."""
 

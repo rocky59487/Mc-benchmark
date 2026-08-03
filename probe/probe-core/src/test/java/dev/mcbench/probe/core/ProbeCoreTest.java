@@ -6,12 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.StringWriter;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -544,24 +547,32 @@ class ProbeCoreTest {
         }
 
         @Test
-        void gcEventsAreIndividualCollectionsWhenAvailable() {
+        void gcNotificationsArriveAndDescribeRealCollections() throws InterruptedException {
+            // The subscription is reflective and the delivery is asynchronous, so a monitor
+            // that reports hasGcEvents() proves only that a listener was accepted. This
+            // provokes collections and waits for them: nothing arriving means every run's
+            // gc_pause series would silently fall back to interval aggregates.
             RuntimeMonitor monitor = new RuntimeMonitor();
             monitor.startListening();
             try {
+                assumeTrue(monitor.hasGcEvents(), "this JVM emits no GC notifications");
                 monitor.beginCollecting();
-                // Provoke collections. Not asserted to happen — a test JVM with a
-                // huge heap may not collect at all — but if any arrive they must
-                // arrive one per collection with their own duration.
-                for (int i = 0; i < 50; i++) {
-                    byte[][] hold = new byte[256][];
-                    for (int j = 0; j < hold.length; j++) {
-                        hold[j] = new byte[8192];
-                    }
+
+                List<RuntimeMonitor.GcEvent> seen = new ArrayList<>();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+                while (seen.isEmpty() && System.nanoTime() < deadline) {
+                    churn();
+                    System.gc();
+                    Thread.sleep(50);
+                    seen.addAll(monitor.drainEvents());
                 }
-                System.gc();
-                for (RuntimeMonitor.GcEvent event : monitor.drainEvents()) {
+
+                assertFalse(seen.isEmpty(), "a listening monitor must receive collections");
+                for (RuntimeMonitor.GcEvent event : seen) {
                     assertTrue(event.durationMs() >= 0);
                     assertTrue(event.collector() != null && !event.collector().isEmpty());
+                    assertTrue(event.startMillis() > 0, "an event must be locatable in time");
+                    assertTrue(event.heapBeforeMb() > 0, "a collection sees a non-empty heap");
                     assertTrue(
                             event.heapAfterMb() <= event.heapBeforeMb() + 1.0,
                             "a collection cannot end with more heap than it began with");
@@ -569,6 +580,44 @@ class ProbeCoreTest {
             } finally {
                 monitor.stopListening();
             }
+        }
+
+        @Test
+        void collectionsOutsideTheMeasurementWindowAreNotRecorded() throws InterruptedException {
+            // Warmup collects garbage too, and counting it would charge the measurement for
+            // pauses that happened before it started.
+            RuntimeMonitor monitor = new RuntimeMonitor();
+            monitor.startListening();
+            try {
+                assumeTrue(monitor.hasGcEvents(), "this JVM emits no GC notifications");
+                churn();
+                System.gc();
+                Thread.sleep(200);
+                assertTrue(monitor.drainEvents().isEmpty(), "not collecting yet");
+
+                monitor.beginCollecting();
+                monitor.stopListening();
+                churn();
+                System.gc();
+                Thread.sleep(200);
+                assertTrue(monitor.drainEvents().isEmpty(), "unsubscribed");
+                assertFalse(monitor.hasGcEvents());
+            } finally {
+                monitor.stopListening();
+            }
+        }
+
+        /** Enough short-lived allocation to make a young collection likely. */
+        private static void churn() {
+            long sink = 0;
+            for (int i = 0; i < 200; i++) {
+                byte[][] hold = new byte[256][];
+                for (int j = 0; j < hold.length; j++) {
+                    hold[j] = new byte[8192];
+                }
+                sink += hold.length;
+            }
+            assertTrue(sink > 0);
         }
 
         @Test

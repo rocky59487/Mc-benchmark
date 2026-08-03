@@ -62,6 +62,15 @@ The third is a real option, not a failure — but its samples are never publishe
 as MSPT. An honest measurement of the tick period beats a mislabelled
 measurement of the scheduler.
 
+A platform that keeps its durations in a ring buffer needs `TickTimeRing`, not
+an index computed from a tick number. Paper writes the ring at
+`tickCount % length` but `Bukkit.getCurrentTick()` reports a *different*
+counter, derived from wall-clock time, so indexing by it reads an arbitrary
+slot — which still holds a real duration from some recent tick, and so produces
+plausible numbers instead of an error. `TickTimeRing` diffs consecutive
+snapshots and takes whatever changed, which needs no knowledge of the indexing
+and recovers on its own after a gap.
+
 ### Commands report their outcome
 
 `executeCommand` returns a boolean because a command can be refused without

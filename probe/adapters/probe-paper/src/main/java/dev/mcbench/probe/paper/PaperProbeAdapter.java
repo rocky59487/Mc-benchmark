@@ -2,6 +2,7 @@ package dev.mcbench.probe.paper;
 
 import dev.mcbench.probe.core.ProbeAdapter;
 import dev.mcbench.probe.core.ProbeSession;
+import dev.mcbench.probe.core.TickTimeRing;
 import java.lang.reflect.Method;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
@@ -22,7 +23,7 @@ public final class PaperProbeAdapter extends ProbeAdapter {
 
     private final Plugin plugin;
     private final Method tickTimes;
-    private long lastSeenTick = -1;
+    private final TickTimeRing ring = new TickTimeRing();
 
     public PaperProbeAdapter(ProbeSession session, Plugin plugin) {
         super(session);
@@ -70,7 +71,8 @@ public final class PaperProbeAdapter extends ProbeAdapter {
      * Sample one tick. Called from a scheduler task running every tick on the main thread.
      *
      * <p>Reads Paper's own measurement of the tick that just completed where it can, and only
-     * otherwise records the period.
+     * otherwise records the period. Which slot of the ring that is comes from diffing snapshots
+     * rather than from a tick number — see {@link TickTimeRing}.
      */
     public void sampleTick() {
         if (tickTimes == null) {
@@ -83,18 +85,7 @@ public final class PaperProbeAdapter extends ProbeAdapter {
                 onTickPeriod();
                 return;
             }
-            int current = Bukkit.getCurrentTick();
-            if (current == lastSeenTick) {
-                return;
-            }
-            lastSeenTick = current;
-            // The ring is indexed by tick number; the entry for the tick that just finished is
-            // the one before the current index.
-            int index = Math.floorMod(current - 1, times.length);
-            long duration = times[index];
-            if (duration > 0) {
-                recordPlatformTick(duration);
-            }
+            ring.accept(times, this::recordPlatformTick);
         } catch (ReflectiveOperationException | RuntimeException e) {
             // The method disappeared or misbehaved mid-run. Falling back keeps the run alive,
             // and the source change is recorded in the stream.

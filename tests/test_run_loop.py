@@ -362,6 +362,70 @@ class TestWhatTheGameSaysItWas:
         assert record["reported"]["scenario"] == "entity-mobcap-saturation"
         assert "configuration_mismatches" not in record
 
+    def client_run_reporting(self, tmp_path, monkeypatch, **reported):
+        if reported:
+            monkeypatch.setenv(
+                "MCBENCH_STANDIN_REPORTS",
+                ",".join(f"{k}={v}" for k, v in reported.items()),
+            )
+        scenario_id = next(
+            s.id for s in load_scenarios(REPO / "scenarios") if s.side is Side.CLIENT
+        )
+        harness, planned, _ = build(
+            tmp_path, scenario_id, "probe-client-reference.jsonl"
+        )
+        harness._java_release = ""
+        return harness.execute_run(planned)
+
+    def test_the_window_the_client_rendered_at_is_checked(
+        self, tmp_path, monkeypatch
+    ):
+        # Resolution decides what a frame time means, and the launcher is free
+        # to ignore the size it was asked for. Nothing else in the run would
+        # show that it had.
+        outcome = self.client_run_reporting(
+            tmp_path, monkeypatch, window="1280x720"
+        )
+
+        assert outcome.configuration_mismatches == [
+            "window: recorded 1920x1080, game reported 1280x720"
+        ]
+        # Every variant renders through the same launcher, so this makes the
+        # published description wrong rather than the comparison invalid. The
+        # client fixture is too short to be admissible on its own account, so
+        # the absence of this flag is the claim, not the run's admissibility.
+        assert RunFlag.CONFIGURATION_MISMATCH not in outcome.metrics.flags
+
+    def test_the_asked_for_window_says_nothing(self, tmp_path, monkeypatch):
+        outcome = self.client_run_reporting(
+            tmp_path, monkeypatch, window="1920x1080"
+        )
+        assert outcome.configuration_mismatches == []
+
+    def test_a_suite_that_asked_for_another_size_is_held_to_that(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("MCBENCH_STANDIN_REPORTS", "window=1920x1080")
+        scenario_id = next(
+            s.id for s in load_scenarios(REPO / "scenarios") if s.side is Side.CLIENT
+        )
+        harness, planned, _ = build(
+            tmp_path, scenario_id, "probe-client-reference.jsonl",
+            game_settings={"resolution": "1280x720"},
+        )
+        harness._java_release = ""
+        outcome = harness.execute_run(planned)
+
+        assert outcome.configuration_mismatches == [
+            "window: recorded 1280x720, game reported 1920x1080"
+        ]
+
+    def test_a_server_run_is_not_asked_about_a_window(self, tmp_path, monkeypatch):
+        # It has none, and comparing against the client default would flag
+        # every server run in every suite.
+        outcome = self.run_reporting(tmp_path, monkeypatch, window="1280x720")
+        assert outcome.configuration_mismatches == []
+
 
 class TestOneClientRun:
     def test_the_authored_world_survives_the_round_trip(self, tmp_path):

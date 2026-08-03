@@ -1397,7 +1397,7 @@ class Harness:
                 self.effective_game_settings(variant).get("maxFps", CLIENT_FPS_CAP)
             ),
         )
-        disagreements = self._configuration_mismatches(stream, scenario)
+        disagreements = self._configuration_mismatches(stream, scenario, variant)
         mismatches = [
             f"{field_name}: recorded {recorded}, game reported {reported}"
             for field_name, recorded, reported in disagreements
@@ -1621,16 +1621,25 @@ class Harness:
     #: Fields whose disagreement means a different experiment ran, rather than
     #: the same one in a differently-described environment. A run that measured
     #: another scenario, another Minecraft or another loader cannot be pooled
-    #: with runs that did not. A run whose JVM was recorded wrong still measured
-    #: what it claims to have measured, under the same launcher as every other
-    #: variant, so it stays admissible and carries both values for the reader.
+    #: with runs that did not.
+    #:
+    #: The JVM and the window size are outside it. Both are properties of the
+    #: launch that every variant shares, so a wrong one leaves the comparison
+    #: intact and only makes the published description wrong; the record carries
+    #: what was asked for and what happened, and the reader can see both.
+    #:
+    #: Variants disagreeing with *each other* about either would be a real
+    #: confound rather than a mis-description, and is not detected here. It
+    #: cannot be read off a single run, and the rule needs care: a suite may
+    #: legitimately declare a different resolution per variant, so uniformity
+    #: has to be required within a declared resolution rather than across all.
     DISQUALIFYING_FIELDS = frozenset({
         "platform", "scenario", "scenario_version", "scenario_hash",
         "minecraft_version", "loader_version",
     })
 
     def _configuration_mismatches(
-        self, stream: ProbeStream, scenario: Scenario
+        self, stream: ProbeStream, scenario: Scenario, variant: Variant | None = None
     ) -> list[tuple[str, str, str]]:
         """Facts the game reported that contradict what this run recorded.
 
@@ -1661,6 +1670,10 @@ class Harness:
             ("loader_version", self.suite.loader_version or ""),
             ("java", self._java_release_on_path()),
         ]
+        if scenario.side is Side.CLIENT:
+            expected.append(
+                ("window", "{}x{}".format(*self.effective_resolution(variant)))
+            )
         return [
             (field_name, recorded, reported)
             for field_name, recorded in expected

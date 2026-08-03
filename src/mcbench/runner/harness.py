@@ -261,8 +261,14 @@ class RunOutcome:
             "flags": [f.value for f in self.metrics.flags] if self.metrics else [],
             "wall_clock_s": round(self.wall_clock_s, 3),
             "world": self.world_fingerprint,
-            "world_source": "restored" if self.world_restored else "generated",
         }
+        if self.metrics is not None:
+            # Only for a run that got far enough to have a world. An attempt
+            # that died in preparation has no answer, and defaulting it to
+            # "generated" would state something nobody observed.
+            record["world_source"] = (
+                "restored" if self.world_restored else "generated"
+            )
         if self.error:
             record["error"] = self.error
         if self.exit_code is not None:

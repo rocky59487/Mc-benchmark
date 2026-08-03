@@ -823,3 +823,24 @@ class TestAWholeSuite:
         }
         assert flagged == {"candidate"}
 
+
+
+class TestAFailedAttemptClaimsNothing:
+    def test_a_run_that_never_started_has_no_world_source(self, tmp_path):
+        """world_source answers "did this run make its world or get one".
+
+        A run that died preparing its instance has no answer. Emitting the
+        default reads as "generated", which is the value that makes a refused
+        fingerprint look like the run's own doing.
+        """
+        harness, planned, scenario = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness.scenarios[scenario.id] = replace(
+            scenario, world={**scenario.world, "generator": "swiss_cheese"}
+        )
+        record = harness.execute_run(planned).to_record()
+
+        assert record["status"] == "failed"
+        assert "world_source" not in record
+        assert "swiss_cheese" in record["error"]

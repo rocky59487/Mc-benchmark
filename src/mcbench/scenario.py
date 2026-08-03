@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from .metrics import METRICS
 
@@ -211,6 +211,60 @@ class Scenario:
             f"the camera reaches {reach} chunks from spawn once render distance "
             f"{render} is counted, and setup pre-generates {generated}, so the "
             f"run generates terrain while being measured"
+        )
+
+    #: Chunks of settled terrain a fingerprint region needs inside the
+    #: pre-generated one.
+    #:
+    #: Worldgen is not chunk-local. Features cross boundaries, so a chunk near
+    #: the edge of what has been generated keeps changing while its neighbours
+    #: are still being made, and two runs that stopped at different points
+    #: disagree about it.
+    #:
+    #: Six because six is the smallest margin observed to hold, not because
+    #: anything in Minecraft says six. Measured on this repository's own client
+    #: scenarios: visual-biome-flyby fingerprints a radius of 16 inside a
+    #: pre-generated 20, a margin of 4, and the run that made the world
+    #: disagreed with the runs that restored it on 5 of 1089 chunks, every one
+    #: of them in rings 14 to 16. reference-hardware-baseline fingerprints 8
+    #: inside 14, a margin of 6, and thirty runs agree to the digest.
+    #:
+    #: A larger number would have been safer to assert and would have flagged a
+    #: configuration measured to work, which is the more expensive mistake: a
+    #: check that fires on something known to be fine gets turned off.
+    FINGERPRINT_MARGIN_CHUNKS: ClassVar[int] = 6
+
+    def fingerprint_margin_gap(self) -> str:
+        """Whether the fingerprint region sits in settled terrain, or "".
+
+        A fingerprint taken too close to the edge of generation is not a check
+        on whether two runs measured the same world; it is a check on when each
+        of them stopped generating. The run that makes the world is the one
+        least settled and also the one the cache is taken from, so it is the
+        run that ends up in the minority and is refused.
+        """
+        radius = self.fingerprint_radius_chunks
+        if radius is None:
+            return ""
+        generated = next(
+            (
+                int(step["radius_chunks"])
+                for step in self.setup
+                if step.get("op") == "generate_chunks"
+            ),
+            None,
+        )
+        if generated is None:
+            return ""
+        margin = generated - radius
+        if margin >= self.FINGERPRINT_MARGIN_CHUNKS:
+            return ""
+        return (
+            f"the fingerprint covers a radius of {radius} inside a pre-generated "
+            f"{generated}, leaving {margin} chunk(s) of settled terrain where "
+            f"{self.FINGERPRINT_MARGIN_CHUNKS} are wanted; the outer rings keep "
+            f"changing while their neighbours generate, so the run that made the "
+            f"world will not match the runs that restore it"
         )
 
     def duration(self, preset: Preset = Preset.FULL) -> float:

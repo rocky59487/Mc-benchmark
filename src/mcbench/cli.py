@@ -98,8 +98,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
     # Valid and still measuring something other than what it describes.
     for scenario in scenarios:
-        if gap := scenario.worldgen_reach_gap():
-            print(f"⚠ {scenario.id}: {gap}", file=sys.stderr)
+        for gap in (scenario.worldgen_reach_gap(), scenario.fingerprint_margin_gap()):
+            if gap:
+                print(f"⚠ {scenario.id}: {gap}", file=sys.stderr)
 
     if not args.suite:
         return 0

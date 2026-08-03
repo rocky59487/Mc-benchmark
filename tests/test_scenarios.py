@@ -416,3 +416,75 @@ class TestWorldgenReach:
         assert "reaches 22 chunks" in found["reference-hardware-baseline"]
         assert "reaches 41 chunks" in found["visual-biome-flyby"]
         assert found["visual-particle-storm"] == ""
+
+
+class TestFingerprintMargin:
+    """A fingerprint has to sit in terrain that has stopped changing.
+
+    Worldgen is not chunk-local, so a chunk near the edge of what has been
+    generated keeps changing while its neighbours are made. Fingerprint there
+    and the check stops being "did these runs measure the same world" and
+    becomes "did they stop generating at the same moment".
+
+    Both numbers here are measurements. visual-biome-flyby fingerprints 16
+    inside a pre-generated 20 and the run that made the world disagreed with
+    the runs that restored it on 5 of 1089 chunks, all in rings 14 to 16.
+    reference-hardware-baseline fingerprints 8 inside 14 and thirty runs agree.
+    """
+
+    def _client(self, fingerprint, generated):
+        return parse_scenario({
+            "id": "margin-test", "version": "1.0.0", "title": "M",
+            "side": "client", "category": "visual",
+            "world": {
+                "seed": 1, "generator": "default",
+                "spawn": {"x": 0.5, "y": 80.0, "z": 0.5},
+                "fingerprint_region": {"radius_chunks": fingerprint},
+            },
+            "measurement": {"warmup": {"min": 60}, "duration": {"full": 60}},
+            "setup": [{"op": "generate_chunks", "radius_chunks": generated}],
+        })
+
+    def test_the_threshold_is_where_the_measurements_put_it(self):
+        # 6 held over thirty runs; 4 did not hold over three.
+        assert self._client(8, 14).fingerprint_margin_gap() == ""
+        assert self._client(16, 20).fingerprint_margin_gap() != ""
+        assert self._client(8, 13).fingerprint_margin_gap() != ""
+
+    def test_the_message_carries_both_radii(self):
+        gap = self._client(16, 20).fingerprint_margin_gap()
+        assert "radius of 16" in gap
+        assert "pre-generated 20" in gap
+        assert "leaving 4" in gap
+
+    def test_a_scenario_that_pre_generates_nothing_is_not_judged(self):
+        # Nothing to be inside of. The fingerprint then covers whatever the run
+        # produced, which is a different problem with a different answer.
+        scenario = parse_scenario({
+            "id": "no-pregen", "version": "1.0.0", "title": "N",
+            "side": "client", "category": "visual",
+            "world": {"seed": 1, "generator": "default",
+                      "fingerprint_region": {"radius_chunks": 8}},
+            "measurement": {"warmup": {"min": 60}, "duration": {"full": 60}},
+        })
+        assert scenario.fingerprint_margin_gap() == ""
+
+    def test_a_scenario_with_no_declared_region_is_not_judged(self):
+        scenario = parse_scenario({
+            "id": "no-region", "version": "1.0.0", "title": "N",
+            "side": "client", "category": "visual",
+            "world": {"seed": 1, "generator": "default"},
+            "measurement": {"warmup": {"min": 60}, "duration": {"full": 60}},
+            "setup": [{"op": "generate_chunks", "radius_chunks": 10}],
+        })
+        assert scenario.fingerprint_margin_gap() == ""
+
+    def test_the_shipped_scenarios_split_the_way_they_were_measured(self):
+        found = {
+            s.id: bool(s.fingerprint_margin_gap())
+            for s in load_scenarios(SCENARIO_ROOT)
+        }
+        # Thirty runs of this one agreed on a digest.
+        assert not found["reference-hardware-baseline"]
+        # This one did not, on the third run of the suite.
+        assert found["visual-biome-flyby"]

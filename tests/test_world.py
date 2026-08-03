@@ -232,6 +232,106 @@ class TestFingerprint:
         b = _world(tmp_path, "b", {(0, 0): world([2, 0, 1])})
         assert fingerprint_world(a).sha256 == fingerprint_world(b).sha256
 
+    def _packed(self, palette, blocks, *, bits, count=4096, padded=True):
+        """A section holding ``blocks`` at the first positions, air after.
+
+        Written as block names rather than palette indices so a test can say
+        "the same blocks in the same places" without the palette's own order
+        leaking into what it asserts, including through the padding.
+        """
+        slot = {name: i for i, name in enumerate(palette)}
+        fill = slot[blocks[-1]] if blocks else 0
+        indices = [slot[name] for name in blocks]
+        indices += [fill] * (count - len(indices))
+
+        def signed(word: int) -> int:
+            # NBT longs are signed, so the top bit is the sign rather than
+            # magnitude, exactly as the game writes them.
+            word &= 0xFFFFFFFFFFFFFFFF
+            return word - (1 << 64) if word >= 1 << 63 else word
+        words: list[int] = []
+        if padded:
+            per_word = 64 // bits
+            for start in range(0, count, per_word):
+                word = 0
+                for offset, index in enumerate(indices[start:start + per_word]):
+                    word |= index << (offset * bits)
+                words.append(signed(word))
+        else:
+            accumulated, available = 0, 0
+            for index in indices:
+                accumulated |= index << available
+                available += bits
+                while available >= 64:
+                    words.append(signed(accumulated))
+                    accumulated >>= 64
+                    available -= 64
+            if available:
+                words.append(signed(accumulated))
+        return {"Y": 0, "block_states": {
+            "palette": [{"Name": name} for name in palette],
+            "data": LongArray(words),
+        }}
+
+    def test_palette_order_does_not_affect_the_hash(self, tmp_path):
+        """The property that decides whether the check is usable at all.
+
+        Palette order is the order the generator interned blocks, and it varies
+        between runs of one seed. Hashing indices against the stored palette
+        made identical terrain hash differently, so every pair of runs was a
+        mismatch and nothing was ever pooled.
+        """
+        stone, dirt = "minecraft:stone", "minecraft:dirt"
+        placed = [stone, dirt, dirt, stone]
+        # The same blocks in the same places, interned the other way round.
+        forward = self._packed([stone, dirt], placed, bits=4)
+        reverse = self._packed([dirt, stone], placed, bits=4)
+        a = _world(tmp_path, "a", {(0, 0): {"DataVersion": 3955,
+                                            "sections": [forward]}})
+        b = _world(tmp_path, "b", {(0, 0): {"DataVersion": 3955,
+                                            "sections": [reverse]}})
+        assert fingerprint_world(a).sha256 == fingerprint_world(b).sha256
+
+    def test_different_blocks_still_change_the_hash(self, tmp_path):
+        """Resolving the palette must not make everything hash the same."""
+        stone, dirt = "minecraft:stone", "minecraft:dirt"
+        a = _world(tmp_path, "a", {(0, 0): {"DataVersion": 3955, "sections": [
+            self._packed([stone, dirt], [stone, dirt, dirt, stone], bits=4)]}})
+        b = _world(tmp_path, "b", {(0, 0): {"DataVersion": 3955, "sections": [
+            self._packed([stone, dirt], [stone, dirt, stone, stone], bits=4)]}})
+        assert fingerprint_world(a).sha256 != fingerprint_world(b).sha256
+
+    def test_the_pre_1_16_packing_is_understood(self, tmp_path):
+        """Before 20w17a an entry could straddle two longs.
+
+        A 20-entry palette needs 5 bits, which does not divide 64, so the two
+        layouts genuinely differ. At 4 bits they coincide and prove nothing.
+        """
+        palette = [f"minecraft:b{i}" for i in range(20)]
+        placed = [palette[i % 20] for i in range(50)]
+        old = _world(tmp_path, "old", {(0, 0): {"DataVersion": 2500, "sections": [
+            self._packed(palette, placed, bits=5, padded=False)]}})
+        new = _world(tmp_path, "new", {(0, 0): {"DataVersion": 3955, "sections": [
+            self._packed(palette, placed, bits=5, padded=True)]}})
+        # Same blocks in the same places, written in the two layouts.
+        assert fingerprint_world(old).sha256 == fingerprint_world(new).sha256
+
+    def test_only_the_declared_region_is_hashed(self, tmp_path):
+        """Scenarios declare fingerprint_region; nothing used to read it.
+
+        Hashing every saved chunk made the result depend on how far a run's
+        chunk loading happened to reach, which is not a property of the world.
+        """
+        near = {(0, 0): _chunk(), (1, 1): _chunk()}
+        far = {**near, (9, 9): _chunk("minecraft:deepslate")}
+        a = _world(tmp_path, "a", near)
+        b = _world(tmp_path, "b", far)
+
+        assert fingerprint_world(a).sha256 != fingerprint_world(b).sha256
+        within = fingerprint_world(a, radius_chunks=2)
+        assert within.sha256 == fingerprint_world(b, radius_chunks=2).sha256
+        assert within.chunks == 2
+
     def test_chunk_position_is_part_of_the_hash(self, tmp_path):
         # The same terrain in a different place is a different world, and a
         # fingerprint that ignored position would call an offset world equal.

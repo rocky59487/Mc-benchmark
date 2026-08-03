@@ -1,6 +1,6 @@
 {
   "id": "visual-particle-storm",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "title": "Particle storm",
   "description": "Dense sustained particle emission from a static viewpoint. Isolates the particle pipeline — allocation, update, sort, and draw — from terrain rendering by holding the camera still and the terrain pre-meshed. A common source of frametime spikes that whole-scene benchmarks average away.",
   "side": "client",
@@ -37,7 +37,7 @@
         { "op": "command", "value": "particle minecraft:smoke 0 6 0 8 3 8 0.05 400 force" },
         { "op": "command", "value": "particle minecraft:end_rod 0 8 0 8 3 8 0.02 300 force" },
         { "op": "command", "value": "particle minecraft:portal 0 6 0 8 3 8 0.50 300 force" },
-        { "op": "command", "value": "particle minecraft:dust 1 0 0 1 0 7 0 6 3 6 0.00 200 force" },
+        { "op": "command", "value": "particle minecraft:dust{color:[1.0,0.0,0.0],scale:1.0} 0 7 0 6 3 6 0.00 200 force" },
         { "op": "command", "value": "particle minecraft:falling_water 0 9 0 8 1 8 0.00 200 force" },
         { "op": "command", "value": "particle minecraft:crit 0 6 0 6 3 6 0.20 200 force" },
         { "op": "wait", "ticks": 2 }

@@ -40,6 +40,7 @@ from ..targets import (
     UnsupportedTarget,
     required_capabilities,
 )
+from ..versions import Version
 
 __all__ = [
     "PlanError",
@@ -99,8 +100,52 @@ class PlanError(ValueError):
     """A scenario action could not be compiled."""
 
 
-def _check_command(line: str, where: str) -> str:
-    """Reject a command that would break out of its line.
+#: Particles that carry options. Everything else takes none, so its command
+#: reads the same on every version and there is nothing here to check.
+_PARAMETERISED_PARTICLES = frozenset({
+    "minecraft:block", "minecraft:block_marker", "minecraft:dust",
+    "minecraft:dust_color_transition", "minecraft:dust_pillar",
+    "minecraft:entity_effect", "minecraft:falling_dust", "minecraft:item",
+    "minecraft:sculk_charge", "minecraft:shriek", "minecraft:vibration",
+})
+
+#: Where particle options stopped being positional and moved into the
+#: particle's own SNBT.
+PARTICLE_OPTIONS_SNBT_FROM = "1.20.5"
+
+
+def _particle_options_gap(line: str, version: Version | None) -> str:
+    """Whether this particle command uses options the target no longer reads.
+
+    1.20.5 moved them out of the argument list and into the particle:
+    ``particle minecraft:dust 1 0 0 2 ...`` became
+    ``particle minecraft:dust{color:[1,0,0],scale:2} ...``. The old spelling is
+    not degraded, it is rejected, and a rejected workload command is a run that
+    reports numbers for a load it never applied.
+
+    Checked by name rather than by counting arguments. A particle that takes no
+    options is unaffected and must not be flagged, and the argument list itself
+    has grown a viewer since — counting would refuse valid commands, which is
+    the more expensive mistake.
+    """
+    if version is None or not version.at_least(PARTICLE_OPTIONS_SNBT_FROM):
+        return ""
+    parts = line.split()
+    if len(parts) < 2 or parts[0] != "particle":
+        return ""
+    name = parts[1].split("{")[0]
+    if name not in _PARAMETERISED_PARTICLES or "{" in parts[1]:
+        return ""
+    return (
+        f"{name} takes options, and from {PARTICLE_OPTIONS_SNBT_FROM} they "
+        f"belong to the particle rather than the argument list: write "
+        f"{name}{{...}} instead of listing them after the name"
+    )
+
+
+def _check_command(line: str, where: str, version: Version | None = None) -> str:
+    """Reject a command that would break out of its line, or that this target
+    would reject at run time.
 
     Refuses rather than escapes or strips. A scenario doing this is either
     malicious or broken, and silently rewriting it into something that *looks*
@@ -121,6 +166,8 @@ def _check_command(line: str, where: str) -> str:
             f"{where}: command is {len(line)} characters, over the "
             f"{MAX_COMMAND_LENGTH} limit; it would be truncated at runtime"
         )
+    if gap := _particle_options_gap(line, version):
+        raise PlanError(f"{where}: {gap}")
     return line
 
 
@@ -706,9 +753,12 @@ def compile_plan(
         setup_lines.append(dialect.tick_warp(span * 2))
 
     plan.setup = [
-        _check_command(line, "setup") for line in gamerules + setup_lines
+        _check_command(line, "setup", dialect.version)
+        for line in gamerules + setup_lines
     ]
-    plan.workload = [_check_command(line, "workload") for line in workload_lines]
+    plan.workload = [
+        _check_command(line, "workload", dialect.version) for line in workload_lines
+    ]
     plan.instance_settings = {**setup_settings, **workload_settings}
 
     plan.properties = {

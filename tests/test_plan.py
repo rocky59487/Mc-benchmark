@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from mcbench.config import Loader
 from mcbench.runner.plan import (
     MAX_FILL_VOLUME,
     PlanError,
@@ -20,6 +21,7 @@ from mcbench.runner.plan import (
     write_plan,
 )
 from mcbench.scenario import Preset, Side, load_scenarios, parse_scenario
+from mcbench.targets import Target
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -553,3 +555,61 @@ class TestShippedScenariosCompile:
                     (abs(x1 - x0) + 1) * (abs(y1 - y0) + 1) * (abs(z1 - z0) + 1)
                 )
                 assert volume <= MAX_FILL_VOLUME, f"{scenario.id}: {line}"
+
+
+class TestParticleOptions:
+    """1.20.5 moved particle options into the particle.
+
+    `particle minecraft:dust 1 0 0 2 ...` became
+    `particle minecraft:dust{color:[1,0,0],scale:2} ...`. The old spelling is
+    not degraded on a newer target, it is rejected, and a rejected workload
+    command means a run reporting numbers for a load it never applied.
+
+    Particle commands are raw `command` ops, so nothing compiled them and
+    nothing checked them. visual-particle-storm shipped one and declared no
+    version bound at all.
+    """
+
+    def _plan(self, command, version):
+        scenario = parse_scenario({
+            "id": "particle-test", "version": "1.0.0", "title": "P",
+            "side": "client", "category": "visual",
+            "world": {"seed": 1, "generator": "default"},
+            "measurement": {"warmup": {"min": 60}, "duration": {"full": 60}},
+            "workload": [{"op": "command", "value": command}],
+        })
+        target = Target(platform=Loader.FABRIC, minecraft_version=version)
+        return compile_plan(scenario, target=target, strict=False)
+
+    def test_the_old_spelling_is_refused_on_a_new_target(self):
+        with pytest.raises(PlanError, match="belong to the particle"):
+            self._plan("particle minecraft:dust 1 0 0 2 0 7 0 6 3 6 0 200", "1.21.1")
+
+    def test_the_old_spelling_is_fine_on_an_old_target(self):
+        plan = self._plan(
+            "particle minecraft:dust 1 0 0 2 0 7 0 6 3 6 0 200", "1.20.4"
+        )
+        assert plan.workload
+
+    def test_the_new_spelling_passes(self):
+        plan = self._plan(
+            "particle minecraft:dust{color:[1,0,0],scale:2} 0 7 0 6 3 6 0 200",
+            "1.21.1",
+        )
+        assert plan.workload
+
+    def test_a_particle_with_no_options_is_never_flagged(self):
+        # Checked by name, not by counting arguments: the argument list has
+        # grown a viewer since, and a count would refuse valid commands.
+        for command in (
+            "particle minecraft:flame 0 6 0 8 3 8 0.05 400 force",
+            "particle minecraft:end_rod 0 8 0 8 3 8 0.02 300 force",
+            "particle minecraft:crit 0 6 0 6 3 6 0.20 200 force",
+        ):
+            assert self._plan(command, "1.21.1").workload
+
+    def test_every_shipped_scenario_compiles_for_the_versions_it_targets(self):
+        for scenario in load_scenarios(REPO / "scenarios"):
+            for version in ("1.20.4", "1.21.1"):
+                target = Target(platform=Loader.FABRIC, minecraft_version=version)
+                compile_plan(scenario, target=target, strict=False)

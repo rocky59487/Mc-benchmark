@@ -11,6 +11,7 @@ mod jars by design.
 
 from __future__ import annotations
 
+import json
 import zipfile
 
 import pytest
@@ -141,6 +142,50 @@ class TestHostileArchives:
         path.write_bytes(b"PK\x03\x04" + b"\x00" * 40)
         meta = read_jar(path)
         assert meta.errors
+
+    def test_a_nested_jar_named_as_a_traversal_is_a_label_only(self, tmp_path):
+        """The nested entry path comes from whoever built the jar.
+
+        It used to be written to a temporary file, which is why it had to be
+        flattened first. The bytes are now read from memory and the path is
+        carried only so a reader can say where the mod came from, so the test
+        is that a hostile name reaches the report and reaches nothing else.
+        """
+        hostile = "META-INF/jars/../../../../../../evil.jar"
+        inner = tmp_path / "inner.jar"
+        with zipfile.ZipFile(inner, "w") as archive:
+            archive.writestr(
+                "fabric.mod.json",
+                '{"schemaVersion":1,"id":"bundled","version":"9.9"}',
+            )
+        host = tmp_path / "host.jar"
+        with zipfile.ZipFile(host, "w") as archive:
+            archive.writestr(
+                "fabric.mod.json",
+                json.dumps({
+                    "schemaVersion": 1, "id": "host", "version": "1",
+                    "jars": [{"file": hostile}],
+                }),
+            )
+            archive.writestr(hostile, inner.read_bytes())
+
+        before = sorted(p.name for p in tmp_path.iterdir())
+        meta = read_jar(host)
+
+        # The bundled mod was read, so the bytes came from inside the host.
+        assert meta.mod_id == "host"
+        assert [n.mod_id for n in meta.nested] == ["bundled"]
+        assert [n.version for n in meta.nested] == ["9.9"]
+        # The name survives as a label, rooted at the host it came from.
+        # Compared by parts rather than as a string: a Path renders with the
+        # platform's separator, so the literal only matches on POSIX.
+        label = meta.nested[0].path
+        assert label.name == "evil.jar"
+        assert "host.jar" in label.parts
+        # And nothing was written anywhere, which is what the old flattening
+        # was defending against.
+        assert sorted(p.name for p in tmp_path.iterdir()) == before
+        assert not (tmp_path.parent / "evil.jar").exists()
 
     def test_a_normal_jar_is_unaffected(self, tmp_path):
         path = tmp_path / "fine.jar"

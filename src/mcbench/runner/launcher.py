@@ -71,15 +71,24 @@ def probe_launcher(
     if launcher is None:
         return LauncherCapabilities(path=None, detail="no launcher configured")
 
-    base = (
-        ["java", "-jar", str(launcher)]
-        if str(launcher).endswith(".jar")
-        else [str(launcher)]
-    )
+    if str(launcher).endswith(".jar"):
+        # A HeadlessMC jar with no --command drops into an interactive shell and
+        # waits on stdin, so a bare --help never returns and the probe times out
+        # three times over before assuming every flag is supported. Ask through
+        # --command, which runs one command and exits.
+        base = ["java", "-jar", str(launcher)]
+        attempts = [
+            ["--command", "help launch"],
+            ["--command", "help"],
+            ["--help"],
+        ]
+    else:
+        base = [str(launcher)]
+        attempts = [["--help"], ["launch", "--help"], ["help", "launch"]]
 
     found: set[str] = set()
     errors: list[str] = []
-    for args in (["--help"], ["launch", "--help"], ["help", "launch"]):
+    for args in attempts:
         try:
             completed = subprocess.run(
                 [*base, *args], capture_output=True, text=True,

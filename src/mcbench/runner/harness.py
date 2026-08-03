@@ -946,12 +946,25 @@ class Harness:
                 )
             jvm_args.append(f"-javaagent:{self.agent_jar.resolve()}")
 
+        capabilities = self.launcher_capabilities()
+        if capabilities.accepts("--gamedir"):
+            return self._flag_launch_command(instance, scenario, jvm_args, capabilities)
+        return self._headlessmc_launch_command(instance, scenario, jvm_args)
+
+    def _flag_launch_command(
+        self,
+        instance: Path,
+        scenario: Scenario,
+        jvm_args: list[str],
+        capabilities: LauncherCapabilities,
+    ) -> list[str]:
+        """A launcher that names the instance and the loader on its own flags."""
+        assert self.headlessmc is not None
         if str(self.headlessmc).endswith(".jar"):
             command = ["java", "-jar", str(self.headlessmc)]
         else:
             command = [str(self.headlessmc)]
 
-        capabilities = self.launcher_capabilities()
         command += ["launch", self.suite.minecraft_version]
         if capabilities.accepts("--loader"):
             command += ["--loader", self.suite.loader.value]
@@ -980,6 +993,58 @@ class Harness:
 
         command += self.extra_launch_args
         return command
+
+    def _headlessmc_launch_command(
+        self, instance: Path, scenario: Scenario, jvm_args: list[str]
+    ) -> list[str]:
+        """HeadlessMC 2.x, which configures by property rather than by flag.
+
+        Its `launch` takes a version id and `--jvm`, and nothing else this
+        harness needs: the instance directory is `hmc.gamedir`, extra game
+        arguments are `hmc.gameargs`, and the loader is selected by naming the
+        loader's own version id rather than by a `--loader` flag. Everything
+        else here is the same run.
+
+        `-quit` is deliberately not passed. It returns as soon as the game is
+        spawned, and the harness has to wait for the process it is timing.
+        """
+        assert self.headlessmc is not None
+        properties = [
+            f"-Dhmc.gamedir={instance}",
+            # One command, then exit, rather than an interactive shell on stdin.
+            "-Dhmc.exit.on.failed.command=true",
+        ]
+        if game_args := self._game_arguments(scenario):
+            properties.append(f"-Dhmc.gameargs={' '.join(game_args)}")
+
+        launch = ["launch", self._headlessmc_version_id(), "--jvm", " ".join(jvm_args)]
+        launch += self.extra_launch_args
+        return [
+            "java", *properties, "-jar", str(self.headlessmc),
+            "--command", " ".join(launch),
+        ]
+
+    def _headlessmc_version_id(self) -> str:
+        """The version HeadlessMC installed for this suite's loader.
+
+        HeadlessMC lists a modded install under the loader's own id, such as
+        `fabric-loader-0.19.3-1.21.1`. Asking for the plain Minecraft version
+        would launch vanilla, and every mod under test would be absent.
+        """
+        version = self.suite.minecraft_version
+        loader = self.suite.loader.value
+        if loader in ("vanilla", ""):
+            return version
+        if self.suite.loader_version:
+            return f"{loader}-loader-{self.suite.loader_version}-{version}"
+        return f"{loader}-loader-{version}"
+
+    def _game_arguments(self, scenario: Scenario) -> list[str]:
+        """Vanilla game arguments the scenario needs, for a launcher that
+        forwards them wholesale rather than naming each one."""
+        if scenario.side is Side.SERVER:
+            return []
+        return ["--quickPlaySingleplayer", self._client_world_name(scenario)]
 
     @staticmethod
     def _client_world_name(scenario: Scenario) -> str:

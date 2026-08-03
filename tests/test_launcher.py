@@ -161,6 +161,39 @@ class TestPreflight:
         )
         assert check.severity is Severity.OK
 
+    def test_a_launcher_without_gamedir_is_driven_by_property(self, tmp_path):
+        """HeadlessMC 2.x names neither the instance nor the loader on a flag.
+
+        Its launch takes a version id and --jvm. The instance is hmc.gamedir,
+        game arguments are hmc.gameargs, and the loader is chosen by asking for
+        the loader's own version id. Emitting --gamedir at it silently launched
+        vanilla in the wrong directory with none of the mods under test.
+        """
+        launcher = printing_stand_in(
+            tmp_path / "hmc.jar",
+            "launch : Launches the game.\n  --jvm  Jvm args to use.\n"
+            "  --retries  How many times to retry.\n",
+        )
+        # The stand-in is not really a jar; name it one so the jar path is taken.
+        jar = tmp_path / "renamed.jar"
+        jar.write_bytes(launcher.read_bytes())
+
+        h, scenarios = harness(tmp_path / "w", launcher, scenario="visual-biome-flyby")
+        command = h._launch_command(
+            tmp_path / "inst", scenarios["visual-biome-flyby"], h.suite.variants[0]
+        )
+        joined = " ".join(command)
+
+        assert "--gamedir" not in joined
+        assert f"-Dhmc.gamedir={tmp_path / 'inst'}" in command
+        assert "--command" in command
+        assert any(part.startswith("launch fabric-loader-0.16.5-1.21.1")
+                   for part in command)
+        assert any("quickPlaySingleplayer" in part and part.startswith("-Dhmc.gameargs")
+                   for part in command)
+        # -quit returns before the game does; the harness has to wait for it.
+        assert "-quit" not in joined
+
     def test_the_probe_runs_once_per_harness(self, tmp_path):
         launcher = fake_launcher(tmp_path / "hmc", FULL_HELP)
         h, _ = harness(tmp_path / "w", launcher)

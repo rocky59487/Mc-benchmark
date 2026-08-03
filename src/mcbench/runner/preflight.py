@@ -1,28 +1,26 @@
 """Environment capability and quiescence checks.
 
-Implements docs/METHODOLOGY.md section 3. This runs before any measurement and
+Implements docs/METHODOLOGY.md section 3. Runs before any measurement and
 decides whether the machine can produce a number worth publishing.
 
-The most valuable thing this module does is *refuse*. A benchmark that always
-produces output trains people to trust output it should never have produced —
-and the single easiest way to publish a meaningless Minecraft number is to
-benchmark a GPU renderer on a software rasteriser, where the GPU work the mod
+Checks may block. Benchmarking a GPU renderer on a software rasteriser is the
+easiest way to publish a meaningless Minecraft number: the GPU work the mod
 exists to optimise never happens at all.
 
-Standard library only; every probe degrades to UNKNOWN rather than raising, so a
-missing /proc entry or an unusual platform never takes the harness down.
+Platform readings come from hostinfo, which degrades rather than raising, so an
+unfamiliar system produces a weaker report instead of stopping the run.
 """
 
 from __future__ import annotations
 
 import os
 import platform
-import re
 import shutil
-import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+
+from . import hostinfo
 
 __all__ = [
     "Severity",
@@ -119,33 +117,20 @@ class Preflight:
 # --------------------------------------------------------------------------
 
 
-def _read(path: str) -> str | None:
-    try:
-        return Path(path).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-
-
 def _check_gpu(*, needs_gpu: bool) -> Check:
     """Detect real graphics hardware.
 
-    On Linux, kernel DRM render nodes under /dev/dri are the reliable signal:
-    they exist when a GPU driver is bound, and are absent in a plain container.
-    Their absence means any GL context will fall back to a software rasteriser.
-
-    For a client scenario this is a hard blocker, not a warning. Software
-    rasterisation does not merely make rendering slower — it relocates the work.
-    A renderer optimises GPU-side draw submission, culling, and buffer
-    management; run it on llvmpipe and that work becomes CPU work with entirely
-    different bottlenecks. The resulting number is not a slow measurement of the
-    mod, it is a measurement of something else.
+    For a client scenario an absent GPU is a hard blocker. Software
+    rasterisation relocates the work rather than merely slowing it: a renderer
+    optimises GPU-side draw submission, culling and buffer management, and on
+    llvmpipe all of that becomes CPU work with different bottlenecks. The number
+    would describe something other than the mod.
     """
-    dri = Path("/dev/dri")
-    nodes = sorted(p.name for p in dri.iterdir()) if dri.is_dir() else []
-    has_render_node = any(n.startswith(("render", "card")) for n in nodes)
-
-    if has_render_node:
-        return Check("gpu", Severity.OK, f"graphics device present ({', '.join(nodes)})")
+    adapters = hostinfo.graphics_adapters()
+    if adapters:
+        return Check(
+            "gpu", Severity.OK, f"graphics device present ({', '.join(adapters)})"
+        )
 
     if not needs_gpu:
         return Check(
@@ -157,8 +142,8 @@ def _check_gpu(*, needs_gpu: bool) -> Check:
     return Check(
         "gpu",
         Severity.BLOCK,
-        "no graphics device found (/dev/dri absent) — any GL context would fall "
-        "back to software rasterisation",
+        "no graphics device found; any GL context would fall back to software "
+        "rasterisation",
         remedy=(
             "Client-side rendering cannot be measured meaningfully without a GPU. "
             "Software rasterisation moves GPU work onto the CPU, so the result "
@@ -170,25 +155,26 @@ def _check_gpu(*, needs_gpu: bool) -> Check:
 
 
 def _check_software_rasteriser(*, needs_gpu: bool) -> Check:
-    """Detect an active software GL driver even when a device exists.
+    """Detect software rendering even when a device is present.
 
-    Belt and braces alongside the GPU check: LIBGL_ALWAYS_SOFTWARE or a
-    llvmpipe/swrast selection forces software rendering regardless of hardware.
+    A Mesa override forces it regardless of hardware, and Windows reports a
+    basic display adapter when no vendor driver is bound.
     """
-    forced = os.environ.get("LIBGL_ALWAYS_SOFTWARE", "")
-    driver = os.environ.get("MESA_LOADER_DRIVER_OVERRIDE", "")
+    reason = hostinfo.software_renderer_reason()
+    if reason is None:
+        return Check("software_rasteriser", Severity.OK, "no forced software rendering")
 
-    if forced not in ("", "0", "false") or driver in ("llvmpipe", "swrast", "softpipe"):
-        severity = Severity.BLOCK if needs_gpu else Severity.INFO
-        return Check(
-            "software_rasteriser",
-            severity,
-            f"software rendering forced (LIBGL_ALWAYS_SOFTWARE={forced!r}, "
-            f"driver={driver!r})",
-            remedy="Unset LIBGL_ALWAYS_SOFTWARE and MESA_LOADER_DRIVER_OVERRIDE."
-            if needs_gpu else "",
+    return Check(
+        "software_rasteriser",
+        Severity.BLOCK if needs_gpu else Severity.INFO,
+        f"software rendering in effect: {reason}",
+        remedy=(
+            "Unset LIBGL_ALWAYS_SOFTWARE and MESA_LOADER_DRIVER_OVERRIDE, or "
+            "install the vendor graphics driver."
         )
-    return Check("software_rasteriser", Severity.OK, "no forced software rendering")
+        if needs_gpu
+        else "",
+    )
 
 
 def _check_vsync(*, needs_gpu: bool) -> Check:
@@ -237,20 +223,26 @@ def _check_display(*, needs_gpu: bool) -> Check:
     """A client run needs a display, real or virtual."""
     if not needs_gpu:
         return Check("display", Severity.INFO, "not required for a server-side run")
-    if os.environ.get("DISPLAY"):
-        return Check("display", Severity.OK, f"DISPLAY={os.environ['DISPLAY']}")
+    if display := hostinfo.display_description():
+        return Check("display", Severity.OK, display)
     if shutil.which("Xvfb"):
         return Check(
             "display",
             Severity.INFO,
-            "no DISPLAY set, but Xvfb is available and will be started",
+            "no display attached, but Xvfb is available and will be started",
         )
     return Check(
         "display",
         Severity.BLOCK,
-        "no DISPLAY and no Xvfb binary",
+        "no display attached and no Xvfb binary",
         remedy="Install Xvfb, or run with a real display attached.",
     )
+
+
+#: Substrings that identify a Minecraft JVM in a process command line. The
+#: launcher and the game both run as a bare `java`, so the loader packages are
+#: the only reliable marker.
+_MINECRAFT_MARKERS = ("net.minecraft", "net.fabricmc", "minecraftforge", "neoforged")
 
 
 def _check_competing_minecraft() -> Check:
@@ -259,22 +251,18 @@ def _check_competing_minecraft() -> Check:
     A second JVM competing for CPU and memory is the most common way an
     otherwise careful benchmark gets silently ruined.
     """
-    try:
-        output = subprocess.run(
-            ["ps", "-eo", "pid,args"],
-            capture_output=True, text=True, timeout=10, check=False,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return Check("competing_processes", Severity.WARN,
-                     "could not enumerate processes")
+    lines = hostinfo.running_command_lines()
+    if lines is None:
+        return Check(
+            "competing_processes", Severity.WARN, "could not enumerate processes"
+        )
 
     ours = str(os.getpid())
     hits = [
-        line.strip() for line in output.splitlines()
-        if ("net.minecraft" in line or "net.fabricmc" in line
-            or "minecraftforge" in line or "neoforged" in line)
-        and not line.strip().startswith(ours)
-        and "ps -eo" not in line
+        line
+        for line in lines
+        if any(marker in line for marker in _MINECRAFT_MARKERS)
+        and line.split(maxsplit=1)[0] != ours
     ]
     if hits:
         return Check(
@@ -286,57 +274,56 @@ def _check_competing_minecraft() -> Check:
     return Check("competing_processes", Severity.OK, "no competing Minecraft processes")
 
 
+#: Restores a fixed clock. The Windows GUID is the built-in High performance
+#: scheme, whose display name is localised and so cannot be passed by name.
+_PIN_CLOCK_REMEDY = (
+    "powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+    if hostinfo.WINDOWS
+    else "sudo cpupower frequency-set -g performance"
+)
+
+
 def _check_cpu_scaling() -> Check:
     """Frequency scaling lets the CPU speed drift between runs.
 
-    Interleaved ordering (planner.py) converts this from a systematic bias into
-    noise, so it warns rather than blocks — but a 'performance' governor makes
-    intervals materially tighter and is worth telling the operator about.
+    Interleaved ordering (planner.py) turns this from a systematic bias into
+    noise, so it warns rather than blocks. Pinning the clock still tightens
+    intervals materially and is worth telling the operator about.
     """
-    governors = sorted(
-        Path("/sys/devices/system/cpu").glob("cpu*/cpufreq/scaling_governor")
-    )
-    if not governors:
-        return Check("cpu_scaling", Severity.INFO,
-                     "no cpufreq interface (typical in containers and VMs)")
-
-    values = {v for p in governors if (v := _read(str(p)))}
-    if values <= {"performance"}:
-        return Check("cpu_scaling", Severity.OK, "governor: performance")
+    pinned, detail = hostinfo.cpu_scaling_profile()
+    if pinned is None:
+        return Check("cpu_scaling", Severity.INFO, detail)
+    if pinned:
+        return Check("cpu_scaling", Severity.OK, detail)
     return Check(
         "cpu_scaling",
         Severity.WARN,
-        f"governor(s): {', '.join(sorted(values))} — clock speed may drift between runs",
-        remedy="sudo cpupower frequency-set -g performance",
+        f"{detail}; clock speed may drift between runs",
+        remedy=_PIN_CLOCK_REMEDY,
     )
 
 
 def _check_battery() -> Check:
     """Laptops on battery throttle aggressively and unpredictably."""
-    for supply in sorted(Path("/sys/class/power_supply").glob("*")):
-        if _read(str(supply / "type")) != "Mains":
-            continue
-        online = _read(str(supply / "online"))
-        if online == "0":
-            return Check(
-                "power", Severity.WARN, "running on battery — expect aggressive throttling",
-                remedy="Connect AC power before benchmarking.",
-            )
+    source = hostinfo.power_source()
+    if source == "battery":
+        return Check(
+            "power",
+            Severity.WARN,
+            "running on battery; expect aggressive throttling",
+            remedy="Connect AC power before benchmarking.",
+        )
+    if source == "ac":
         return Check("power", Severity.OK, "on AC power")
     return Check("power", Severity.INFO, "no battery detected")
 
 
 def _check_memory(*, heap_mb: int) -> Check:
     """The heap plus headroom must fit, or GC behaviour dominates the result."""
-    meminfo = _read("/proc/meminfo")
-    if not meminfo:
-        return Check("memory", Severity.INFO, "could not read /proc/meminfo")
+    available_mb = hostinfo.available_memory_mb()
+    if available_mb is None:
+        return Check("memory", Severity.INFO, "could not read available memory")
 
-    match = re.search(r"MemAvailable:\s+(\d+) kB", meminfo)
-    if not match:
-        return Check("memory", Severity.INFO, "MemAvailable not reported")
-
-    available_mb = int(match.group(1)) // 1024
     # The JVM needs the heap plus metaspace, code cache, native buffers and OS
     # page cache; a heap sized to exactly free memory swaps and the numbers
     # become meaningless.
@@ -369,26 +356,12 @@ def _check_cpu_count(*, minimum: int = 4) -> Check:
 
 def _check_virtualisation() -> Check:
     """Virtual machines can have unstable timers and noisy neighbours."""
-    hypervisor = None
-    if shutil.which("systemd-detect-virt"):
-        try:
-            result = subprocess.run(
-                ["systemd-detect-virt"], capture_output=True, text=True,
-                timeout=5, check=False,
-            )
-            detected = result.stdout.strip()
-            if detected and detected != "none":
-                hypervisor = detected
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-    if hypervisor is None and Path("/.dockerenv").exists():
-        hypervisor = "docker"
-
-    if hypervisor:
+    platform_name = hostinfo.hypervisor()
+    if platform_name:
         return Check(
-            "virtualisation", Severity.WARN,
-            f"running under {hypervisor} — timing may be less stable and CPU "
+            "virtualisation",
+            Severity.WARN,
+            f"running under {platform_name}; timing may be less stable and CPU "
             f"shared with other tenants",
             remedy="Prefer bare metal for published results.",
         )
@@ -450,18 +423,13 @@ def describe_host() -> dict[str, str]:
         "cpu_count": str(os.cpu_count() or 0),
     }
 
-    cpuinfo = _read("/proc/cpuinfo") or ""
-    if match := re.search(r"model name\s+:\s+(.+)", cpuinfo):
-        host["cpu_model"] = match.group(1).strip()
+    if model := hostinfo.cpu_model():
+        host["cpu_model"] = model
+    if total_mb := hostinfo.total_memory_mb():
+        host["memory_gb"] = str(total_mb // 1024)
 
-    meminfo = _read("/proc/meminfo") or ""
-    if match := re.search(r"MemTotal:\s+(\d+) kB", meminfo):
-        host["memory_gb"] = str(int(match.group(1)) // 1024 // 1024)
-
-    dri = Path("/dev/dri")
-    host["gpu_nodes"] = (
-        ",".join(sorted(p.name for p in dri.iterdir())) if dri.is_dir() else "none"
-    )
+    adapters = hostinfo.graphics_adapters()
+    host["gpu"] = ",".join(adapters) if adapters else "none"
     return host
 
 

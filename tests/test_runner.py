@@ -63,7 +63,7 @@ class TestPreflight:
 
     def test_host_description_records_provenance_fields(self):
         host = describe_host()
-        for key in ("os", "arch", "cpu_count", "gpu_nodes"):
+        for key in ("os", "arch", "cpu_count", "gpu"):
             assert key in host
 
 

@@ -1028,6 +1028,19 @@ class Harness:
         spawned, and the harness has to wait for the process it is timing.
         """
         assert self.headlessmc is not None
+        if scenario.side is Side.SERVER:
+            # HeadlessMC 2.x drives servers through a separate `server` command
+            # with its own registration step, not through a flag on `launch`.
+            # Refusing is the point: without one, `launch` starts the client,
+            # the client run succeeds, and a server suite reports frametimes
+            # for a scenario that was supposed to measure tick cost.
+            raise HarnessError(
+                f"{scenario.id} is a server scenario, and this launcher has no "
+                f"--server flag. mcbench cannot yet drive HeadlessMC's own "
+                f"'server' command, so run server scenarios through a launcher "
+                f"that accepts --server, or restrict this suite with "
+                f"--side client."
+            )
         # Absolute, because the launcher runs from its own directory and would
         # otherwise resolve a relative instance path against that. It does not
         # fail when it does: it creates the directory, finds no mods and no

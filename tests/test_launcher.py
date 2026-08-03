@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from executable import printing_stand_in
 
 from mcbench.config import parse_suite
@@ -246,11 +247,13 @@ class TestPreflight:
         launcher = printing_stand_in(
             tmp_path / "hmc.jar", "launch : Launches the game.\n  --jvm  Jvm args.\n"
         )
-        h, scenarios = harness(tmp_path / "w", launcher)
+        h, scenarios = harness(
+            tmp_path / "w", launcher, scenario="visual-biome-flyby"
+        )
 
         command = h._launch_command(
             Path("relative/instance"),
-            scenarios["entity-mobcap-saturation"],
+            scenarios["visual-biome-flyby"],
             h.suite.variants[0],
         )
         gamedir = next(p for p in command if p.startswith("-Dhmc.gamedir="))
@@ -271,17 +274,38 @@ class TestPreflight:
         planned = h.build_plan().runs[0]
         assert h._instance_dir(planned).is_absolute()
 
-    def test_jvm_arguments_survive_being_more_than_one(self, tmp_path):
+    def test_a_server_scenario_is_refused_rather_than_run_as_a_client(self, tmp_path):
+        """The property dialect has no --server, and silence would be worse.
+
+        Dropping it launches the client instead. The run then succeeds and
+        reports frametimes for a scenario whose whole purpose was tick cost.
+        """
+        from mcbench.runner.harness import HarnessError
+
         launcher = printing_stand_in(
             tmp_path / "hmc.jar", "launch : Launches the game.\n  --jvm  Jvm args.\n"
         )
         h, scenarios = harness(tmp_path / "w", launcher)
+        with pytest.raises(HarnessError, match="server scenario"):
+            h._launch_command(
+                tmp_path / "inst",
+                scenarios["entity-mobcap-saturation"],
+                h.suite.variants[0],
+            )
+
+    def test_jvm_arguments_survive_being_more_than_one(self, tmp_path):
+        launcher = printing_stand_in(
+            tmp_path / "hmc.jar", "launch : Launches the game.\n  --jvm  Jvm args.\n"
+        )
+        h, scenarios = harness(
+            tmp_path / "w", launcher, scenario="visual-biome-flyby"
+        )
         expected = h.effective_jvm_args(h.suite.variants[0])
         assert len(expected) > 1, "the fixture needs more than one argument to prove it"
 
         command = h._launch_command(
             tmp_path / "inst",
-            scenarios["entity-mobcap-saturation"],
+            scenarios["visual-biome-flyby"],
             h.suite.variants[0],
         )
         jvm = next(p for p in command if p.startswith("-Dhmc.jvmargs="))

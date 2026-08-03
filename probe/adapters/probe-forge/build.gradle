@@ -11,6 +11,8 @@ java {
     toolchain { languageVersion = JavaLanguageVersion.of(21) }
 }
 
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+
 minecraft {
     // Official Mojang mappings, same as the NeoForge adapter. Yarn would mean a
     // third set of names for the same operations for no gain; the whole point of

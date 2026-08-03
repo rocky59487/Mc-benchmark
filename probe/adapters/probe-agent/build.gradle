@@ -21,8 +21,14 @@ dependencies {
 }
 
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
-tasks.withType(JavaCompile).configureEach { options.release = 21 }
-tasks.withType(Test).configureEach { useJUnitPlatform() }
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.encoding = 'UTF-8'
+}
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    defaultCharacterEncoding = 'UTF-8'
+}
 
 shadowJar {
     archiveClassifier = ''

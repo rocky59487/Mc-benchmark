@@ -1,0 +1,20 @@
+# Line endings here are part of a file's contract, not a local preference. A
+# checkout on Windows applies core.autocrlf unless told otherwise, and two of
+# these files stop working when it does.
+
+# Shell scripts fail with "bad interpreter: /bin/sh^M" wherever a real shell
+# runs them, which on Windows includes Git Bash and WSL. README tells the
+# operator to invoke gradlew directly, so this has to survive any checkout.
+gradlew     text eol=lf
+*.sh        text eol=lf
+
+# cmd.exe mis-parses multi-line constructs in a batch file saved with LF.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+# Probe streams are the wire format. Translating newlines would make a fixture
+# differ by the platform that checked it out, which is exactly what the
+# cross-implementation conformance check exists to detect.
+*.jsonl     -text
+
+*.jar       binary

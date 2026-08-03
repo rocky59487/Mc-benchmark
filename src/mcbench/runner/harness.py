@@ -22,7 +22,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ..config import Platform, SuiteConfig, Variant
 from ..metrics import (
@@ -999,6 +999,42 @@ class Harness:
             args.extend(variant.jvm_args)
         return args
 
+    #: What a scenario's generator name is called in server.properties, and the
+    #: settings that pin it to the same world the client path builds.
+    #:
+    #: world.py maps these names for a client and says why: "a flat scenario
+    #: opened on default terrain is a different benchmark that will still
+    #: produce numbers, and nothing downstream would notice". The server was
+    #: given a seed and nothing else, so six of the eight shipped server
+    #: scenarios asked for flat terrain and got the ordinary overworld, with
+    #: their structures placed at y=5 — open air on one, solid stone on the
+    #: other.
+    #:
+    #: generator-settings as well as level-type, because the preset alone is
+    #: the game's default superflat rather than this one. The layers are the
+    #: same three world.py writes into level.dat.
+    SERVER_GENERATORS: ClassVar[dict[str, tuple[str, str]]] = {
+        "default": ("minecraft:normal", ""),
+        "amplified": ("minecraft:amplified", ""),
+        "large_biomes": ("minecraft:large_biomes", ""),
+        "flat": ("minecraft:flat", json.dumps({
+            "biome": "minecraft:plains",
+            "lakes": False,
+            "features": False,
+            "layers": [
+                {"block": "minecraft:bedrock", "height": 1},
+                {"block": "minecraft:dirt", "height": 2},
+                {"block": "minecraft:grass_block", "height": 1},
+            ],
+        }, separators=(",", ":"))),
+        "void": ("minecraft:flat", json.dumps({
+            "biome": "minecraft:the_void",
+            "lakes": False,
+            "features": False,
+            "layers": [],
+        }, separators=(",", ":"))),
+    }
+
     def _apply_instance_settings(
         self, instance: Path, scenario: Scenario, settings: dict[str, Any]
     ) -> None:
@@ -1014,6 +1050,23 @@ class Harness:
                 "online-mode=false",
                 "sync-chunk-writes=true",
             ]
+            generator = str(scenario.world.get("generator", "default"))
+            level_type, generator_settings = self.SERVER_GENERATORS.get(
+                generator, ("", "")
+            )
+            if not level_type:
+                # Refused rather than defaulted. Silently generating ordinary
+                # terrain for a scenario that named something else is the exact
+                # failure world.py describes on the client side.
+                raise HarnessError(
+                    f"scenario {scenario.id!r} asks for the {generator!r} "
+                    f"generator and this harness has no server.properties "
+                    f"spelling for it; add one to SERVER_GENERATORS rather "
+                    f"than measuring a world the scenario did not describe"
+                )
+            lines.append(f"level-type={level_type}")
+            if generator_settings:
+                lines.append(f"generator-settings={generator_settings}")
             if simulation is not None:
                 lines.append(f"simulation-distance={simulation}")
             if view is not None:
@@ -1379,7 +1432,16 @@ class Harness:
             "replicate": planned.replicate,
         })
 
-        instance = self._prepare_instance(planned, scenario, jars)
+        try:
+            instance = self._prepare_instance(planned, scenario, jars)
+        except HarnessError as exc:
+            # Emitted as a failed run for the same reason a bad launch command
+            # is: a traceback out of the middle of a suite tells the operator
+            # less than a recorded failure with a message, and every other run
+            # still gets its turn.
+            self.on_event("run.fail", {"cell": str(planned.cell), "error": str(exc)})
+            return RunOutcome(planned=planned, metrics=None, error=str(exc))
+
         log_path = instance / "mcbench" / "instance.log"
         probe_path = instance / "mcbench" / "probe.jsonl"
         agent_path = instance / "mcbench" / AGENT_STREAM_NAME

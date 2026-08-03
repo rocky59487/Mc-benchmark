@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -430,6 +431,73 @@ class TestWhatTheGameSaysItWas:
         # every server run in every suite.
         outcome = self.run_reporting(tmp_path, monkeypatch, window="1280x720")
         assert outcome.configuration_mismatches == []
+
+
+class TestTheServerGeneratorReachesTheServer:
+    """A server was told the seed and nothing about the generator.
+
+    world.py maps a scenario's generator name for a client and says why: a flat
+    scenario opened on default terrain is a different benchmark that still
+    produces numbers. Six of the eight shipped server scenarios ask for flat
+    and were getting the ordinary overworld, with their structures placed at
+    y=5 — open air on one, solid stone on the other.
+    """
+
+    def properties(self, tmp_path, scenario_id):
+        harness, planned, _ = build(
+            tmp_path, scenario_id, "probe-server-reference.jsonl"
+        )
+        harness.execute_run(planned)
+        text = (harness._instance_dir(planned) / "server.properties").read_text(
+            encoding="utf-8"
+        )
+        return dict(
+            line.split("=", 1) for line in text.splitlines() if "=" in line
+        )
+
+    def test_a_flat_scenario_says_flat(self, tmp_path):
+        found = self.properties(tmp_path, "entity-mobcap-saturation")
+        assert found["level-type"] == "minecraft:flat"
+        assert "grass_block" in found["generator-settings"]
+
+    def test_a_default_scenario_says_normal_and_needs_no_settings(self, tmp_path):
+        found = self.properties(tmp_path, "chunkio-load-throughput")
+        assert found["level-type"] == "minecraft:normal"
+        assert "generator-settings" not in found
+
+    def test_the_two_paths_describe_the_same_flat_world(self):
+        """The client writes layers into level.dat; the server gets JSON.
+
+        Two spellings of one world, and nothing would notice them drifting
+        apart except a fingerprint mismatch between a client and a server run
+        of scenarios that are supposed to be comparable.
+        """
+        from mcbench.world import _OVERWORLD_GENERATORS
+
+        level_type, settings = Harness.SERVER_GENERATORS["flat"]
+        assert level_type == "minecraft:flat"
+
+        client = _OVERWORLD_GENERATORS["flat"]["settings"]
+        server = json.loads(settings)
+        assert server["biome"] == client["biome"]
+        assert [
+            (layer["block"], layer["height"]) for layer in server["layers"]
+        ] == [
+            (layer["block"], int(layer["height"])) for layer in client["layers"]
+        ]
+
+    def test_an_unmapped_generator_is_refused(self, tmp_path):
+        # Defaulting would generate ordinary terrain for a scenario that named
+        # something else, which is the failure this exists to prevent.
+        harness, planned, scenario = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness.scenarios[scenario.id] = replace(
+            scenario, world={**scenario.world, "generator": "swiss_cheese"}
+        )
+        outcome = harness.execute_run(planned)
+        assert outcome.metrics is None
+        assert "swiss_cheese" in outcome.error
 
 
 class TestTheOptionsTheClientGot:

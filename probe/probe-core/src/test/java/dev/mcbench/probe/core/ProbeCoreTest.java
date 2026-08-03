@@ -601,9 +601,27 @@ class ProbeCoreTest {
                 System.gc();
                 Thread.sleep(200);
                 assertTrue(monitor.drainEvents().isEmpty(), "unsubscribed");
-                assertFalse(monitor.hasGcEvents());
             } finally {
                 monitor.stopListening();
+            }
+        }
+
+        @Test
+        void unsubscribing_does_not_retract_what_was_captured() {
+            // hasGcEvents answers whether this JVM delivered individual collections, which
+            // decides whether a pause percentile in the stream means anything. It used to
+            // answer whether a subscription was open, and ProbeSession asks while writing the
+            // closing summary, after unsubscribing — so it read false on every run on every
+            // platform, beside the per-collection events it exists to announce.
+            RuntimeMonitor monitor = new RuntimeMonitor();
+            monitor.startListening();
+            boolean subscribed = monitor.hasGcEvents();
+            monitor.stopListening();
+            monitor.stopListening();
+            if (subscribed) {
+                assertTrue(
+                        monitor.hasGcEvents(),
+                        "this is the value that reaches every results document");
             }
         }
 

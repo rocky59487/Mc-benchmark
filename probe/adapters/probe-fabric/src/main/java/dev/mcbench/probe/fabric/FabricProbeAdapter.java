@@ -3,6 +3,7 @@ package dev.mcbench.probe.fabric;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import dev.mcbench.probe.core.ProbeAdapter;
 import dev.mcbench.probe.core.ProbeSession;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.ServerCommandSource;
@@ -81,9 +82,19 @@ public final class FabricProbeAdapter extends ProbeAdapter {
         }
     }
 
-    public void beginWithGameMetadata(String minecraftVersion, String loaderVersion) {
-        begin(Map.of(
-                "minecraft_version", minecraftVersion,
-                "loader_version", loaderVersion));
+    /**
+     * @param window the framebuffer size, or empty on a server or before one exists. Empty is
+     *     omitted rather than reported as a placeholder: the harness treats a field the probe
+     *     does not report as unknown, and a stated zero would be a claim.
+     */
+    public void beginWithGameMetadata(
+            String minecraftVersion, String loaderVersion, String window) {
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("minecraft_version", minecraftVersion);
+        metadata.put("loader_version", loaderVersion);
+        if (!window.isEmpty()) {
+            metadata.put("window", window);
+        }
+        begin(metadata);
     }
 }

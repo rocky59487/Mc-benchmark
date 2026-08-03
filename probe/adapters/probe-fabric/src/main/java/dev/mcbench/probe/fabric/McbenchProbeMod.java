@@ -2,6 +2,7 @@ package dev.mcbench.probe.fabric;
 
 import dev.mcbench.probe.core.ProbeSession;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.api.EnvType;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
@@ -55,7 +56,7 @@ public final class McbenchProbeMod implements ModInitializer, ClientModInitializ
             created.onShutdownRequested(() -> server.stop(false));
             // Started only once the server can accept commands; starting earlier would time
             // world loading as though it were warmup.
-            created.beginWithGameMetadata(minecraftVersion, loaderVersion);
+            created.beginWithGameMetadata(minecraftVersion, loaderVersion, windowSize());
         });
 
         if (created.measuresTicks()) {
@@ -78,6 +79,23 @@ public final class McbenchProbeMod implements ModInitializer, ClientModInitializ
         // The harness treats a missing 'bye' as a crash, so an unclean exit that skipped
         // finish() would misreport a perfectly good run as failed.
         Runtime.getRuntime().addShutdownHook(new Thread(created::finish, "mcbench-probe-finish"));
+    }
+
+    /**
+     * The framebuffer size, or empty when this is not a client.
+     *
+     * <p>Read here rather than at mod initialisation, where the window may not exist yet, and
+     * behind an environment check so that a dedicated server never loads a client class.
+     *
+     * <p>It is read at all because the harness records the resolution it asked the launcher
+     * for, and a launcher is free to ignore that. Resolution decides what a frame time means,
+     * so the two must be comparable rather than assumed equal.
+     */
+    private static String windowSize() {
+        if (FabricLoader.getInstance().getEnvironmentType() != EnvType.CLIENT) {
+            return "";
+        }
+        return ClientWindow.describe();
     }
 
     @Override

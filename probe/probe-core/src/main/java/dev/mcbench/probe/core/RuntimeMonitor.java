@@ -55,6 +55,8 @@ public final class RuntimeMonitor {
     private long baselineAllocated;
     private long heapGrowthBytes;
     private volatile boolean listening;
+    /** Set when a subscription first succeeds and never cleared; see {@link #hasGcEvents()}. */
+    private volatile boolean gcEventsAvailable;
     private volatile boolean collecting;
     private boolean primed;
 
@@ -97,9 +99,17 @@ public final class RuntimeMonitor {
         return threadAllocationCounter != null;
     }
 
-    /** Whether individual collection events are being captured. */
+    /**
+     * Whether individual collection events were available on this JVM.
+     *
+     * <p>Not whether a subscription is open right now. The run summary is written after
+     * {@link #stopListening()}, so answering that reported false on every run ever recorded,
+     * on every platform, while the stream alongside it carried the per-collection events the
+     * flag exists to announce. It is read to decide whether a pause percentile means anything,
+     * which is a fact about the whole run and not about the instant it is asked.
+     */
     public boolean hasGcEvents() {
-        return listening;
+        return gcEventsAvailable;
     }
 
     // -- lifecycle -------------------------------------------------------
@@ -146,6 +156,7 @@ public final class RuntimeMonitor {
                     }
                 });
                 listening = true;
+                gcEventsAvailable = true;
             } catch (Exception ignored) {
                 // A collector that refuses listeners contributes no events.
             }

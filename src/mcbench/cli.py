@@ -805,6 +805,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         probe_jar=args.probe_jar,
         fabric_api_jar=args.fabric_api_jar,
         extra_launch_args=args.launch_arg or (),
+        fresh_world=getattr(args, "fresh_world", False),
         on_event=emit,
     )
 
@@ -1221,6 +1222,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="extra argument appended to every launch command "
                         "(repeatable), for a launcher whose flags differ")
     p.add_argument("--timeout", type=float, help="per-run timeout in seconds")
+    p.add_argument("--fresh-world", action="store_true",
+                   help="generate a world per run instead of sharing one per "
+                        "scenario. Minecraft's worldgen is not reproducible "
+                        "block for block, so this makes runs of one seed "
+                        "disagree and stop being pooled; use it to find out "
+                        "whether a mod alters worldgen, not to compare "
+                        "frametimes")
     p.add_argument("--stop-on-failure", action="store_true")
     p.add_argument("--no-account-check", action="store_true")
     p.add_argument("--force", action="store_true",

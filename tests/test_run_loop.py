@@ -432,6 +432,46 @@ class TestWhatTheGameSaysItWas:
         assert outcome.configuration_mismatches == []
 
 
+class TestTheOptionsTheClientGot:
+    def test_the_scenario_distances_reach_options_txt(self, tmp_path):
+        """Both distances, spelled the way options.txt spells them.
+
+        The scenario writes snake_case and options.txt does not, so each needs
+        translating. Render distance was translated; simulation distance was
+        excluded from the passthrough beside it and never given a line of its
+        own, so a client scenario asking for one got the game's default — for
+        the setting that decides how much of the world ticks around the player.
+        """
+        scenario_id = next(
+            s.id for s in load_scenarios(REPO / "scenarios") if s.side is Side.CLIENT
+        )
+        harness, planned, scenario = build(
+            tmp_path, scenario_id, "probe-client-reference.jsonl"
+        )
+        harness.execute_run(planned)
+
+        options = dict(
+            line.split(":", 1)
+            for line in (harness._instance_dir(planned) / "options.txt")
+            .read_text(encoding="utf-8").splitlines()
+            if ":" in line
+        )
+        declared = {
+            step["op"]: step for step in scenario.setup
+            if step.get("op", "").startswith("set_")
+        }
+        if "set_render_distance" in declared:
+            assert options["renderDistance"] == str(
+                declared["set_render_distance"]["chunks"]
+            )
+        if "set_simulation_distance" in declared:
+            assert options["simulationDistance"] == str(
+                declared["set_simulation_distance"]["chunks"]
+            )
+        # And nothing snake_case leaked through, which the game would ignore.
+        assert not [key for key in options if "_" in key], sorted(options)
+
+
 class TestWhoMadeTheWorld:
     """A refused fingerprint reads as a mod altering worldgen. Often it is not.
 

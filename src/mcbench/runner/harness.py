@@ -1069,8 +1069,18 @@ class Harness:
                 "gamma": 1.0,
                 "pauseOnLostFocus": "false",
             }
+            # Both are excluded from the passthrough below because the scenario
+            # spells them in snake_case and options.txt does not; each needs its
+            # own line to be translated. Render distance had one. Simulation
+            # distance was excluded beside it and never given one, so a client
+            # scenario asking for it got the game's default instead — for the
+            # setting that decides how much of the world ticks around the
+            # player. It is a real key: a stock 1.21 options.txt carries
+            # simulationDistance next to renderDistance.
             if (render := settings.get("render_distance")) is not None:
                 values["renderDistance"] = render
+            if (simulation := settings.get("simulation_distance")) is not None:
+                values["simulationDistance"] = simulation
             # Whatever the suite declared wins, so an operator can deliberately
             # measure a capped or fancy-graphics configuration.
             for key, value in settings.items():

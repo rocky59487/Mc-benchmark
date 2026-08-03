@@ -69,6 +69,16 @@ def _spawn_of(scenario: Scenario) -> tuple[int, int, int]:
                  for axis, default in (("x", 0), ("y", 64), ("z", 0)))
 
 
+def _one_or_many(per_variant: dict[str, Any]) -> Any:
+    """Collapse a per-variant map that says the same thing for every variant.
+
+    Provenance is read by people. A map repeating one value six times hides
+    what it is recording behind its own shape.
+    """
+    values = set(per_variant.values())
+    return values.pop() if len(values) == 1 else per_variant
+
+
 def _spawn_chunk(scenario: Scenario) -> tuple[int, int]:
     """The chunk the scenario's spawn falls in, which the fingerprint centres on."""
     x, _, z = _spawn_of(scenario)
@@ -736,10 +746,13 @@ class Harness:
             "java": _java_version(),
             "launcher": str(self.headlessmc) if self.headlessmc else "",
             "client_max_fps": CLIENT_FPS_CAP,
-            "client_resolution": {
+            # One string when every variant renders at the same size, which is
+            # the normal case; a per-variant map only when a suite overrode it,
+            # where the difference is the point.
+            "client_resolution": _one_or_many({
                 variant.name: "{}x{}".format(*self.effective_resolution(variant))
                 for variant in self.suite.variants
-            },
+            }),
             "artifacts": artifacts,
             "jvm_args": {
                 variant.name: self.effective_jvm_args(variant)

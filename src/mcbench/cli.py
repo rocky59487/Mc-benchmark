@@ -792,6 +792,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f" {payload['wall_clock_s']}s{flags}", flush=True)
         elif event == "run.fail":
             print(f" FAILED: {payload['error']}", flush=True)
+        elif event == "run.mismatch":
+            for field_name in payload["fields"]:
+                print(f"         ! {field_name}", flush=True)
         elif event == "suite.start":
             print(f"Executing {payload['runs']} runs "
                   f"({payload['strategy']}, seed {payload['seed']})")

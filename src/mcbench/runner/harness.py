@@ -131,6 +131,17 @@ def _java_version() -> str:
     return output[0] if output else "unknown"
 
 
+def _java_release(banner: str) -> str:
+    """The release number out of a ``java -version`` banner.
+
+    ``openjdk version "21.0.11" 2026-04-15 LTS`` is what the command prints;
+    ``21.0.11`` is what ``System.getProperty("java.version")`` returns from
+    inside the game. Comparing the two needs the part they have in common.
+    """
+    match = re.search(r'"([\d][\w.+\-]*)"', banner)
+    return match.group(1) if match else ""
+
+
 def _option_value(value: Any) -> str:
     """Render a value the way options.txt expects it."""
     if isinstance(value, bool):
@@ -195,6 +206,10 @@ class RunOutcome:
     #: two runs share only because both failed to compute one would silently
     #: certify exactly what it exists to check.
     world_fingerprint: str = ""
+    #: Facts the probe reported from inside the game that contradict what the
+    #: harness recorded for this run. One entry per disagreement, naming the
+    #: field, the recorded value and the reported one.
+    configuration_mismatches: list[str] = field(default_factory=list)
 
     @property
     def succeeded(self) -> bool:
@@ -238,6 +253,14 @@ class RunOutcome:
             # Setup and warmup durations, which half of the warmup gate opened,
             # and the tick and allocation sources.
             record["probe"] = dict(self.stream.summary)
+        if self.stream is not None and self.stream.metadata:
+            # What the game said it was, from inside the game. The provenance
+            # block says what the harness asked for, and the two are not the
+            # same claim: a launcher free to pick its own Java or resolve its
+            # own loader version can satisfy the request with something else.
+            record["reported"] = dict(self.stream.metadata)
+        if self.configuration_mismatches:
+            record["configuration_mismatches"] = list(self.configuration_mismatches)
         return record
 
 
@@ -476,6 +499,10 @@ class Harness:
             api_jar=Path(fabric_api_jar) if fabric_api_jar else None,
         )
         self._probe_provenance: list[dict[str, str]] = []
+        #: Resolved on first use, then reused: the JVM on PATH does not change
+        #: mid-suite, and asking it sixty times means sixty process spawns to
+        #: learn the same string.
+        self._java_release: str | None = None
         #: Appended verbatim to every launch, for a launcher this does not know.
         self.extra_launch_args = list(extra_launch_args)
         #: Generate a world per run rather than sharing one per scenario.
@@ -1370,6 +1397,14 @@ class Harness:
                 self.effective_game_settings(variant).get("maxFps", CLIENT_FPS_CAP)
             ),
         )
+        disagreements = self._configuration_mismatches(stream, scenario)
+        mismatches = [
+            f"{field_name}: recorded {recorded}, game reported {reported}"
+            for field_name, recorded, reported in disagreements
+        ]
+        if any(f in self.DISQUALIFYING_FIELDS for f, _, _ in disagreements):
+            metrics.flags.append(RunFlag.CONFIGURATION_MISMATCH)
+
         # The probe may report its own fingerprint over the live world; the
         # harness's is computed from the save on disk and needs no game API, so
         # it works on every version and platform. Where both exist the probe's
@@ -1384,11 +1419,18 @@ class Harness:
             "admissible": metrics.admissible,
             "flags": [f.value for f in metrics.flags],
         })
+        # After run.done, which closes the progress line this would otherwise
+        # be printed into the middle of.
+        if mismatches:
+            self.on_event("run.mismatch", {
+                "cell": str(planned.cell), "fields": mismatches,
+            })
 
         return RunOutcome(
             planned=planned, metrics=metrics, stream=stream,
             wall_clock_s=wall_clock, exit_code=exit_code, log_path=log_path,
             error=error, world_fingerprint=fingerprint,
+            configuration_mismatches=mismatches,
         )
 
     def _world_cache(self, scenario: Scenario) -> Path:
@@ -1569,6 +1611,63 @@ class Harness:
         # the same region would hash identically over what was left, and two that
         # generated no terrain would both hash to the digest of nothing.
         return result.sha256 if result.usable else ""
+
+    def _java_release_on_path(self) -> str:
+        """The release number of the JVM this harness would launch."""
+        if self._java_release is None:
+            self._java_release = _java_release(_java_version())
+        return self._java_release
+
+    #: Fields whose disagreement means a different experiment ran, rather than
+    #: the same one in a differently-described environment. A run that measured
+    #: another scenario, another Minecraft or another loader cannot be pooled
+    #: with runs that did not. A run whose JVM was recorded wrong still measured
+    #: what it claims to have measured, under the same launcher as every other
+    #: variant, so it stays admissible and carries both values for the reader.
+    DISQUALIFYING_FIELDS = frozenset({
+        "platform", "scenario", "scenario_version", "scenario_hash",
+        "minecraft_version", "loader_version",
+    })
+
+    def _configuration_mismatches(
+        self, stream: ProbeStream, scenario: Scenario
+    ) -> list[tuple[str, str, str]]:
+        """Facts the game reported that contradict what this run recorded.
+
+        The probe's opening event names the platform, scenario, Minecraft
+        version, loader version and JVM the game actually had. ``provenance()``
+        names what the suite asked for and what the harness's own ``java``
+        reported. Nothing compared the two, and they are not the same claim: a
+        launcher is free to satisfy the request with a different JVM, resolve a
+        different loader build, or start from a scenario file edited since the
+        plan was made. Each of those yields a results document describing a run
+        that did not happen, with no sign anywhere that it did not.
+
+        Fields the probe omits are not disagreements. Older probes and platforms
+        without the concept stay silent rather than guess, and reading silence
+        as contradiction would flag every run on them.
+
+        Returns ``(field, recorded, reported)`` per disagreement.
+        """
+        if not stream.metadata:
+            return []
+
+        expected: list[tuple[str, str]] = [
+            ("platform", self.suite.loader.value),
+            ("scenario", scenario.id),
+            ("scenario_version", scenario.version),
+            ("scenario_hash", scenario.content_hash),
+            ("minecraft_version", self.suite.minecraft_version),
+            ("loader_version", self.suite.loader_version or ""),
+            ("java", self._java_release_on_path()),
+        ]
+        return [
+            (field_name, recorded, reported)
+            for field_name, recorded in expected
+            if (reported := stream.metadata.get(field_name, ""))
+            and recorded
+            and reported != recorded
+        ]
 
     def _adopt_agent_stream(
         self, stream: ProbeStream, agent_path: Path, planned: PlannedRun

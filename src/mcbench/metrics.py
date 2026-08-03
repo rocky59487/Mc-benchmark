@@ -182,6 +182,10 @@ class RunFlag(str, Enum):
     """A workload command was rejected, so the load was not sustained."""
     PROBE_ERROR = "probe_error"
     """The probe reported an error during the run."""
+    CONFIGURATION_MISMATCH = "configuration_mismatch"
+    """The game reported running something other than what the results document
+    says it ran. The numbers are real; they describe a configuration nothing
+    else in the document describes."""
     TICK_PERIOD_ONLY = "tick_period_only"
     """Tick figures are periods, not execution time. Admissible, with the
     metrics named accordingly, but this run carries no MSPT."""
@@ -254,6 +258,7 @@ class RunMetrics:
         RunFlag.SETUP_FAILED,
         RunFlag.WORKLOAD_FAILED,
         RunFlag.PROBE_ERROR,
+        RunFlag.CONFIGURATION_MISMATCH,
     })
 
     @property

@@ -21,6 +21,7 @@ from mcbench.metrics import RunFlag
 from mcbench.runner import Harness
 from mcbench.runner.harness import (
     ResolvedVariant,
+    _java_release,
     flag_world_mismatches,
     outcomes_to_cells,
     run_counts,
@@ -121,6 +122,12 @@ for raw in stream:
         event["metadata"] = dict(event.get("metadata", {{}}))
         event["metadata"]["scenario"] = properties["scenario.id"]
         event["metadata"]["scenario_hash"] = properties["scenario.content_hash"]
+        # MCBENCH_STANDIN_REPORTS=key=value,key=value overrides what the game
+        # says it is: a launcher that satisfied the request with something else.
+        for pair in os.environ.get("MCBENCH_STANDIN_REPORTS", "").split(","):
+            key, sep, value = pair.partition("=")
+            if sep:
+                event["metadata"][key] = value
     lines.append(json.dumps(event))
 
 output.parent.mkdir(parents=True, exist_ok=True)
@@ -247,6 +254,113 @@ class TestOneServerRun:
         counts = run_counts([outcome])
         assert counts["entity-mobcap-saturation/base"]["attempted"] == 1
         assert counts["entity-mobcap-saturation/base"]["failed"] == 0
+
+
+class TestReadingAJavaBanner:
+    """``java -version`` prints a banner; the game reports a bare release. The
+    comparison needs the part they share, and a parse that quietly returned
+    nothing would disable the check rather than fail it."""
+
+    def test_the_release_comes_out_of_the_banner(self):
+        assert _java_release('openjdk version "21.0.11" 2026-04-15 LTS') == "21.0.11"
+        assert _java_release('java version "1.8.0_402"') == "1.8.0_402"
+        assert _java_release('openjdk version "17.0.9" 2023-10-17') == "17.0.9"
+        assert _java_release('openjdk version "24-ea" 2025-03-18') == "24-ea"
+
+    def test_nothing_recognisable_yields_nothing(self):
+        # Empty disables the comparison for this field, which is the right
+        # answer: an unparsed banner is not evidence of disagreement.
+        assert _java_release("unknown") == ""
+        assert _java_release("") == ""
+        assert _java_release('some tool "not-a-version-at-all"') == ""
+
+
+class TestWhatTheGameSaysItWas:
+    """The probe reports its own identity; the harness records what it asked
+    for. Anything that satisfied the request differently shows up here."""
+
+    def run_reporting(self, tmp_path, monkeypatch, **reported):
+        if reported:
+            monkeypatch.setenv(
+                "MCBENCH_STANDIN_REPORTS",
+                ",".join(f"{k}={v}" for k, v in reported.items()),
+            )
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        # Pinned rather than asked of the machine: whether a JVM is installed
+        # is not what any of these are testing. The value is the one the
+        # fixture's own hello carries, so an un-overridden run agrees.
+        harness._java_release = "21.0.10"
+        return harness.execute_run(planned)
+
+    def test_a_run_that_matches_says_nothing(self, tmp_path, monkeypatch):
+        outcome = self.run_reporting(
+            tmp_path, monkeypatch,
+            platform="fabric", minecraft_version="1.21.1",
+            loader_version="0.16.5", java="21.0.10",
+        )
+        assert outcome.configuration_mismatches == []
+        assert RunFlag.CONFIGURATION_MISMATCH not in outcome.metrics.flags
+        assert outcome.succeeded
+
+    def test_fields_the_probe_omits_are_not_disagreements(
+        self, tmp_path, monkeypatch
+    ):
+        # The stand-in reports only scenario and scenario_hash, as an older
+        # probe or a platform without the concept would.
+        outcome = self.run_reporting(tmp_path, monkeypatch)
+        assert outcome.configuration_mismatches == []
+        assert outcome.succeeded
+
+    def test_another_minecraft_is_not_pooled(self, tmp_path, monkeypatch):
+        outcome = self.run_reporting(tmp_path, monkeypatch, minecraft_version="1.20.1")
+
+        assert outcome.configuration_mismatches == [
+            "minecraft_version: recorded 1.21.1, game reported 1.20.1"
+        ]
+        assert RunFlag.CONFIGURATION_MISMATCH in outcome.metrics.flags
+        # The numbers are real and look entirely ordinary, which is the whole
+        # reason this has to be refused rather than noted.
+        assert outcome.metrics.values["mspt_mean"] > 0
+        assert not outcome.succeeded
+        assert outcome.status == "inadmissible"
+
+    def test_another_loader_build_is_not_pooled(self, tmp_path, monkeypatch):
+        outcome = self.run_reporting(tmp_path, monkeypatch, loader_version="0.15.0")
+        assert RunFlag.CONFIGURATION_MISMATCH in outcome.metrics.flags
+        assert not outcome.succeeded
+
+    def test_another_jvm_is_recorded_but_still_pooled(self, tmp_path, monkeypatch):
+        # A launcher free to pick its own JVM picked one. Every variant ran
+        # under it, so nothing about the comparison changed; only the string
+        # the provenance block would have published is wrong, and both values
+        # are now in the record.
+        outcome = self.run_reporting(tmp_path, monkeypatch, java="17.0.9")
+
+        assert outcome.configuration_mismatches == [
+            "java: recorded 21.0.10, game reported 17.0.9"
+        ]
+        assert RunFlag.CONFIGURATION_MISMATCH not in outcome.metrics.flags
+        assert outcome.succeeded
+
+    def test_the_record_carries_what_the_game_said(self, tmp_path, monkeypatch):
+        outcome = self.run_reporting(
+            tmp_path, monkeypatch, minecraft_version="1.20.1", java="17.0.9"
+        )
+        record = outcome.to_record()
+
+        assert record["reported"]["minecraft_version"] == "1.20.1"
+        assert record["reported"]["java"] == "17.0.9"
+        assert len(record["configuration_mismatches"]) == 2
+        assert record["status"] == "inadmissible"
+
+    def test_a_matching_run_records_the_report_without_a_mismatch_key(
+        self, tmp_path, monkeypatch
+    ):
+        record = self.run_reporting(tmp_path, monkeypatch).to_record()
+        assert record["reported"]["scenario"] == "entity-mobcap-saturation"
+        assert "configuration_mismatches" not in record
 
 
 class TestOneClientRun:

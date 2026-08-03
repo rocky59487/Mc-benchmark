@@ -28,6 +28,7 @@ __all__ = [
     "Preflight",
     "run_preflight",
     "describe_host",
+    "competing_minecraft",
 ]
 
 
@@ -245,25 +246,39 @@ def _check_display(*, needs_gpu: bool) -> Check:
 _MINECRAFT_MARKERS = ("net.minecraft", "net.fabricmc", "minecraftforge", "neoforged")
 
 
+def competing_minecraft() -> list[str] | None:
+    """Command lines of Minecraft JVMs other than this process.
+
+    None when the process table could not be read, which is not the same as
+    finding nothing and must not be reported as though it were.
+
+    Callers that launch a game are responsible for asking at a moment when
+    theirs is not running; this cannot tell one Minecraft from another.
+    """
+    lines = hostinfo.running_command_lines()
+    if lines is None:
+        return None
+    ours = str(os.getpid())
+    return [
+        line
+        for line in lines
+        if any(marker in line for marker in _MINECRAFT_MARKERS)
+        and line.split(maxsplit=1)[0] != ours
+    ]
+
+
 def _check_competing_minecraft() -> Check:
     """Refuse to measure while another Minecraft process is running.
 
     A second JVM competing for CPU and memory is the most common way an
     otherwise careful benchmark gets silently ruined.
     """
-    lines = hostinfo.running_command_lines()
-    if lines is None:
+    hits = competing_minecraft()
+    if hits is None:
         return Check(
             "competing_processes", Severity.WARN, "could not enumerate processes"
         )
 
-    ours = str(os.getpid())
-    hits = [
-        line
-        for line in lines
-        if any(marker in line for marker in _MINECRAFT_MARKERS)
-        and line.split(maxsplit=1)[0] != ours
-    ]
     if hits:
         return Check(
             "competing_processes",

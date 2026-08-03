@@ -427,6 +427,87 @@ class TestWhatTheGameSaysItWas:
         assert outcome.configuration_mismatches == []
 
 
+class TestSomethingElseOnTheMachine:
+    """Preflight checks for competing Minecraft processes once, and a suite
+    runs for hours. Anything that starts after it passed is invisible to it."""
+
+    def run_seeing(self, tmp_path, monkeypatch, *samples):
+        # One return value per call: before the launch, then after it.
+        remaining = list(samples)
+        monkeypatch.setattr(
+            "mcbench.runner.harness.competing_minecraft",
+            lambda: remaining.pop(0) if remaining else [],
+        )
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness._java_release = "21.0.10"
+        return harness.execute_run(planned)
+
+    def test_a_quiet_machine_is_not_flagged(self, tmp_path, monkeypatch):
+        outcome = self.run_seeing(tmp_path, monkeypatch, [], [])
+        assert RunFlag.ENVIRONMENT_NOISY not in outcome.metrics.flags
+        assert outcome.succeeded
+
+    def test_something_that_started_mid_suite_is_flagged(
+        self, tmp_path, monkeypatch
+    ):
+        # Absent when the run began, running when it ended: exactly the case
+        # preflight cannot see.
+        outcome = self.run_seeing(
+            tmp_path, monkeypatch, [], ["4242 java -cp net.fabricmc.loader"]
+        )
+        assert RunFlag.ENVIRONMENT_NOISY in outcome.metrics.flags
+        # Recorded, not refused. Whether a competitor mattered depends on what
+        # it was doing, which this cannot know, so the reader decides.
+        assert outcome.succeeded
+        assert "environment_noisy" in outcome.to_record()["flags"]
+
+    def test_one_seen_only_before_the_launch_still_counts(
+        self, tmp_path, monkeypatch
+    ):
+        outcome = self.run_seeing(
+            tmp_path, monkeypatch, ["99 java net.minecraft.client.main.Main"], []
+        )
+        assert RunFlag.ENVIRONMENT_NOISY in outcome.metrics.flags
+
+    def test_the_same_process_either_side_is_counted_once(
+        self, tmp_path, monkeypatch
+    ):
+        seen: list[dict] = []
+        line = "77 java -cp neoforged"
+        remaining = [[line], [line]]
+        monkeypatch.setattr(
+            "mcbench.runner.harness.competing_minecraft",
+            lambda: remaining.pop(0) if remaining else [],
+        )
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness._java_release = "21.0.10"
+        harness.on_event = lambda event, payload: (
+            seen.append(payload) if event == "run.noisy" else None
+        )
+        harness.execute_run(planned)
+        assert [p["processes"] for p in seen] == [1]
+
+    def test_an_unreadable_process_table_is_not_a_finding(
+        self, tmp_path, monkeypatch
+    ):
+        # competing_minecraft returns None when it could not look. Preflight
+        # reports that once, where it will be read; a flag per run would say
+        # the same thing sixty times and come to mean "we did not look".
+        monkeypatch.setattr(
+            "mcbench.runner.harness.competing_minecraft", lambda: None
+        )
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness._java_release = "21.0.10"
+        outcome = harness.execute_run(planned)
+        assert RunFlag.ENVIRONMENT_NOISY not in outcome.metrics.flags
+
+
 class TestOneClientRun:
     def test_the_authored_world_survives_the_round_trip(self, tmp_path):
         scenario_id = next(

@@ -39,7 +39,13 @@ from ..targets import Target
 from ..world import WorldError, create_world, fingerprint_world
 from .launcher import KNOWN_FLAGS, LauncherCapabilities, probe_launcher
 from .plan import check_target, write_plan
-from .preflight import Check, Preflight, Severity, run_preflight
+from .preflight import (
+    Check,
+    Preflight,
+    Severity,
+    competing_minecraft,
+    run_preflight,
+)
 from .protocol import (
     AGENT_STREAM_NAME,
     ProbeError,
@@ -1349,6 +1355,9 @@ class Harness:
         environment["MCBENCH_AGENT_OUTPUT"] = str(agent_path)
 
         launch_cwd = self._launch_cwd(instance)
+        # Sampled with our own game not yet started, and again once it has
+        # exited, so what is found is somebody else's. See _competing_during().
+        competitors = self._competing_now()
         try:
             with log_path.open("w", encoding="utf-8") as log:
                 # The exact invocation, so a run that behaved oddly can be
@@ -1371,6 +1380,7 @@ class Harness:
             error = f"failed to launch: {exc}"
 
         wall_clock = time.monotonic() - started
+        competitors = self._competing_during(competitors)
 
         if error and not probe_path.exists():
             self.on_event("run.fail", {"cell": str(planned.cell), "error": error})
@@ -1397,6 +1407,12 @@ class Harness:
                 self.effective_game_settings(variant).get("maxFps", CLIENT_FPS_CAP)
             ),
         )
+        if competitors:
+            metrics.flags.append(RunFlag.ENVIRONMENT_NOISY)
+            self.on_event("run.noisy", {
+                "cell": str(planned.cell), "processes": len(competitors),
+            })
+
         disagreements = self._configuration_mismatches(stream, scenario, variant)
         mismatches = [
             f"{field_name}: recorded {recorded}, game reported {reported}"
@@ -1611,6 +1627,35 @@ class Harness:
         # the same region would hash identically over what was left, and two that
         # generated no terrain would both hash to the digest of nothing.
         return result.sha256 if result.usable else ""
+
+    @staticmethod
+    def _competing_now() -> list[str]:
+        """Minecraft processes that are not ours, right now.
+
+        An unreadable process table yields nothing rather than a warning. The
+        preflight already reports that it could not enumerate processes, once,
+        where an operator will read it; repeating it per run would say the same
+        thing sixty times and make the flag mean "we did not look".
+        """
+        return competing_minecraft() or []
+
+    def _competing_during(self, before: list[str]) -> list[str]:
+        """Competitors seen either side of a run, deduplicated.
+
+        Preflight checks this once, and a suite runs for hours. Something
+        started after it passed is invisible to it and is the most common way a
+        careful benchmark is quietly ruined, so every run asks again.
+
+        Sampled either side of the launch rather than during it, for two
+        reasons: our own game is a Minecraft process and could not be told from
+        anyone else's, and enumerating the process table costs real CPU on
+        Windows, where it means a PowerShell CIM query. A competitor that both
+        started and exited inside one run is therefore missed. That is a gap in
+        what this detects, not a claim that the run was clean.
+        """
+        seen = {line: None for line in before}
+        seen.update(dict.fromkeys(self._competing_now()))
+        return list(seen)
 
     def _java_release_on_path(self) -> str:
         """The release number of the JVM this harness would launch."""

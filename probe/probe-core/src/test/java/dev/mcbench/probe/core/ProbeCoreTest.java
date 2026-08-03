@@ -615,14 +615,16 @@ class ProbeCoreTest {
             // platform, beside the per-collection events it exists to announce.
             RuntimeMonitor monitor = new RuntimeMonitor();
             monitor.startListening();
-            boolean subscribed = monitor.hasGcEvents();
+            // Skipped rather than passed where there is nothing to preserve, as the sibling
+            // above does. Guarding the assertion with a plain `if` instead would let this
+            // report success on a JVM where it checked nothing.
+            assumeTrue(monitor.hasGcEvents(), "this JVM emits no GC notifications");
+
             monitor.stopListening();
             monitor.stopListening();
-            if (subscribed) {
-                assertTrue(
-                        monitor.hasGcEvents(),
-                        "this is the value that reaches every results document");
-            }
+            assertTrue(
+                    monitor.hasGcEvents(),
+                    "this is the value that reaches every results document");
         }
 
         /** Enough short-lived allocation to make a young collection likely. */

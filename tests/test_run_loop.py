@@ -528,14 +528,18 @@ class TestTheOptionsTheClientGot:
             step["op"]: step for step in scenario.setup
             if step.get("op", "").startswith("set_")
         }
-        if "set_render_distance" in declared:
-            assert options["renderDistance"] == str(
-                declared["set_render_distance"]["chunks"]
-            )
-        if "set_simulation_distance" in declared:
-            assert options["simulationDistance"] == str(
-                declared["set_simulation_distance"]["chunks"]
-            )
+        # Both, named rather than looked for: a test that checks whichever
+        # settings the scenario happens to declare passes without checking
+        # anything the day one of them is dropped, which is the failure being
+        # guarded against.
+        assert "set_render_distance" in declared
+        assert "set_simulation_distance" in declared
+        assert options["renderDistance"] == str(
+            declared["set_render_distance"]["chunks"]
+        )
+        assert options["simulationDistance"] == str(
+            declared["set_simulation_distance"]["chunks"]
+        )
         # And nothing snake_case leaked through, which the game would ignore.
         assert not [key for key in options if "_" in key], sorted(options)
 

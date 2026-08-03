@@ -993,6 +993,37 @@ def is_ambient(mod_id: str) -> bool:
     return mod_id in AMBIENT_IDS
 
 
+#: Which option pins the version of each ambient id, so a constraint on it can
+#: be evaluated rather than recorded.
+_PINS_AMBIENT = {
+    "minecraft": "--minecraft-version",
+    "fabricloader": "--loader-version",
+    "fabric-loader": "--loader-version",
+    "quilt_loader": "--loader-version",
+    "neoforge": "--loader-version",
+    "forge": "--loader-version",
+}
+
+
+def _how_to_check(mod_id: str) -> str:
+    """What the operator can do about an unverified ambient constraint.
+
+    Naming the option that actually applies. A fixed "pass --minecraft-version
+    and --loader-version" asked for something already supplied, on a constraint
+    neither of them pins.
+    """
+    option = _PINS_AMBIENT.get(mod_id)
+    if option is None:
+        return (
+            f"The version of {mod_id} is not something mcbench is told, so "
+            f"this constraint is recorded rather than verified."
+        )
+    return (
+        f"Pass {option} to check it. Until then the constraint is recorded, "
+        f"not verified."
+    )
+
+
 #: Fabric API ships as one jar providing dozens of module ids
 #: (``fabric-rendering-fluids-v1`` and so on), so they collapse into one finding.
 _FABRIC_API_MODULE = re.compile(r"^fabric-[a-z0-9-]+-v\d+$")
@@ -1148,10 +1179,7 @@ def _check_dependencies(
                     Severity.WARNING, "unchecked_dependency",
                     f"{mod.mod_id} requires {needed} {spec}, which the platform "
                     f"supplies at a version this inspection was not given",
-                    detail=(
-                        "Pass --minecraft-version and --loader-version to check "
-                        "it. Until then the constraint is recorded, not verified."
-                    ),
+                    detail=_how_to_check(needed),
                     mods=(mod.mod_id, needed),
                 ))
                 continue

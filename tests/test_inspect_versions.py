@@ -115,6 +115,30 @@ class TestDependencyVersions:
         # A warning, not an error: it may well be fine, and we do not know.
         assert result.ok
 
+    def test_an_unchecked_constraint_names_the_option_that_would_check_it(
+        self, tmp_path
+    ):
+        """The remedy has to be about this constraint, not a fixed sentence.
+
+        Every unchecked ambient dependency used to say "pass
+        --minecraft-version and --loader-version", including on a run where
+        both were supplied and on constraints neither of them pins.
+        """
+        app = fabric_jar(tmp_path / "app.jar", {
+            "id": "app", "version": "1",
+            "depends": {"fabricloader": ">=0.16", "java": ">=21"},
+        })
+        result = inspect_mods(read_jars([app]))
+        details = {
+            f.mods[1]: f.detail for f in result.findings
+            if f.code == "unchecked_dependency"
+        }
+        assert "--loader-version" in details["fabricloader"]
+        assert "--minecraft-version" not in details["fabricloader"]
+        # Nothing pins the Java version, so it must not suggest a flag.
+        assert "--" not in details["java"]
+        assert "java" in details["java"]
+
     def test_the_target_minecraft_version_is_checked(self, tmp_path):
         app = fabric_jar(tmp_path / "app.jar", {
             "id": "app", "version": "1", "depends": {"minecraft": ">=1.21"},

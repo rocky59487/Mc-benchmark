@@ -328,7 +328,11 @@ def cmd_analyse(args: argparse.Namespace) -> int:
         export_dir.mkdir(parents=True, exist_ok=True)
         tables = tables_for(result, raw_runs=cells_raw)
 
-        written = write_all(tables, str(export_dir), formats=args.table_format)
+        # `--table-format` is repeatable and so defaults to None, which would be
+        # passed straight through and shadow write_all's own default.
+        written = write_all(
+            tables, str(export_dir), formats=args.table_format or ["csv"]
+        )
         (export_dir / "report.json").write_text(render_json(result), encoding="utf-8")
         (export_dir / "report.md").write_text(render_markdown(result), encoding="utf-8")
         html_path = export_dir / "report.html"
@@ -984,9 +988,11 @@ def cmd_bisect(args: argparse.Namespace) -> int:
         label = "+".join(probe.subset) or "baseline"
         if len(label) > 60:
             label = label[:57] + "…"
-        note = probe.detail
-        if probe.outcome is not Outcome.INVALID:
-            note = next(records, None).note if oracle.records else ""
+        if probe.outcome is Outcome.INVALID:
+            note = probe.detail
+        else:
+            record = next(records, None)
+            note = record.note if record is not None else ""
         support = f" (+{len(probe.support)} dep)" if probe.support else ""
         print(f"  {probe.outcome.value:<13} {note or ''}  [{label}]{support}")
 

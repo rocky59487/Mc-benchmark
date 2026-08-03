@@ -166,7 +166,7 @@ def parse_results_document(raw: Any) -> tuple[str, str, dict[str, list[dict[str,
                 if isinstance(position, bool) or not isinstance(position, int):
                     raise ResultsError(f"{where}: 'position' must be an integer")
                 entry["position"] = position
-            for optional in ("error", "log", "exit_code", "world"):
+            for optional in ("error", "log", "exit_code", "world", "probe"):
                 if optional in run:
                     entry[optional] = run[optional]
             checked_runs.append(entry)
@@ -481,14 +481,26 @@ def build_interaction(
 
     term = interaction_term(*samples, rope=rope, seed=seed)
 
+    # The sign of the term is in raw metric units, so what it *means* depends on
+    # the metric's polarity. A positive non-additivity in frametime is the pair
+    # costing more together; the identical positive term in FPS is the pair being
+    # better than additive. Reading one as the other inverts the finding — the
+    # exact failure the metric registry exists to prevent, and worth guarding
+    # here because an interaction is the headline claim in any report that has
+    # one.
+    definition = METRICS.get(metric)
+    worse_when_larger = definition.lower_is_better if definition else True
+    larger = "costs more together" if worse_when_larger else "helps more together"
+    smaller = "costs less together" if worse_when_larger else "helps less together"
+
     if not sufficient_runs(*samples, min_runs=min_runs):
         verdict = Verdict.INSUFFICIENT_DATA.value
     elif term.ci.within(-rope, rope):
         verdict = "additive"
     elif term.ci.low > rope:
-        verdict = "costs more together"
+        verdict = larger
     elif term.ci.high < -rope:
-        verdict = "costs less together"
+        verdict = smaller
     else:
         verdict = "inconclusive"
 
@@ -501,6 +513,7 @@ def build_interaction(
         "ci": [term.ci.low, term.ci.high],
         "n_per_arm": [len(s) for s in samples],
         "min_runs": min_runs,
+        "lower_is_better": worse_when_larger,
         "verdict": verdict,
     }
 
@@ -804,10 +817,12 @@ def render_markdown(result: SuiteResult) -> str:
         add("## Interaction effects")
         add("")
         add(
-            "Non-additivity between mod pairs. A positive term means the pair "
-            "costs more together than their individual costs predict — usually "
-            "contention over a shared lock, a cache one invalidates for the "
-            "other, or a fast path one forces the other off."
+            "Non-additivity between mod pairs. The term is in raw metric units, "
+            "so its sign is read against the metric's direction: on a cost "
+            "metric a positive term means the pair costs more together than "
+            "their individual costs predict — usually contention over a shared "
+            "lock, a cache one invalidates for the other, or a fast path one "
+            "forces the other off. The verdict column states the reading."
         )
         add("")
         add("| Scenario | Pair | Metric | Interaction | 95% CI | n per arm | Verdict |")

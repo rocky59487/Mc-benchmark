@@ -132,16 +132,20 @@ def interactions_table(result: SuiteResult) -> Table:
     """Non-additivity between declared mod pairs."""
     table = Table(
         name="interactions",
-        columns=["scenario", "pair", "metric", "interaction_pct",
-                 "ci_low_pct", "ci_high_pct", "verdict"],
-        caption="Positive means the pair costs more together than their "
-                "individual costs predict.",
+        columns=["scenario", "pair", "metric", "lower_is_better",
+                 "interaction_pct", "ci_low_pct", "ci_high_pct",
+                 "n_per_arm", "verdict"],
+        caption="The term is in raw metric units, so its sign reads against "
+                "the metric's direction — the verdict column states which. "
+                "Zero means the two mods' effects simply add.",
     )
     for item in result.interactions:
         table.rows.append([
             item["scenario"], " + ".join(item["pair"]), item["metric"],
+            item.get("lower_is_better", True),
             _num(item["value"] * 100, 3),
             _num(item["ci"][0] * 100, 3), _num(item["ci"][1] * 100, 3),
+            "/".join(str(n) for n in item.get("n_per_arm", [])),
             item["verdict"],
         ])
     return table

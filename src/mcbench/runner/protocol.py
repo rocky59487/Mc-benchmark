@@ -258,13 +258,13 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
 
         elif kind == EventType.TICK.value:
             durations = [int(v) for v in event.get("durations_ns", [])]
-            source = event.get("source")
-            if source is not None:
+            declared = event.get("source")
+            if declared is not None:
                 try:
-                    stream.tick_source = TickSource(source)
+                    stream.tick_source = TickSource(declared)
                 except ValueError:
                     raise ProbeError(
-                        f"{source}:{number}: unknown tick source {source!r}. "
+                        f"{source}:{number}: unknown tick source {declared!r}. "
                         f"Refusing to guess whether these are tick durations or "
                         f"tick periods — the two are different measurements."
                     ) from None

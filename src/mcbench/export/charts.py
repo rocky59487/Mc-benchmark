@@ -531,6 +531,7 @@ def interaction_plot(
     label_b: str,
     title: str,
     unit: str = "",
+    lower_is_better: bool = True,
     width: int = 560,
     height: int = 320,
 ) -> str:
@@ -562,11 +563,20 @@ def interaction_plot(
 
     parts = [f'<text x="12" y="26" font-size="14" font-weight="600">{_esc(title)}</text>']
     excess = ab - predicted
-    verdict = (
-        "costs more together than the parts predict" if excess > 0
-        else "costs less together than the parts predict" if excess < 0
-        else "additive"
-    )
+    # Read against the metric's direction: the same positive excess is the pair
+    # costing more on a frametime axis and the pair helping more on an FPS axis.
+    if excess == 0:
+        verdict = "additive"
+    elif lower_is_better:
+        verdict = (
+            "costs more together than the parts predict" if excess > 0
+            else "costs less together than the parts predict"
+        )
+    else:
+        verdict = (
+            "helps more together than the parts predict" if excess > 0
+            else "helps less together than the parts predict"
+        )
     parts.append(
         f'<text x="12" y="44" font-size="10.5" class="mcb-muted">'
         f"dashed line = additive prediction · {_esc(verdict)}</text>"

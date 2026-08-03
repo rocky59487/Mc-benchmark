@@ -199,6 +199,12 @@ class RunOutcome:
             record["exit_code"] = self.exit_code
         if self.log_path is not None:
             record["log"] = str(self.log_path)
+        if self.stream is not None and self.stream.summary:
+            # How the run reached measurement: setup and warmup durations, which
+            # half of the warmup gate opened, and what the tick and allocation
+            # sources were. Without it a reader cannot tell a run that converged
+            # from one that hit its ceiling, or an MSPT figure from a tick period.
+            record["probe"] = dict(self.stream.summary)
         return record
 
 

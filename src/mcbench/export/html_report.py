@@ -407,6 +407,7 @@ def render_html_report(
                         label_a=item["pair"][0], label_b=item["pair"][1],
                         title=f"{item['scenario']} — {METRICS[item['metric']].label}",
                         unit=METRICS[item["metric"]].unit,
+                        lower_is_better=METRICS[item["metric"]].lower_is_better,
                     )
                     + "</div>"
                 )
@@ -424,6 +425,31 @@ def render_html_report(
         for table in rendered_tables:
             body.append(f"<h3>{_esc(table.name)}</h3>")
             body.append(f'<div class="tablewrap">{to_html(table)}</div>')
+
+    body.append("<h2>How these numbers were decided</h2>")
+    body.append(
+        f"<p>A verdict is issued only when the interval on the relative change "
+        f"lies wholly inside or wholly outside the region of practical "
+        f"equivalence, <em>and</em> at least {MIN_ADMISSIBLE_RUNS} runs survived "
+        f"in both arms for that metric. Below that floor the verdict is "
+        f"<code>insufficient_data</code> and no direction is asserted, however "
+        f"large the apparent difference &mdash; one value against one value is a "
+        f"100% change with a zero-width interval.</p>"
+    )
+    if result.multiplicity:
+        families = result.multiplicity.get("families", [])
+        tests = sum(f["tests"] for f in families)
+        body.append(
+            f"<p>Benjamini&ndash;Hochberg false-discovery-rate control was "
+            f"applied at FDR "
+            f"{_esc(result.multiplicity.get('fdr', 0.05))} across "
+            f"{len(families)} famil{'y' if len(families) == 1 else 'ies'} "
+            f"({tests} test{'' if tests == 1 else 's'}); a family is one "
+            f"scenario and metric across the variants sharing a baseline. "
+            f"{result.multiplicity.get('demoted', 0)} decisive verdict(s) did "
+            f"not survive it. Each comparison in the tables carries its raw "
+            f"p-value, its adjusted q-value, and both verdicts.</p>"
+        )
 
     body.append(
         "<footer>Absolute figures are comparable only within this session on "

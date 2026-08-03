@@ -172,6 +172,45 @@ class TestInteractionPath:
         )
         assert item["verdict"] == "costs more together"
 
+    def test_the_verdict_is_read_against_the_metric_direction(self):
+        """The same positive term means opposite things on the two metrics.
+
+        On frametime a positive non-additivity is the pair costing more; on FPS
+        the identical term is the pair doing better than additive. Wording one as
+        the other inverts the headline claim of any report that has an
+        interaction in it.
+        """
+        def rising(base):
+            return [base + i * 0.01 for i in range(7)]
+
+        cells = {
+            name: cell(name, rising(base))
+            for name, base in (("none", 10.0), ("a", 11.0), ("b", 11.0),
+                               ("ab", 20.0))
+        }
+        cost = build_interaction(
+            "bench", "frametime_mean_ms", cells,
+            none_key="none", a_key="a", b_key="b", ab_key="ab",
+        )
+
+        throughput_cells = {
+            name: aggregate_cell(
+                Cell("bench", name),
+                [RunMetrics(values={"fps_avg": v}) for v in rising(base)],
+            )
+            for name, base in (("none", 10.0), ("a", 11.0), ("b", 11.0),
+                               ("ab", 20.0))
+        }
+        gain = build_interaction(
+            "bench", "fps_avg", throughput_cells,
+            none_key="none", a_key="a", b_key="b", ab_key="ab",
+        )
+
+        # Same sign, opposite meaning.
+        assert cost["value"] > 0 and gain["value"] > 0
+        assert cost["verdict"] == "costs more together"
+        assert gain["verdict"] == "helps more together"
+
 
 class TestOraclePath:
     @pytest.mark.parametrize("survivors", [0, 1, 2, 3, 4])

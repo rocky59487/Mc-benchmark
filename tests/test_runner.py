@@ -97,6 +97,85 @@ class TestProbeProtocol:
         assert 400.0 in stream.client.heap_post_gc_mb
         assert stream.real_allocation
 
+    def test_several_collections_in_one_interval_stay_several_pauses(self):
+        """The failure the aggregate form produced.
+
+        Three short collections inside one sampling interval used to arrive as a
+        single 15 ms number, so the p99 described a sum rather than a pause and
+        a collector doing many quick collections read as one doing long ones.
+        """
+        text = _stream(
+            _hello(),
+            {"type": "phase", "phase": "measurement"},
+            {"type": "frame", "durations_ns": [16_000_000] * 100},
+            {"type": "gc", "source": "events", "events": [
+                {"collector": "G1 Young Generation", "action": "end of minor GC",
+                 "duration_ms": 5.0, "heap_before_mb": 900.0,
+                 "heap_after_mb": 400.0, "stop_the_world": True},
+                {"collector": "G1 Young Generation", "action": "end of minor GC",
+                 "duration_ms": 5.0, "heap_before_mb": 890.0,
+                 "heap_after_mb": 405.0, "stop_the_world": True},
+                {"collector": "G1 Young Generation", "action": "end of minor GC",
+                 "duration_ms": 5.0, "heap_before_mb": 880.0,
+                 "heap_after_mb": 410.0, "stop_the_world": True},
+            ]},
+            {"type": "bye", "measurement_duration_s": 60.0},
+        )
+        stream = parse_probe_stream("test", text=text)
+        assert stream.client.gc_pauses_ms == [5.0, 5.0, 5.0]
+
+        from mcbench.metrics import reduce_client_run
+
+        metrics = reduce_client_run(stream.client, min_frames=1)
+        assert metrics.values["gc_count"] == 3
+        assert metrics.values["gc_pause_total_ms"] == pytest.approx(15.0)
+        # The worst pause was 5 ms, not the 15 ms the interval total would give.
+        assert metrics.values["gc_pause_max_ms"] == pytest.approx(5.0)
+        assert metrics.values["gc_pause_p99_ms"] == pytest.approx(5.0)
+
+    def test_a_concurrent_cycle_is_not_counted_as_a_pause(self):
+        """A concurrent collector's cycle spans work the application ran through.
+
+        Counting it would make a low-pause collector read as the worst one on
+        the machine and put hundreds of milliseconds into a percentile meant to
+        describe hitching.
+        """
+        text = _stream(
+            _hello(),
+            {"type": "phase", "phase": "measurement"},
+            {"type": "frame", "durations_ns": [16_000_000] * 100},
+            {"type": "gc", "source": "events", "events": [
+                {"collector": "G1 Concurrent GC", "action": "end of concurrent cycle",
+                 "duration_ms": 400.0, "heap_before_mb": 900.0,
+                 "heap_after_mb": 400.0, "stop_the_world": False},
+                {"collector": "G1 Young Generation", "action": "end of minor GC",
+                 "duration_ms": 3.0, "heap_before_mb": 880.0,
+                 "heap_after_mb": 410.0, "stop_the_world": True},
+            ]},
+            {"type": "bye", "measurement_duration_s": 60.0},
+        )
+        stream = parse_probe_stream("test", text=text)
+        assert stream.client.gc_pauses_ms == [3.0]
+
+    def test_the_run_summary_travels_into_the_results(self):
+        """A reader must be able to tell a converged run from a timed-out one."""
+        text = _stream(
+            _hello(),
+            {"type": "phase", "phase": "measurement"},
+            {"type": "frame", "durations_ns": [16_000_000] * 100},
+            {"type": "bye", "measurement_duration_s": 60.0,
+             "setup_duration": 12.0, "warmup_duration": 61.0,
+             "warmup_gate": "ceiling reached: compilation was still active",
+             "warmup_converged": False, "compilation_gate": True,
+             "tick_source": "bracket", "failed_setup_commands": 0,
+             "failed_workload_commands": 0, "real_allocation": True,
+             "gc_events": True},
+        )
+        stream = parse_probe_stream("test", text=text)
+        assert stream.summary["warmup_converged"] is False
+        assert "compilation was still active" in stream.summary["warmup_gate"]
+        assert stream.summary["setup_duration"] == 12.0
+
     def test_legacy_aggregate_pauses_are_not_treated_as_individual_ones(self):
         """The old `pauses_ms` shape held per-interval totals, not pauses.
 

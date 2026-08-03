@@ -89,6 +89,36 @@ the cache name to a sanitised basename prefixed with the content hash. Host
 matching parses the URL rather than matching substrings, so
 `https://cdn.modrinth.com@evil.example.com/x` is correctly refused.
 
+### Path traversal through a suite manifest
+
+A `local:` mod path is taken straight from a suite manifest, and
+`../../../../etc/hostname` resolved outside the working root — reading an
+arbitrary host file and copying it into the instance. Low severity for a
+developer benchmarking their own build; not low at all for a CI job or corpus
+service that benchmarks suites other people submit.
+
+Local paths are now confined to the local root. Absolute paths and traversal are
+both refused rather than normalised: the legitimate case is a relative path
+inside the root, and anyone who genuinely needs a file elsewhere points
+`--local-root` at it, which makes the decision the operator's rather than the
+manifest's. Files are also checked for a zip signature, which turns "the game
+mysteriously ignored your mod" into an error that names the problem.
+
+### Non-finite values in result documents
+
+`docs/SECURITY.md` listed result documents as untrusted, but the ingestion path
+did not validate them. JSON has no infinity, yet `1e400` parses to one, and it
+travelled through aggregation into a report whose own JSON then contained
+`Infinity` — invalid per the spec, unreadable by strict consumers, and presented
+as though it were a measurement.
+
+A single infinity happened to be absorbed by the MAD outlier filter, which looked
+like protection but was coincidence: that filter catches contaminated runs, not
+malformed input, and it left the reader seeing `n=4` rather than "your data
+contained infinity". Documents are now validated on load, and nothing is coerced
+— a malformed document is malformed, and quietly repairing one produces a result
+that looks valid.
+
 ## Deliberate design decisions
 
 **Hash verification is mandatory, not optional.** A resolved mod without a

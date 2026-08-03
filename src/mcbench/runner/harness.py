@@ -71,6 +71,49 @@ class ResolvedVariant:
     provenance: list[dict[str, str]] = field(default_factory=list)
 
 
+def _resolve_local_jar(
+    project: str, variant_name: str, local_root: Path | None
+) -> Path:
+    """Resolve a ``local:`` mod path, confined to ``local_root``.
+
+    Suite manifests are untrusted input — a public corpus or a CI job would
+    benchmark suites submitted by other people — and this path is taken straight
+    from one. Without confinement, ``../../../../etc/passwd`` reads an arbitrary
+    host file and copies it into the instance.
+
+    Absolute paths and traversal are both refused rather than normalised. The
+    legitimate case — a developer benchmarking ``build/libs/mymod.jar`` — is a
+    relative path inside the root, and anyone who genuinely needs a file
+    elsewhere can point ``--local-root`` at it deliberately, which makes the
+    decision the operator's rather than the manifest's.
+    """
+    root = (local_root or Path.cwd()).resolve()
+    candidate = (root / project).resolve()
+
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise HarnessError(
+            f"{variant_name}: local mod path {project!r} resolves outside the "
+            f"local root ({root}). Suite manifests are untrusted, so paths are "
+            f"confined; point --local-root at the directory you mean instead."
+        ) from None
+
+    if not candidate.exists():
+        raise HarnessError(f"{variant_name}: local mod not found: {candidate}")
+    if not candidate.is_file():
+        raise HarnessError(f"{variant_name}: local mod is not a file: {candidate}")
+
+    # A mod is a zip. Checking the magic turns "the game mysteriously ignored
+    # your mod" into an error that names the problem.
+    with candidate.open("rb") as handle:
+        if handle.read(2) != b"PK":
+            raise HarnessError(
+                f"{variant_name}: {candidate} is not a jar (no zip signature)"
+            )
+    return candidate
+
+
 def resolve_variant_mods(
     variant: Variant,
     *,
@@ -93,13 +136,7 @@ def resolve_variant_mods(
 
     for mod in variant.mods:
         if mod.platform is Platform.LOCAL:
-            candidate = Path(mod.project)
-            if not candidate.is_absolute() and local_root is not None:
-                candidate = local_root / mod.project
-            if not candidate.exists():
-                raise HarnessError(
-                    f"{variant.name}: local mod not found: {candidate}"
-                )
+            candidate = _resolve_local_jar(mod.project, variant.name, local_root)
             digest = hashlib.sha512(candidate.read_bytes()).hexdigest()
             resolved.jars.append(candidate)
             resolved.provenance.append({

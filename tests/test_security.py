@@ -23,6 +23,7 @@ from mcbench.inspect import (
 from mcbench.providers.modrinth import ModrinthClient, ModrinthError, ResolvedMod
 from mcbench.report import MAX_RUNS_PER_CELL, ResultsError, parse_results_document
 from mcbench.runner import compile_plan, write_plan
+from mcbench.runner.harness import HarnessError, _resolve_local_jar
 from mcbench.runner.plan import MAX_COMMAND_LENGTH, PlanError
 from mcbench.scenario import parse_scenario
 
@@ -296,3 +297,52 @@ class TestResultDocumentValidation:
             parse_results_document(self._doc(**{
                 "sc/base": [{"values": {}, "flags": [{"not": "a string"}]}],
             }))
+
+
+class TestLocalModPathConfinement:
+    """Suite manifests are untrusted, and a `local:` path comes straight from one.
+
+    A public corpus or a CI job benchmarks suites submitted by other people.
+    Without confinement, `../../../../etc/passwd` reads an arbitrary host file
+    and copies it into the instance.
+    """
+
+    def _root(self, tmp_path):
+        root = tmp_path / "root"
+        (root / "sub").mkdir(parents=True)
+        with zipfile.ZipFile(root / "sub" / "good.jar", "w") as archive:
+            archive.writestr("fabric.mod.json", '{"schemaVersion":1,"id":"g","version":"1"}')
+        return root
+
+    def test_allows_a_relative_path_inside_the_root(self, tmp_path):
+        root = self._root(tmp_path)
+        assert _resolve_local_jar("sub/good.jar", "v", root).name == "good.jar"
+
+    def test_refuses_traversal_out_of_the_root(self, tmp_path):
+        root = self._root(tmp_path)
+        with pytest.raises(HarnessError, match="outside the local root"):
+            _resolve_local_jar("../../../../etc/hostname", "v", root)
+
+    def test_refuses_an_absolute_path(self, tmp_path):
+        # Refused rather than normalised: anyone who genuinely needs a file
+        # elsewhere points --local-root at it, making it the operator's decision
+        # rather than the manifest's.
+        root = self._root(tmp_path)
+        with pytest.raises(HarnessError, match="outside the local root"):
+            _resolve_local_jar("/etc/hostname", "v", root)
+
+    def test_refuses_a_file_that_is_not_a_jar(self, tmp_path):
+        root = self._root(tmp_path)
+        (root / "fake.jar").write_text("definitely not a zip")
+        with pytest.raises(HarnessError, match="not a jar"):
+            _resolve_local_jar("fake.jar", "v", root)
+
+    def test_refuses_a_directory(self, tmp_path):
+        root = self._root(tmp_path)
+        with pytest.raises(HarnessError, match="not a file"):
+            _resolve_local_jar("sub", "v", root)
+
+    def test_missing_file_is_reported_clearly(self, tmp_path):
+        root = self._root(tmp_path)
+        with pytest.raises(HarnessError, match="not found"):
+            _resolve_local_jar("nope.jar", "v", root)

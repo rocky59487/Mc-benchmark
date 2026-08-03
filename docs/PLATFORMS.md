@@ -63,7 +63,7 @@ parser, no dependency, and no knowledge of the methodology it is enforcing.
 |---|---|---|
 | Fabric | `HudRenderCallback` / `ServerTickEvents` | **builds against 1.21.1** |
 | Paper / Spigot / Purpur | repeating `Scheduler` task | **builds against paper-api** |
-| NeoForge | `ClientTickEvent` / `ServerTickEvent` | planned |
+| NeoForge | `ClientTickEvent` / `ServerTickEvent` | **builds against 1.21.1** |
 | Forge | `TickEvent` | planned |
 | Quilt | Fabric adapter loads directly | expected to work as-is |
 | **Any version, any loader** | **JVM agent** | designed, see below |
@@ -155,11 +155,16 @@ piece of work; until then, refusing is the honest option.
 
 ## Evidence the SPI is the right size
 
-Fabric and Paper are unrelated ecosystems — one is a mod loader with a client,
-the other a server plugin platform with no client at all — and their adapters
-are nearly the same length and shape. Neither contains a single line of
-methodology. Everything that decides what a number means is in probe-core and is
-shared between them verbatim.
+Three adapters now exist across three unrelated ecosystems — Fabric and NeoForge
+are mod loaders with clients, Paper is a server plugin platform with no client at
+all — and all three are roughly the same length and shape. None contains a single
+line of methodology. Everything that decides what a number means is in probe-core
+and is shared between them verbatim.
+
+NeoForge uses Mojang's official mappings while the Fabric adapter uses Yarn, so
+the class names differ between two files that do the same thing. That divergence
+is confined to those files, which is precisely what keeping the coupled surface
+at three methods buys.
 
 Their timing hooks differ only in how each platform exposes a tick. Fabric has a
 tick event; Bukkit does not, but a repeating task scheduled at a one-tick period

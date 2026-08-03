@@ -358,6 +358,36 @@ class TestNestedJars:
         assert result.ok
         assert "missing_dependency" not in codes(result)
 
+    def test_a_bundled_jar_is_read_without_touching_the_filesystem(
+        self, tmp_path, monkeypatch
+    ):
+        """The bytes are already in hand when a nested jar is found.
+
+        Writing each one out and opening it back cost two file operations per
+        nested jar and bounded nothing, since the shared budget already caps
+        how many bytes can be read. Fabric API bundles nearly sixty, so
+        inspecting five jars did a hundred and twenty opens and took 4.2s.
+        """
+        import tempfile
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("a nested jar was written to disk")
+
+        monkeypatch.setattr(tempfile, "TemporaryDirectory", refuse)
+        monkeypatch.setattr(tempfile, "NamedTemporaryFile", refuse)
+
+        inner = fabric_jar(tmp_path / "inner.jar", {"id": "lib", "version": "2.5"})
+        outer = fabric_jar(
+            tmp_path / "outer.jar",
+            {"id": "app", "version": "1", "depends": {"lib": ">=2"}},
+            nested={"lib.jar": inner},
+        )
+        meta = read_jar(outer)
+        assert [n.mod_id for n in meta.nested] == ["lib"]
+        # Named for where it lives, which is what a reader can act on.
+        assert meta.nested[0].path.name == "lib.jar"
+        assert "META-INF" in str(meta.nested[0].path)
+
     def test_a_bundled_dependency_at_the_wrong_version_still_fails(self, tmp_path):
         inner = fabric_jar(tmp_path / "inner.jar", {"id": "lib", "version": "1.0"})
         outer = fabric_jar(

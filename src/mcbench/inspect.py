@@ -29,6 +29,7 @@ Nothing here proves a conflict. It ranks where to point the benchmark next.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import re
 import struct
@@ -38,7 +39,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from .versions import Dialect as VersionDialect
 from .versions import Satisfaction, satisfies
@@ -771,13 +772,20 @@ def _scan_mixin_classes(
 
 
 def read_jar(
-    path: str | Path, *, scan_mixins: bool = True, _depth: int = 0
+    path: str | Path,
+    *,
+    scan_mixins: bool = True,
+    _depth: int = 0,
+    _source: IO[bytes] | None = None,
 ) -> ModMetadata:
     """Read one mod jar's metadata, its mixin configurations, and its bundles.
 
     Nested jars are followed to :data:`MAX_NESTING_DEPTH`: Fabric libraries ship
     inside their dependents, and treating those as absent reports a missing
     dependency for a complete pack.
+
+    ``_source`` reads an archive already held in memory, which is how a nested
+    jar is inspected; ``path`` then names it for reporting.
     """
     path = Path(path)
     meta = ModMetadata(path=path)
@@ -786,7 +794,7 @@ def read_jar(
     budget = [MAX_TOTAL_BYTES]
 
     try:
-        with zipfile.ZipFile(path) as archive:
+        with zipfile.ZipFile(_source if _source is not None else path) as archive:
             names = set(archive.namelist())
             if len(names) > MAX_ENTRIES:
                 meta.errors = (
@@ -862,14 +870,15 @@ def _read_nested(
     scan_mixins: bool,
     depth: int,
 ) -> tuple[ModMetadata, ...]:
-    """Inspect bundled jars by extracting each to a temporary file.
+    """Inspect bundled jars from the bytes already read out of their host.
 
-    Extracted because ``zipfile`` needs a seekable source, and holding every
-    nested archive in memory would put an attacker-chosen size on the heap. The
-    shared ``budget`` still applies.
+    zipfile needs a seekable source, and BytesIO is one. Writing each nested
+    jar to a temporary file and opening it back did not bound memory, since
+    ``_safe_read`` has already returned the bytes and the shared ``budget``
+    caps how many there can be; it only added two file operations per nested
+    jar. Fabric API bundles nearly sixty of them, and reading five jars was
+    doing a hundred and twenty opens.
     """
-    import tempfile
-
     found: list[ModMetadata] = []
     if len(meta.nested_jars) > MAX_NESTED_JARS:
         errors.append(
@@ -878,26 +887,27 @@ def _read_nested(
         )
         return ()
 
-    with tempfile.TemporaryDirectory(prefix="mcbench-nested-") as workspace:
-        for resource in meta.nested_jars:
-            try:
-                data = _safe_read(archive, resource, budget)
-            except ArchiveTooLarge as exc:
-                errors.append(f"{resource}: {exc}")
-                break
-            except (KeyError, zipfile.BadZipFile) as exc:
-                errors.append(f"{resource}: {exc}")
-                continue
-            if data is None:
-                continue
+    for resource in meta.nested_jars:
+        try:
+            data = _safe_read(archive, resource, budget)
+        except ArchiveTooLarge as exc:
+            errors.append(f"{resource}: {exc}")
+            break
+        except (KeyError, zipfile.BadZipFile) as exc:
+            errors.append(f"{resource}: {exc}")
+            continue
+        if data is None:
+            continue
 
-            # Flattened: a nested entry path is attacker-controlled.
-            target = Path(workspace) / f"{len(found)}-{Path(resource).name}"
-            target.write_bytes(data)
-            nested = read_jar(target, scan_mixins=scan_mixins, _depth=depth + 1)
-            # The temporary path is meaningless to a reader; name the entry.
-            nested.path = meta.path / resource
-            found.append(nested)
+        found.append(read_jar(
+            # Named for the entry inside its host, which is what a reader can
+            # act on. A nested entry path is attacker-controlled, so it is used
+            # as a label and never to open anything.
+            meta.path / resource,
+            scan_mixins=scan_mixins,
+            _depth=depth + 1,
+            _source=io.BytesIO(data),
+        ))
 
     return tuple(found)
 

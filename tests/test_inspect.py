@@ -292,6 +292,65 @@ class TestAnalysis:
         result = inspect_mods(read_jars([a, api]))
         assert "missing_dependency" not in {f.code for f in result.findings}
 
+    def test_a_module_carried_in_the_jar_satisfies_the_dependency(self, tmp_path):
+        """Jar-in-Jar is how a mod runs without the whole API.
+
+        Sodium bundles the five Fabric API modules it depends on and needs no
+        Fabric API installed. Asking only whether the aggregate id was present
+        reported those five as a missing dependency, at ERROR, for a mod set
+        that starts — on the most widely installed mod in the ecosystem.
+        """
+        a = fabric_jar(tmp_path / "a.jar", {
+            "id": "a", "version": "1",
+            "depends": {
+                "fabric-renderer-api-v1": "*",
+                "fabric-resource-loader-v0": "*",
+            },
+        })
+        # What read_jars sees for a bundled module: the id in its own right,
+        # with no aggregate fabric-api anywhere.
+        one = fabric_jar(tmp_path / "renderer.jar", {
+            "id": "fabric-renderer-api-v1", "version": "3.4.1",
+        })
+        two = fabric_jar(tmp_path / "loader.jar", {
+            "id": "fabric-resource-loader-v0", "version": "1.3.1",
+        })
+        result = inspect_mods(read_jars([a, one, two]))
+        assert "missing_dependency" not in {f.code for f in result.findings}
+
+    def test_a_module_that_is_absent_is_still_reported(self, tmp_path):
+        # The collapse into one finding still has to happen for the ones that
+        # really are missing, or the fix above would just silence the check.
+        a = fabric_jar(tmp_path / "a.jar", {
+            "id": "a", "version": "1",
+            "depends": {
+                "fabric-renderer-api-v1": "*",
+                "fabric-rendering-fluids-v1": "*",
+            },
+        })
+        one = fabric_jar(tmp_path / "renderer.jar", {
+            "id": "fabric-renderer-api-v1", "version": "3.4.1",
+        })
+        result = inspect_mods(read_jars([a, one]))
+        missing = [f for f in result.findings if f.code == "missing_dependency"]
+        assert len(missing) == 1
+        assert "1 of its modules" in missing[0].detail
+        assert "fabric-rendering-fluids-v1" in missing[0].detail
+        assert "fabric-renderer-api-v1" not in missing[0].detail
+
+    def test_a_bundled_module_is_still_version_checked(self, tmp_path):
+        # Falling through to the ordinary dependency path means the range is
+        # checked too, which the aggregate branch never did.
+        a = fabric_jar(tmp_path / "a.jar", {
+            "id": "a", "version": "1",
+            "depends": {"fabric-renderer-api-v1": ">=9.0.0"},
+        })
+        one = fabric_jar(tmp_path / "renderer.jar", {
+            "id": "fabric-renderer-api-v1", "version": "3.4.1",
+        })
+        result = inspect_mods(read_jars([a, one]))
+        assert "version_conflict" in {f.code for f in result.findings}
+
     def test_detects_duplicate_ids(self, tmp_path):
         a = fabric_jar(tmp_path / "one.jar", {"id": "same", "version": "1"})
         b = fabric_jar(tmp_path / "two.jar", {"id": "same", "version": "2"})

@@ -1169,9 +1169,18 @@ def _check_dependencies(
     )
 
     for needed, spec in mod.depends.items():
-        if _is_fabric_api_module(needed):
+        if _is_fabric_api_module(needed) and not (
+            needed in present or needed in target.provisioned
+        ):
             # One jar provides all of these module ids, so six findings for one
             # absent artefact would train people to ignore the tool.
+            #
+            # Only when the module is not here in its own right. Jar-in-Jar
+            # exists so that a mod can carry the few modules it needs and run
+            # without the whole API, which is what Sodium does: it bundles the
+            # five it depends on. Asking only whether the aggregate id was
+            # present reported those as a missing dependency, at ERROR, for a
+            # set that starts.
             if not fabric_api_present:
                 fabric_api_modules.append(needed)
             continue

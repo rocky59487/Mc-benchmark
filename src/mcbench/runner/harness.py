@@ -192,6 +192,12 @@ CLIENT_FPS_CAP = 260
 #: and be pooled as though they had not.
 #:
 #: A suite may override it with a ``resolution`` game setting, as ``1280x720``.
+#:
+#: Verified from inside the game rather than by measuring the window from
+#: outside it. A process that is not per-monitor DPI aware reads a window on a
+#: 150% display as 1280x720 when it is 1920x1080, and the numbers it returns
+#: look exactly like a launcher that ignored the request. Asking the client for
+#: its framebuffer size is the only reading that cannot be wrong in that way.
 CLIENT_RESOLUTION = (1920, 1080)
 
 

@@ -65,10 +65,13 @@ def cells_table(result: SuiteResult) -> Table:
         columns=[
             "scenario", "variant", "metric", "unit", "value",
             "ci_low", "ci_high", "n_runs", "runs_excluded",
-            "runs_total", "unstable", "flags",
+            "runs_attempted", "runs_completed", "runs_admissible", "runs_failed",
+            "unstable", "trustworthy", "flags",
         ],
         caption="Aggregated metrics per (scenario, variant), with 95% bootstrap "
-                "confidence intervals.",
+                "confidence intervals. The run counts are separate on purpose: "
+                "a cell of five values out of five attempts and one of five out "
+                "of twelve are not the same experiment.",
     )
     for cell, data in result.cells.items():
         for key, estimate in sorted(data.estimates.items()):
@@ -78,8 +81,10 @@ def cells_table(result: SuiteResult) -> Table:
                 cell.scenario, cell.variant, key,
                 definition.unit if definition else "",
                 _num(estimate.value), _num(estimate.ci.low), _num(estimate.ci.high),
-                estimate.n, excluded, data.runs_total,
-                data.unstable, ";".join(sorted(f.value for f in data.flags)),
+                estimate.n, excluded,
+                data.runs_attempted, data.runs_total, data.runs_admissible,
+                data.runs_failed, data.unstable, data.trustworthy,
+                ";".join(sorted(f.value for f in data.flags)),
             ])
     return table
 
@@ -92,11 +97,15 @@ def comparisons_table(result: SuiteResult) -> Table:
             "scenario", "variant", "baseline", "metric", "unit", "direction",
             "baseline_value", "variant_value", "relative_delta_pct",
             "delta_ci_low_pct", "delta_ci_high_pct", "cliffs_delta",
-            "effect_magnitude", "verdict", "rope_pct", "additional_runs_needed",
+            "effect_magnitude", "verdict", "verdict_raw", "p_value", "q_value",
+            "family", "n_baseline", "n_variant", "suppressed_reason",
+            "rope_pct", "additional_runs_needed",
         ],
         caption="Each variant against the baseline. A verdict is issued only "
                 "when the delta interval lies wholly inside or wholly outside "
-                "the region of practical equivalence.",
+                "the region of practical equivalence, and only when enough runs "
+                "survived in both arms. 'verdict' is the one to act on; "
+                "'verdict_raw' is before multiplicity correction.",
     )
     for entry in result.comparisons:
         definition = METRICS.get(entry.metric)
@@ -109,7 +118,11 @@ def comparisons_table(result: SuiteResult) -> Table:
             _num(c.relative_delta.value * 100, 3),
             _num(c.relative_delta.ci.low * 100, 3),
             _num(c.relative_delta.ci.high * 100, 3),
-            _num(c.cliffs_delta, 3), c.effect_magnitude, c.verdict.value,
+            _num(c.cliffs_delta, 3), c.effect_magnitude,
+            entry.verdict.value, c.verdict.value,
+            _num(entry.p_value, 4),
+            _num(entry.q_value, 4) if entry.q_value is not None else "",
+            entry.family, c.baseline.n, c.variant.n, entry.suppressed_reason,
             _num(c.rope * 100, 2), entry.additional_runs_needed or "",
         ])
     return table

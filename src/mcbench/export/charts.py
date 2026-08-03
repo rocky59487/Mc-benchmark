@@ -49,6 +49,9 @@ VERDICT_COLOUR = {
     "regression": "#D55E00",
     "equivalent": "#999999",
     "inconclusive": "#8C8C8C",
+    # Deliberately the palest of the set. A cell that never obtained the runs to
+    # answer must not draw the eye the way a finding does.
+    "insufficient_data": "#BFBFBF",
 }
 
 

@@ -98,9 +98,21 @@ mcbench metrics                                    # the metric registry
 mcbench validate --suite suites/example-performance-mods.toml
 mcbench plan suites/example-performance-mods.toml  # inspect the schedule
 mcbench resolve suites/example-performance-mods.toml --download
-mcbench run suites/example-performance-mods.toml -o results.json
+
+# Build the probe for your platform once; every instance needs it, including
+# the mod-free baseline. Without it nothing in the game reads the scenario and
+# no run produces a measurement stream at all.
+(cd probe/adapters/probe-fabric && ../../gradlew build)
+
+mcbench run suites/example-performance-mods.toml -o results.json \
+    --probe-jar probe/adapters/probe-fabric/build/libs/mcbench-probe-fabric.jar
 mcbench analyse results.json --export-dir report/  # charts + tables + HTML
 ```
+
+`--probe-jar` can be omitted when running from a checkout that has already built
+it — the harness looks in the usual build directory. It is never *assumed*: a
+missing probe is a preflight blocker naming the build command, because a suite
+that discovers it two hours in has produced nothing.
 
 No runtime dependencies. A measurement standard people are asked to trust should
 be verifiable with a stock interpreter.
@@ -135,7 +147,12 @@ obtain that jar, so the result is reproducible only on your machine.
 believing, and `run` refuses to start if it cannot. It checks for a real GPU,
 forced software rendering, a display, competing Minecraft processes, CPU
 governor, battery, memory against the configured heap, disk, virtualisation, a
-licensed account, and HeadlessMC.
+licensed account, HeadlessMC, and the probe artefact for the selected platform.
+
+Its full readings travel into the results bundle, not just a publishable/not
+verdict. Two runs on machines differing in CPU governor, virtualisation and free
+memory would otherwise serialise identically, which makes results look more
+comparable than they are.
 
 The most important thing it does is **refuse**. Benchmarking a rendering mod on
 a machine with no GPU is the easiest way to publish a meaningless Minecraft
@@ -299,23 +316,39 @@ responsible is. Two tools, deliberately in that order — the cheap one first.
 ```bash
 mcbench inspect mods/            # or individual jars
 mcbench inspect mods/ --json     # for CI
+mcbench inspect mods/ --loader fabric --minecraft-version 1.21.1
 ```
 
 Runs on jars alone: no game, no account, no GPU. The fastest useful answer about
 a pack is the one you get before spending two hours benchmarking something that
 was never going to load.
 
-- **Declared incompatibilities.** Authors already record what they break —
-  Fabric's `breaks`, NeoForge's `incompatible` dependencies, Bukkit's `depend`.
-  It is machine-readable and routinely ignored.
+- **Declared incompatibilities, evaluated by version.** Authors already record
+  what they break — Fabric's `breaks`, NeoForge's `incompatible` dependencies,
+  Bukkit's `depend` — and it is machine-readable and routinely ignored. Ranges
+  are *evaluated*, not merely noted: `breaks lib <2` against an installed `lib 3`
+  is not a conflict, and checking by presence alone reported it as one.
 - **Structural problems.** Missing dependencies, duplicate mod ids, jars fighting
-  over the same id. Fabric API's module dependencies collapse into one finding,
-  because six missing modules are one absent jar and a tool that cries wolf gets
-  ignored.
+  over the same id, and dependencies satisfied at an incompatible version —
+  `lib >=2` with `lib 1` present will not launch, and presence-only checking
+  certified it as fine. Fabric API's module dependencies collapse into one
+  finding, because six missing modules are one absent jar and a tool that cries
+  wolf gets ignored. Fabric API itself is *not* assumed present: it is an
+  ordinary mod, and treating it as ambient hid the one dependency most Fabric
+  packs actually miss.
+- **Bundled jars.** Fabric libraries shipped inside their dependents count as
+  present, so a complete pack stops being reported as missing them.
 - **Mixin contention.** Which Minecraft classes more than one mod transforms,
-  extracted from the constant pool of each mixin class. Overlap is not proof of a
-  conflict — mods coexist on the same class all the time — but it is where
-  conflicts come from, so it ranks *where to look next*.
+  read from each mixin's declared configuration and its `@Mixin` annotation
+  targets. Where no annotation can be read, the weaker constant-pool footprint is
+  shown under its own heading rather than passed off as a declared target.
+  Overlap is not proof of a conflict — mods coexist on the same class all the
+  time — but it is where conflicts come from, so it ranks *where to look next*.
+
+Pass `--loader` and `--minecraft-version` to check the constraints that depend on
+them; without a target those are reported as recorded-but-unverified rather than
+silently passed. Anything the tool could not read is an error, not a warning: a
+preflight gate that exits zero on input it failed to parse is not a gate.
 
 Exit code is non-zero on blocking problems, so it drops straight into CI.
 
@@ -326,19 +359,35 @@ mcbench bisect suite.toml --scenario visual-biome-flyby -o diagnosis.json
 ```
 
 When a pack really is slow, this isolates the minimal responsible subset by
-delta debugging. Two things make it more than a bisection:
+delta debugging. Three things make it more than a bisection:
 
 **The oracle is statistical.** A subset is slower by some amount with some
 confidence, and the same subset measured twice can disagree. So probes return
-regression, clean, or *inconclusive* — and inconclusive is never counted as
-evidence either way. If the full pack's regression cannot even be confirmed, the
-search refuses to start rather than hunting for an effect it never established.
+regression, clean, *inconclusive*, or *invalid* — and only the first two are
+evidence. If the full pack's regression cannot even be confirmed, the search
+refuses to start rather than hunting for an effect it never established.
+
+**Subsets are dependency-closed.** An arbitrary half of a modpack is usually not
+installable, and the failure that causes is specific: a culprit `bad` that needs
+`library` cannot be tested alone — `{bad}` will not launch and `{library}` does
+not reproduce — so a search reading both failures as "does not reproduce"
+concludes the two *interact*, and two mod authors get a bug report about a
+conflict that does not exist. Every subset is closed over its declared
+dependencies before launch, and the support mods that pulls in are reported
+separately from the suspects, because they were never independently implicated.
 
 **The culprit is often a pair.** Two mods can each be harmless and be
 catastrophic together. A plain bisection splits them, sees neither half regress,
 and concludes nothing is wrong. The complement phase of ddmin is what survives
 that, and it is usually the finding worth reporting loudest — neither author
 would ever find it alone.
+
+An interaction is claimed only once minimality has been *checked*: the candidate
+is re-measured and every single removal is tested. ddmin's own stopping condition
+is "no split narrowed anything", which on a statistical oracle can be reached by
+a run of unresolved probes rather than by having found the answer — and a set
+that stopped there is reported as narrowed-but-unconfirmed, not announced as two
+mods fighting.
 
 **The baseline is re-measured for every probe.** The obvious design measures the
 mod-free baseline once and compares everything against it — but a bisection runs

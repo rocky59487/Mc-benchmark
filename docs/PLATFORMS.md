@@ -31,18 +31,55 @@ present at all, which is why its tests run in CI in under a second.
 
 An adapter supplies exactly three things:
 
-1. a timing hook calling `onFrame()` or `onTick()`,
-2. `executeCommand(String)`,
+1. a timing hook — `onFrame()` for frames, and for ticks one of
+   `onTickStart()`/`onTickEnd()`, `recordPlatformTick(long)`, or
+   `onTickPeriod()`,
+2. `executeCommand(String)`, returning whether the game accepted the command,
 3. `requestShutdown()`.
 
 That is the entire version-coupled surface. A new Minecraft version usually
 needs **no code change** — only a rebuild against that version's mappings.
 
+### Ticks are bracketed; frames are not
+
+A frame's duration *is* the interval between successive buffer swaps: the
+renderer presents as fast as it can, so there is no idle to include. A server
+tick is the opposite. The loop sleeps out whatever remains of the 50 ms budget,
+so the interval between end-of-tick callbacks converges on 50 ms whether the
+tick cost 5 ms or 30 ms — which is why timing ticks that way turned `mspt_mean`,
+the percentiles and `tick_headroom` into measurements of the scheduler.
+
+So an adapter reports ticks by whichever of these its platform supports, in
+order of preference:
+
+| Method | When | Published as |
+|---|---|---|
+| `recordPlatformTick(long)` | The platform measures ticks itself (Paper's `getTickTimes()`) | `mspt_*` |
+| `onTickStart()` / `onTickEnd()` | The platform has pre- and post-tick events (Fabric, Forge, NeoForge) | `mspt_*` |
+| `onTickPeriod()` | Neither is available | `tick_period_*`, run flagged |
+
+The third is a real option, not a failure — but its samples are never published
+as MSPT. An honest measurement of the tick period beats a mislabelled
+measurement of the scheduler.
+
+### Commands report their outcome
+
+`executeCommand` returns a boolean because a command can be refused without
+throwing anything at all: a syntax error, an unknown selector, a missing
+permission. Dispatch through the platform's command *dispatcher* rather than a
+convenience wrapper — `executeWithPrefix` and `performPrefixedCommand` both log
+the failure and return normally, so a scenario built on a mistyped `/fill` would
+run to completion having built none of the world it describes.
+
+A rejected setup command makes the run inadmissible. That is deliberate: the
+numbers it produces are real, they look entirely ordinary, and they describe a
+different experiment.
+
 ## Why the surface is this small
 
 Three decisions do most of the work:
 
-**Timing is measured between hook calls, not by wrapping the frame.** The
+**Frame timing is measured between hook calls, not by wrapping the frame.** The
 interval between consecutive swap-buffer calls is the same quantity as a
 bracketed frame timer, but needs one hook point instead of two, and does not
 require injecting into rendering internals.
@@ -264,8 +301,12 @@ gets to track whatever toolchain its loader ecosystem requires.
 ## Adding a platform
 
 1. Extend `ProbeAdapter`, implementing the three methods.
-2. Call `onFrame()` / `onTick()` from the platform's tick or render event.
+2. Call `onFrame()` from the render event, and report ticks by the best method
+   the platform supports (see the table above).
 3. Call `pump()` at the end of a tick, on a thread where commands are safe.
+   Register it *after* the timing hooks so command execution lands outside the
+   bracket. `pump()` also drives the setup phase and declares it finished, which
+   is what starts warmup.
 4. Register `finish()` as a shutdown hook.
 5. Verify against the reference stream from
    `dev.mcbench.probe.core.SelfTest`, which needs no GPU, no account, and no

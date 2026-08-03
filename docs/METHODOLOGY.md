@@ -59,12 +59,41 @@ so TPS cannot distinguish a 5 ms/tick configuration from a 30 ms/tick one — bo
 score "perfect". Headroom and MSPT are the informative quantities. TPS is
 reported only for saturated scenarios, where it becomes meaningful again.
 
+**MSPT means the tick's execution time**, bracketed from the start of the tick
+to its end, or read from a platform API that measures the tick itself. The
+interval between consecutive end-of-tick callbacks is *not* MSPT: the server
+loop sleeps out the remainder of the budget, so on an unsaturated server that
+interval sits at 50 ms whether the tick cost 5 ms or 30 ms — the exact
+distinction headroom exists to make.
+
+A platform that can expose neither a bracket nor a duration publishes
+`tick_period_mean_ms`, `tick_period_p95_ms` and `tick_period_p99_ms` instead,
+and the run is flagged `tick_period_only`. Those figures are informative once a
+server is over budget, where the period does track tick cost; below it they
+describe the scheduler. They are never reported as MSPT and never compared
+against it.
+
 ### Cross-cutting metrics
 
-Allocation rate (bytes/sec), GC pause total and p99, peak and steady-state heap,
-chunk generation and load throughput, and worker-thread CPU time. Allocation
-rate matters independently of pause time: a mod that doubles allocation without
-raising measured pauses has moved the cost onto whoever runs a smaller heap.
+GC pause total, p99 and maximum, collection count, peak and steady-state heap,
+chunk generation and load throughput.
+
+**Pause percentiles come from individual collections.** They are read from the
+JVM's GC notifications, one event per collection, each with its own duration and
+its own heap readings before and after — so `heap_steady_mb` is the live set
+measured *at* the collection rather than at whatever point the next sampling
+interval fell. Where a JVM cannot supply per-event data, the total pause time is
+reported and the percentile is omitted: a percentile over per-interval sums
+describes the sampling cadence, not the collector.
+
+**Allocation is measured, or else it is called something else.** `alloc_rate_mb_s`
+comes from the JVM's allocation counter and is reported only where that counter
+exists. Where it does not, the figure published is `heap_growth_rate_mb_s`, which
+is a floor on allocation and not a measure of it — anything allocated and
+collected between two samples never appears, and on a busy tick that is most of
+it. Allocation matters independently of pause time: a mod that doubles allocation
+without raising measured pauses has moved the cost onto whoever runs a smaller
+heap or a different collector.
 
 ---
 
@@ -73,22 +102,40 @@ raising measured pauses has moved the cost onto whoever runs a smaller heap.
 The JVM is the single largest confound in Minecraft benchmarking. The first
 seconds of any run measure the interpreter and the JIT compiler, not the mod.
 
-Every run has three phases:
+Every run has four phases:
 
-1. **Provision** — untimed. World generation, chunk load, mod init.
-2. **Warmup** — timed but discarded. Default 60 s client, 2000 ticks server.
-3. **Measurement** — retained.
+1. **Provision** — untimed. World load, mod init.
+2. **Setup** — untimed. The scenario's setup commands build the world it
+   describes. A phase of its own, and not part of warmup: setup that shared the
+   warmup budget meant a scenario whose setup ran long entered *measurement*
+   with commands still changing the world, and two machines gave the same
+   scenario different effective warmup purely because setup took longer on one.
+3. **Warmup** — timed but discarded. Default 60 s client, 2000 ticks server.
+   Begins only once every setup command has succeeded and the world has settled
+   for one second, with every warmup window and counter reset at that moment —
+   setup's own very uniform samples would otherwise satisfy the plateau test
+   immediately.
+4. **Measurement** — retained.
 
-Warmup ends when **both** conditions hold:
+Warmup ends when **all three** conditions hold:
 
 - the configured minimum duration has elapsed, **and**
-- steady state is detected: over a trailing window, the JIT compilation count
-  has plateaued and the rolling median frametime is stable within a tolerance
-  (default 5%).
+- the rolling median frametime or tick time is stable within a tolerance
+  (default 5%) across consecutive windows, **and**
+- JIT compilation has plateaued: `CompilationMXBean.getTotalCompilationTime()`
+  grows by less than 10 ms across three consecutive observations.
 
-If steady state is not reached by a hard ceiling (default 3× the minimum), the
-run is retained but **flagged `warmup_not_converged`**, and any result built
-from it carries that flag through to the report. Silently accepting an
+The compilation condition is checked, not assumed. A timing series can look flat
+while tiered compilation is still promoting hot methods, and measurement that
+starts there charges the mod for the compiler's remaining work. On a JVM that
+cannot report compilation time the condition is skipped and the run records that
+it was unavailable, rather than reporting a gate that never ran.
+
+If the gate is not satisfied by a hard ceiling (default 3× the minimum), the run
+is retained but **flagged `warmup_not_converged`**, and any result built from it
+carries that flag through to the report. The run also records *which* condition
+failed, because "did not converge" alone does not tell an operator whether to
+lengthen the ceiling or to find a quieter machine. Silently accepting an
 unconverged run is how a slow-starting mod gets credited with the JIT's warmup
 cost.
 
@@ -227,11 +274,28 @@ and issues one of four verdicts:
 | `regression` | Entire delta CI is beyond the ROPE, in the worse direction |
 | `equivalent` | Entire delta CI lies inside the ROPE |
 | `inconclusive` | CI straddles a ROPE boundary — needs more runs |
+| `insufficient_data` | Fewer than 5 runs survived in an arm — no verdict at all |
 
 `inconclusive` is a first-class outcome and is reported as prominently as the
 others. A benchmark that never says "we don't know" is not measuring, it is
 guessing. mcbench reports how many additional runs would be needed to resolve an
 inconclusive cell.
+
+`insufficient_data` is distinct from it, and the distinction is load-bearing.
+Inconclusive means the runs were made and disagreed; insufficient means the runs
+required to answer were never obtained. Conflating them lets a mostly-failed
+experiment read as a measured null — or worse: one surviving value against one
+surviving value is a difference of 100% with a zero-width interval, which is the
+most decisive-looking output the system can produce from the least evidence it
+can hold.
+
+So the floor is enforced everywhere a verdict is issued, not merely documented:
+five surviving values per arm *for that metric*, after inadmissible runs and
+outlier rejection. Below it the direction is withheld, the interval is not
+printed, and the report says how many runs are missing. The same floor governs
+interaction terms — a difference of differences is the least robust quantity in
+the report — and the bisect oracle, which declines to convict on a probe that
+mostly failed to launch.
 
 ### Multiple comparisons
 
@@ -239,6 +303,18 @@ A suite comparing many mods across many scenarios runs many tests, and some will
 look significant by chance. Where more than one variant is compared against a
 common baseline, mcbench applies Benjamini–Hochberg false-discovery-rate control
 across the family and reports both raw and adjusted verdicts.
+
+A family is one **(scenario, metric)**: the variants sharing a baseline cell and
+a metric, among which a chance extreme would be picked out and reported. Metrics
+are not pooled into a single suite-wide family — `frametime_mean_ms` and
+`fps_avg` are the same measurement twice, and correcting across strongly
+dependent tests is punitive rather than principled.
+
+Correction can only remove discoveries. A decisive verdict that does not survive
+is reported as `inconclusive`; a verdict the ROPE rule already declined to make
+is never promoted by it. Every comparison carries its raw p-value, its adjusted
+q-value, its family, and both the raw and the corrected verdict, so a reader can
+tell whether the correction ran at all.
 
 ---
 

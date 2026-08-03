@@ -18,7 +18,7 @@ from typing import Any
 
 from ..metrics import METRICS
 from ..report import SuiteResult
-from ..stats import Verdict
+from ..stats import MIN_ADMISSIBLE_RUNS, Verdict
 from .charts import (
     PALETTE,
     VERDICT_COLOUR,
@@ -125,11 +125,11 @@ def _verdict_badge(verdict: str) -> str:
 
 
 def _summary_stats(result: SuiteResult) -> str:
-    counts = {v: 0 for v in ("improvement", "regression", "equivalent", "inconclusive")}
+    counts = {v.value: 0 for v in Verdict}
     for entry in result.comparisons:
-        counts[entry.comparison.verdict.value] = (
-            counts.get(entry.comparison.verdict.value, 0) + 1
-        )
+        # The verdict a reader should act on, so the tiles cannot disagree with
+        # the table underneath them.
+        counts[entry.verdict.value] = counts.get(entry.verdict.value, 0) + 1
 
     tiles = [
         ("variants", len(result.variants)),
@@ -169,20 +169,45 @@ def _caveats(result: SuiteResult, preflight: dict[str, Any] | None) -> str:
                 f"<code>{_esc(cell)}</code> — unstable: more than 20% of runs "
                 f"excluded as outliers"
             )
-        if data.runs_admissible < 5:
+        if data.runs_admissible < MIN_ADMISSIBLE_RUNS:
+            attempted = data.runs_attempted or data.runs_total
             items.append(
-                f"<code>{_esc(cell)}</code> — only {data.runs_admissible} "
-                f"admissible run(s); at least 5 are needed to estimate variance"
+                f"<code>{_esc(cell)}</code> — only {data.runs_admissible} of "
+                f"{attempted} attempted run(s) were admissible; at least "
+                f"{MIN_ADMISSIBLE_RUNS} are needed to estimate variance"
+            )
+        if data.runs_failed:
+            items.append(
+                f"<code>{_esc(cell)}</code> — {data.runs_failed} attempt(s) "
+                f"produced no measurement at all. A cell that lost launches is "
+                f"not a smaller experiment, it is a less reliable one"
             )
 
     inconclusive = sum(
-        1 for e in result.comparisons if e.comparison.verdict is Verdict.INCONCLUSIVE
+        1 for e in result.comparisons if e.verdict is Verdict.INCONCLUSIVE
     )
     if inconclusive:
         items.append(
             f"{inconclusive} comparison(s) are <em>inconclusive</em> — the "
             f"interval straddles the practical-equivalence boundary and the data "
             f"does not support a verdict either way"
+        )
+
+    insufficient = [e for e in result.comparisons if e.verdict is Verdict.INSUFFICIENT_DATA]
+    if insufficient:
+        items.append(
+            f"{len(insufficient)} comparison(s) have <em>insufficient data</em> — "
+            f"fewer than {MIN_ADMISSIBLE_RUNS} runs survived in one or both arms, "
+            f"so no direction is asserted however large the apparent difference. "
+            f"This is a statement about the experiment, not about the effect"
+        )
+
+    if result.multiplicity and result.multiplicity.get("demoted"):
+        items.append(
+            f"{result.multiplicity['demoted']} decisive verdict(s) did not "
+            f"survive Benjamini-Hochberg correction at FDR "
+            f"{result.multiplicity.get('fdr', 0.05):g} and are reported as "
+            f"inconclusive"
         )
 
     if not items:
@@ -225,8 +250,8 @@ def _scenario_section(
                 value=e.comparison.relative_delta.value,
                 low=e.comparison.relative_delta.ci.low,
                 high=e.comparison.relative_delta.ci.high,
-                colour=VERDICT_COLOUR.get(e.comparison.verdict.value),
-                annotation=e.comparison.verdict.value,
+                colour=VERDICT_COLOUR.get(e.verdict.value),
+                annotation=e.verdict.value,
             )
             for e in rows
         ]

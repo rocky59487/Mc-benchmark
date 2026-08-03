@@ -154,13 +154,13 @@ systematically understate variance.
 
 ### Interleaving is mandatory
 
-The default execution order is **round-robin across variants, with the variant
-order shuffled each round**:
+The default execution order is **round-robin across variants, balanced so that
+no variant collects earlier positions than another**:
 
 ```
-round 1:  B  A  C          <- order shuffled
-round 2:  A  C  B
-round 3:  C  B  A
+round 1:  B  A  C
+round 2:  C  A  B          <- reverses round 1
+round 3:  A  C  B
 ...
 ```
 
@@ -170,10 +170,23 @@ This is the most important control in the document, and no existing Minecraft
 benchmark does it. Blocked execution confounds variant with time, and time
 carries thermal throttling, background load, page-cache warming and ambient
 temperature drift. A machine that throttles after ten minutes hands a clean and
-repeatable win to whatever ran first. Interleaving converts that systematic bias
-into noise the statistics can account for.
+repeatable win to whatever ran first.
 
-Seeds for the shuffle are recorded so the exact order is reproducible.
+**Balanced, not merely shuffled.** Shuffling each round independently equalises
+mean position only in expectation, and a suite runs a handful of rounds. Six
+variants over five rounds can leave one variant averaging two positions earlier
+than another in every round — a constant offset that survives averaging over
+replicates and is read as effect rather than noise. Each round therefore orders
+variants by accumulated position, latest-so-far first, ties broken at random.
+Consecutive rounds pair into reversals, the ABBA arrangement used wherever the
+apparatus drifts as it runs, and the spread in mean position is bounded for any
+seed by `(variants - 1) / rounds`, exactly zero when the round count is even.
+
+**Prefer an even `runs_per_cell`.** It balances exactly, and it leaves the
+margin the next section requires: at the 5-run minimum, one run lost to outlier
+rejection takes a cell below the floor and it reports no verdict at all.
+
+Seeds are recorded so the exact order is reproducible.
 
 ### Environment quiescence
 
@@ -182,6 +195,17 @@ core count and affinity, available memory, disk queue depth, thermal state where
 readable, and running process count. It **refuses to run** by default if another
 Minecraft process is detected. It **warns** on laptop battery power, on active
 CPU frequency scaling, and on detected virtualization with unstable timing.
+
+That check happens once and a suite runs for hours, so **every run also looks
+either side of its own launch** and carries `environment_noisy` if it found a
+Minecraft process that was not ours. Either side rather than during, because our
+own game is one and could not be told apart from anyone else's; a competitor
+confined to a single run is therefore missed, and the flag's absence is not a
+certificate.
+
+Recorded rather than refused. Whether a second process mattered depends on what
+it was doing, which mcbench cannot know, and discarding runs on suspicion throws
+away hours over a launcher left open at its menu.
 
 These are reported in every result. A result whose environment was not quiescent
 is not silently discarded, but it is marked, and the public corpus filters on it.
@@ -386,6 +410,20 @@ resolution and refresh rate, all game settings, scenario version and hash, the
 mcbench version, and every RNG seed used.
 
 **A result without complete provenance is not admitted to the public corpus.**
+
+**Recorded means observed, not requested.** Most of that list is what the suite
+asked for, and a launcher may satisfy a request with something else: its own
+JVM, a different loader build, a scenario file edited since the plan was made.
+The probe reports what the game actually was — platform, scenario and its
+content hash, Minecraft version, loader version, JVM, and the framebuffer it
+rendered into — and every run's record carries both that and the disagreements
+with what was asked.
+
+A disagreement about the experiment (scenario, its hash, Minecraft, loader) is
+`configuration_mismatch` and the run is inadmissible: the numbers are real and
+describe something the document does not. A disagreement about the JVM or the
+window is recorded and pooled, because every variant shared that launch, so it
+makes the description wrong rather than the comparison invalid.
 
 ### Scenarios are versioned
 

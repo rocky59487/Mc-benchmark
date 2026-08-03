@@ -162,7 +162,13 @@ def parse_results_document(raw: Any) -> tuple[str, str, dict[str, list[dict[str,
                 if isinstance(position, bool) or not isinstance(position, int):
                     raise ResultsError(f"{where}: 'position' must be an integer")
                 entry["position"] = position
-            for optional in ("error", "log", "exit_code", "world", "probe"):
+            for optional in (
+                "error", "log", "exit_code", "world", "probe",
+                # What the game said it was, and where that disagreed with what
+                # the run recorded. The flag alone decides admissibility; these
+                # are what tell a reader which field disagreed and by how much.
+                "reported", "configuration_mismatches",
+            ):
                 if optional in run:
                     entry[optional] = run[optional]
             checked_runs.append(entry)

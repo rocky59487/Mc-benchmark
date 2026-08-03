@@ -20,7 +20,7 @@ mcbench measures many mods in one pass under one methodology, and reports
 | | Existing tools | mcbench |
 |---|---|---|
 | Repetition | Single run | ≥5 runs per cell, fresh process each time |
-| Execution order | Blocked (`AAA BBB`) | **Interleaved, shuffled per round** |
+| Execution order | Blocked (`AAA BBB`) | **Interleaved, position-balanced** |
 | Uncertainty | None | Bootstrap confidence intervals on everything |
 | Verdicts | Point-estimate diffs | Effect size + region of practical equivalence |
 | Multi-mod | Manual jar swapping | Declarative matrix, automated |
@@ -30,6 +30,8 @@ mcbench measures many mods in one pass under one methodology, and reports
 
 Interleaving is the row that matters most. On a machine that throttles after ten
 minutes, blocked ordering hands a clean and repeatable win to whatever ran first.
+Balanced rather than shuffled, because shuffling each round independently only
+equalises position in expectation and a suite runs a handful of rounds.
 
 ## What it measures
 
@@ -241,6 +243,12 @@ on your machine; it never redistributes jars.
 `mcbench validate` reports whether a suite is **publishable**: interleaved
 ordering, at least 5 runs per cell, and every mod version pinned. A suite failing
 any of these still runs, but its numbers are not comparable to anyone else's.
+
+It also reports what a valid suite gives up. At exactly 5 runs per cell one run
+lost to outlier rejection drops the cell below the floor and it reports no
+verdict; an odd count leaves variants differing slightly in mean position. Both
+cost one line in the manifest to avoid, and both are invisible until the hours
+are spent.
 
 ## Mod interactions
 

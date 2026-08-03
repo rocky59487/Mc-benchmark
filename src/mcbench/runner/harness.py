@@ -1263,10 +1263,12 @@ class Harness:
             "result": str(result),
             "sha256": result.sha256,
             "complete": result.complete,
+            "chunks": result.chunks,
         })
         # An incomplete read is not a fingerprint. Two worlds that both failed on
-        # the same region would hash identically over what was left.
-        return result.sha256 if result.complete else ""
+        # the same region would hash identically over what was left, and two that
+        # generated no terrain would both hash to the digest of nothing.
+        return result.sha256 if result.usable else ""
 
     def _adopt_agent_stream(
         self, stream: ProbeStream, agent_path: Path, planned: PlannedRun

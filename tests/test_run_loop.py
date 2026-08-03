@@ -1,0 +1,296 @@
+"""One run, executed end to end against a stand-in game.
+
+Every piece of `execute_run` was covered in isolation and the path through it
+had never run: the instance it prepares, the environment it exports, the file
+it waits for, the stream it parses, and the outcome it builds. A stand-in that
+plays the game's side of that contract — read the configuration, write a
+stream, save a world — is the only way to find out whether the two halves agree
+about where anything is.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from mcbench.config import parse_suite
+from mcbench.runner import Harness
+from mcbench.runner.harness import ResolvedVariant, run_counts
+from mcbench.scenario import Side, load_scenarios
+
+REPO = Path(__file__).resolve().parents[1]
+FIXTURES = REPO / "tests" / "fixtures"
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="executable script stand-in")
+
+
+STAND_IN = '''#!/usr/bin/env python3
+"""Stands in for HeadlessMC and the game it launches."""
+import json
+import os
+import sys
+from pathlib import Path
+
+HELP = """usage: stand-in launch <version> [options]
+  --gamedir <dir>              game directory
+  --jvm <args>                 jvm arguments
+  --loader <name>              mod loader
+  --loader-version <version>   loader build
+  --quickPlaySingleplayer <w>  enter a world directly
+  --server                     launch the dedicated server
+"""
+
+if "--help" in sys.argv or "help" in sys.argv[1:2]:
+    print(HELP)
+    raise SystemExit(0)
+
+sys.path.insert(0, {src!r})
+sys.path.insert(0, {tests!r})
+from mcbench.world import create_world  # noqa: E402
+from test_world import _chunk, _write_region  # noqa: E402
+
+
+def fail(message):
+    print("stand-in: " + message, file=sys.stderr)
+    raise SystemExit(3)
+
+
+config = Path(os.environ.get("MCBENCH_PROBE_CONFIG", ""))
+output = Path(os.environ.get("MCBENCH_PROBE_OUTPUT", ""))
+if not config.is_file():
+    fail("MCBENCH_PROBE_CONFIG names no file: " + str(config))
+if not str(output):
+    fail("MCBENCH_PROBE_OUTPUT was not set")
+
+properties = {{}}
+for line in config.read_text(encoding="utf-8").splitlines():
+    if line.strip() and not line.startswith("#") and "=" in line:
+        key, _, value = line.partition("=")
+        properties[key.strip()] = value.strip()
+
+# What a real probe reads before it can do anything: which scenario, where to
+# write, and the command lists compiled for it.
+for required in ("scenario.id", "scenario.content_hash", "output", "measurement.duration"):
+    if required not in properties:
+        fail("probe.properties has no " + required)
+for name in ("setup.txt", "workload.txt"):
+    if not (config.parent / name).is_file():
+        fail("the plan is missing " + name)
+
+argv = sys.argv[1:]
+gamedir = Path(argv[argv.index("--gamedir") + 1]) if "--gamedir" in argv else None
+if gamedir is None:
+    fail("no --gamedir")
+if "--server" in argv:
+    # The server generates its world on first start; the harness only names it
+    # and states the seed.
+    server = {{}}
+    for line in (gamedir / "server.properties").read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            server[key] = value
+    world = create_world(
+        gamedir,
+        name=server.get("level-name", "world"),
+        seed=int(server.get("level-seed", "0")),
+    )
+    if os.environ.get("MCBENCH_STANDIN_EMPTY_WORLD") != "1":
+        # The terrain a server generates on first start, which is what the
+        # harness fingerprints.
+        (world / "region").mkdir(parents=True, exist_ok=True)
+        _write_region(world / "region" / "r.0.0.mca", {{(0, 0): _chunk()}})
+
+stream = Path({stream!r}).read_text(encoding="utf-8").splitlines()
+lines = []
+for raw in stream:
+    event = json.loads(raw)
+    if event.get("type") == "fingerprint" and os.environ.get("MCBENCH_STANDIN_DROP_WORLD") == "1":
+        # A probe that could not fingerprint the live world; the harness falls
+        # back to the save on disk.
+        continue
+    if event.get("type") == "hello":
+        # The metadata a real adapter reports about the run it was configured for.
+        event["metadata"] = dict(event.get("metadata", {{}}))
+        event["metadata"]["scenario"] = properties["scenario.id"]
+        event["metadata"]["scenario_hash"] = properties["scenario.content_hash"]
+    lines.append(json.dumps(event))
+
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+print("stand-in: wrote " + str(len(lines)) + " events")
+'''
+
+
+def stand_in(path: Path, stream: Path) -> Path:
+    path.write_text(
+        STAND_IN.format(
+            src=str(REPO / "src"), tests=str(REPO / "tests"), stream=str(stream)
+        ), encoding="utf-8"
+    )
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
+def probe_jar(path: Path) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("fabric.mod.json", '{"schemaVersion":1,"id":"mcbench-probe"}')
+    return path
+
+
+def build(tmp_path, scenario_id: str, fixture: str):
+    scenarios = {s.id: s for s in load_scenarios(REPO / "scenarios")}
+    suite = parse_suite({
+        "name": "e2e", "minecraft_version": "1.21.1", "loader": "fabric",
+        "loader_version": "0.16.5",
+        "scenarios": [scenario_id],
+        "variants": [{"name": "base", "mods": []}],
+        "baseline": "base",
+        "replicates": 1,
+    })
+    harness = Harness(
+        suite, scenarios, work_dir=tmp_path / "work",
+        headlessmc=stand_in(tmp_path / "stand-in", FIXTURES / fixture),
+        probe_jar=probe_jar(tmp_path / "mcbench-probe.jar"),
+    )
+    harness._resolved["base"] = ResolvedVariant(variant=suite.variants[0])
+    return harness, harness.build_plan().runs[0], scenarios[scenario_id]
+
+
+class TestOneServerRun:
+    def test_the_run_produces_metrics(self, tmp_path):
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        outcome = harness.execute_run(planned)
+
+        assert outcome.error == "", outcome.log_path.read_text(encoding="utf-8")
+        assert outcome.exit_code == 0
+        assert outcome.succeeded
+        assert outcome.status == "completed"
+        assert outcome.metrics is not None
+        assert outcome.metrics.sample_count > 0
+        assert outcome.metrics.values["mspt_mean"] > 0
+
+    def test_the_stand_in_read_the_configuration_the_harness_wrote(self, tmp_path):
+        # It exits 3 with a message if any of it is missing, so an ordinary
+        # outcome is the assertion. The failure this guards against is a
+        # renamed key or a moved file, which no unit test on either side sees.
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        outcome = harness.execute_run(planned)
+        assert outcome.exit_code == 0, outcome.log_path.read_text(encoding="utf-8")
+
+    def test_the_probes_own_fingerprint_wins(self, tmp_path):
+        # Taken over the live world while the measured region was loaded, which
+        # the harness cannot see from the save alone.
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        outcome = harness.execute_run(planned)
+        assert outcome.world_fingerprint == "selftest-synthetic-world"
+
+    def test_the_harness_fingerprints_the_save_when_the_probe_cannot(
+        self, tmp_path, monkeypatch
+    ):
+        # Without this the pooling rule is a promise the code does not keep on
+        # any platform whose probe has no world API.
+        monkeypatch.setenv("MCBENCH_STANDIN_DROP_WORLD", "1")
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        outcome = harness.execute_run(planned)
+        assert len(outcome.world_fingerprint) == 64
+
+    def test_a_world_with_no_terrain_is_not_a_fingerprint(
+        self, tmp_path, monkeypatch
+    ):
+        # Hashing nothing produces the same constant every time, so two runs
+        # that generated no terrain would agree and be pooled on a comparison
+        # that read nothing.
+        monkeypatch.setenv("MCBENCH_STANDIN_DROP_WORLD", "1")
+        monkeypatch.setenv("MCBENCH_STANDIN_EMPTY_WORLD", "1")
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        outcome = harness.execute_run(planned)
+        assert outcome.world_fingerprint == ""
+
+    def test_the_instance_holds_the_probe_and_the_plan(self, tmp_path):
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness.execute_run(planned)
+        instance = harness._instance_dir(planned)
+        assert (instance / "mods" / "mcbench-probe.jar").is_file()
+        assert (instance / "mcbench" / "probe.jsonl").is_file()
+        recorded = json.loads((instance / "mcbench" / "scenario.json").read_text())
+        assert recorded["id"] == "entity-mobcap-saturation"
+
+    def test_the_outcome_serialises_with_its_run_counted(self, tmp_path):
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        outcome = harness.execute_run(planned)
+        record = outcome.to_record()
+        assert record["status"] == "completed"
+        assert record["values"]["mspt_mean"] > 0
+        counts = run_counts([outcome])
+        assert counts["entity-mobcap-saturation/base"]["attempted"] == 1
+        assert counts["entity-mobcap-saturation/base"]["failed"] == 0
+
+
+class TestOneClientRun:
+    def test_the_authored_world_survives_the_round_trip(self, tmp_path):
+        scenario_id = next(
+            s.id for s in load_scenarios(REPO / "scenarios") if s.side is Side.CLIENT
+        )
+        harness, planned, scenario = build(
+            tmp_path, scenario_id, "probe-client-reference.jsonl"
+        )
+        outcome = harness.execute_run(planned)
+
+        assert outcome.error == "", outcome.log_path.read_text(encoding="utf-8")
+        assert outcome.metrics is not None
+        assert outcome.metrics.values["fps_avg"] > 0
+
+        # The harness wrote level.dat before the launch and read it back after,
+        # and agreed with itself about which world and which seed — the check
+        # that makes a client-generated world detectable rather than measured.
+        instance = harness._instance_dir(planned)
+        world = instance / "saves" / harness._client_world_name(scenario)
+        assert world.is_dir()
+        assert harness._client_world_mismatch(instance, scenario, world) == ""
+        # No fingerprint, because a stand-in generates no terrain to hash. A
+        # real client leaves region files; an empty hash is refused either way,
+        # so this run would never be pooled.
+        assert outcome.world_fingerprint == ""
+
+
+class TestARunThatFails:
+    def test_a_game_that_writes_nothing_is_recorded_as_failed(self, tmp_path):
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        Path(harness.headlessmc).write_text(
+            "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then\n"
+            "  echo '  --gamedir <dir>'\n  echo '  --jvm <args>'\n  exit 0\nfi\n"
+            "echo 'crashed before the probe loaded' >&2\nexit 1\n",
+            encoding="utf-8",
+        )
+        outcome = harness.execute_run(planned)
+
+        assert not outcome.succeeded
+        assert outcome.metrics is None
+        assert outcome.status == "failed"
+        assert outcome.error
+        # The attempt is still counted; dropping it would make a mod that
+        # crashes half its runs look like one with fewer, cleaner runs.
+        counts = run_counts([outcome])
+        assert counts["entity-mobcap-saturation/base"]["attempted"] == 1
+        assert counts["entity-mobcap-saturation/base"]["failed"] == 1

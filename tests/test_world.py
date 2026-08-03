@@ -285,6 +285,24 @@ class TestFingerprint:
         assert result.chunks == 0
         assert result.complete
 
+    def test_a_world_with_no_chunks_identifies_nothing(self, tmp_path):
+        # Nothing failed to read, so the world is complete — and the hash is
+        # the digest of nothing, which every empty world shares. Two runs that
+        # generated no terrain would otherwise agree and be pooled.
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        for world in (a, b):
+            (world / "region").mkdir(parents=True)
+        empty = fingerprint_world(a)
+        assert empty.complete
+        assert empty.sha256 == fingerprint_world(b).sha256
+        assert not empty.usable
+        assert "no chunks" in str(empty)
+
+    def test_a_world_with_chunks_is_usable(self, tmp_path):
+        result = fingerprint_world(_world(tmp_path, "w", {(0, 0): _chunk()}))
+        assert result.usable
+
     def test_a_chunk_pointing_past_the_end_is_refused(self, tmp_path):
         world = _world(tmp_path, "w", {(0, 0): _chunk()})
         region = world / "region" / "r.0.0.mca"

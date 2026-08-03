@@ -449,7 +449,7 @@ def cmd_world(args: argparse.Namespace) -> int:
             {
                 "world": path, "sha256": r.sha256, "chunks": r.chunks,
                 "regions": r.regions, "complete": r.complete,
-                "unreadable": r.unreadable,
+                "usable": r.usable, "unreadable": r.unreadable,
             }
             for path, r in results
         ], indent=2))
@@ -457,15 +457,28 @@ def cmd_world(args: argparse.Namespace) -> int:
 
     width = max(len(path) for path, _ in results)
     for path, result in results:
-        mark = "✓" if result.complete else "⚠"
+        mark = "✓" if result.usable else "⚠"
         print(f"{mark} {path:<{width}}  {result.sha256}")
         print(f"  {' ' * width}  {result.chunks} chunks, {result.regions} regions")
+        if not result.chunks:
+            print(
+                f"  {' ' * width}  ! no chunks read; this hash identifies nothing",
+                file=sys.stderr,
+            )
         for problem in result.unreadable:
             print(f"  {' ' * width}  ! {problem}", file=sys.stderr)
 
-    distinct = {r.sha256 for _, r in results if r.complete}
+    usable = [r for _, r in results if r.usable]
+    distinct = {r.sha256 for r in usable}
     if len(results) > 1:
         print()
+        if len(usable) < len(results):
+            print(
+                f"✗ {len(results) - len(usable)} of {len(results)} worlds could "
+                f"not be fingerprinted; nothing here is comparable",
+                file=sys.stderr,
+            )
+            return 1
         if len(distinct) <= 1:
             print("✓ all worlds identical; runs over them may be pooled")
         else:
@@ -477,7 +490,7 @@ def cmd_world(args: argparse.Namespace) -> int:
             return 1
     # An incomplete read is not a pass: it is a fingerprint over whatever
     # happened to be readable, which two broken worlds could easily share.
-    return 0 if all(r.complete for _, r in results) else 1
+    return 0 if all(r.usable for _, r in results) else 1
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:

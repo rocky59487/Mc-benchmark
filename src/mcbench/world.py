@@ -82,7 +82,19 @@ class WorldFingerprint:
     def complete(self) -> bool:
         return not self.unreadable
 
+    @property
+    def usable(self) -> bool:
+        """Whether this hash identifies a world well enough to pool runs on it.
+
+        Zero chunks hashes to the digest of nothing — the same constant for
+        every empty world. Two runs that generated no terrain would agree on it
+        and be pooled on the strength of a comparison that read nothing.
+        """
+        return self.complete and self.chunks > 0
+
     def __str__(self) -> str:
+        if not self.chunks:
+            return "no chunks read"
         suffix = "" if self.complete else f" ({len(self.unreadable)} unreadable)"
         return f"{self.sha256[:16]}… over {self.chunks} chunks{suffix}"
 

@@ -376,6 +376,9 @@ Two consequences follow from reading the save rather than asking the game:
 - A world that **could not be read** produces no fingerprint at all rather than a
   placeholder. Two runs that both failed to compute one must never be pooled on
   the strength of agreeing about nothing.
+- A world with **no chunks** is the same case wearing a hash. Nothing failed to
+  read, so the world is complete, and the digest of nothing is a constant every
+  empty world shares. It is refused for the same reason.
 
 The reference world for a scenario is the fingerprint the **majority** of its
 runs share, not the first observed. Run order must not decide which world counts

@@ -401,6 +401,35 @@ The reference world for a scenario is the fingerprint the **majority** of its
 runs share, not the first observed. Run order must not decide which world counts
 as correct, or one bad early run would condemn every good one after it.
 
+### The region has to sit in terrain that has stopped changing
+
+Worldgen is not chunk-local. A chunk near the edge of what has been generated
+keeps changing while its neighbours are made, so a fingerprint drawn too close
+to that edge stops asking whether two runs measured the same world and starts
+asking whether they stopped generating at the same moment.
+
+Measured on this repository's own scenarios. `visual-biome-flyby` fingerprints a
+radius of 16 inside a pre-generated 20 — a margin of 4. Across thirteen runs its
+saved worlds fall into **four** distinct fingerprints, and every chunk that
+disagrees is in the outermost three or four rings: 5 chunks of 1089 for one run,
+23 for another. Re-hashing the same worlds at radius 12, a margin of 8, gives
+**one** fingerprint for all thirteen, and it stays one down to radius 6.
+
+So those runs did measure the same ground. The disagreement, and the runs it
+costs, came from where the region was drawn.
+
+Two things follow:
+
+- **A margin below 6 chunks is refused by `mcbench validate`.** Six is where the
+  evidence starts, not a guarantee: `reference-hardware-baseline` is stable on
+  6 while the flyby needed 8, because how much settled terrain a region needs
+  depends on how much world the run generates around it.
+- **The run that generates a scenario's world is the one most likely to be
+  refused**, since it is the least settled and it is also the one the shared
+  world is cached from. Which variant that is comes from the shuffle, not from
+  anything a mod did. Every run records `world_source`, so a refused run can be
+  read as "this one made the world" rather than as "this mod altered worldgen".
+
 ### Everything that could change a number is recorded
 
 Every result carries: exact game version, loader and loader version, full

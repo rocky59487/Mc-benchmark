@@ -233,6 +233,28 @@ Requirements are **derived from what a scenario actually does**, not from a
 hand-written list, so a scenario cannot forget to declare something and then
 appear to run on a target that silently drops half of it.
 
+### The `command` op goes around all of it
+
+A scenario can also write a command out longhand, and that string is passed
+through verbatim: no dialect sees it, so nothing spells it for the target and
+nothing checks that the target still accepts it.
+
+`visual-particle-storm` did. 1.20.5 moved particle options out of the argument
+list and into the particle — `particle minecraft:dust 1 0 0 2 ...` became
+`particle minecraft:dust{color:[1,0,0],scale:2} ...` — and the old spelling is
+rejected, not degraded. So on every version this repository targets, one of its
+seven emitters failed on every iteration of the workload, which is a failed
+workload command, which is an inadmissible run. The scenario declared no
+version bound at all, so it claimed to work everywhere.
+
+Compilation now checks raw commands against the target's version too. Not by a
+general rule, which does not exist, but as a list of the specific spellings a
+version changed out from under, with particle options as the first entry. It is
+checked by particle name rather than by counting arguments, because a particle
+that takes no options is unaffected and must not be flagged, and the argument
+list itself has since grown a viewer — counting would refuse valid commands,
+which is the more expensive failure.
+
 The governing rule is the project's usual one: **a target that cannot express a
 scenario refuses it, loudly, with a reason.** A scenario that half-executes
 still produces numbers, and those numbers look entirely valid.

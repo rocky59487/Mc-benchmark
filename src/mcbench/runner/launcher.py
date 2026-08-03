@@ -34,7 +34,15 @@ KNOWN_FLAGS = {
     "--server": "launch the dedicated server rather than the client",
 }
 
+#: Without these the flag dialect cannot give a run its own instance directory
+#: or its JVM arguments, and the run measures the wrong thing or nothing.
+#:
+#: A launcher that names `--jvm` but not `--gamedir` is not broken; it is
+#: HeadlessMC 2.x, which takes the instance directory as the `hmc.gamedir`
+#: property instead. The harness drives that form separately, so `--gamedir` is
+#: required only of a launcher that claims to have it.
 REQUIRED_FLAGS = frozenset({"--gamedir", "--jvm"})
+PROPERTY_DIALECT_REQUIRED = frozenset({"--jvm"})
 
 _FLAG = re.compile(r"--[A-Za-z][\w-]*")
 
@@ -50,6 +58,15 @@ class LauncherCapabilities:
     supported rather than assumed missing."""
     detail: str = ""
     unsupported_required: tuple[str, ...] = field(default=())
+
+    @property
+    def speaks_flags(self) -> bool:
+        """Whether the launcher names the instance directory on a flag.
+
+        When it does not, the harness configures HeadlessMC by property
+        instead, and the flags below are not missing so much as inapplicable.
+        """
+        return not self.probed or "--gamedir" in self.supported
 
     def accepts(self, flag: str) -> bool:
         return not self.probed or flag in self.supported
@@ -84,10 +101,13 @@ def probe_launcher(
         ]
     else:
         base = [str(launcher)]
-        attempts = [["--help"], ["launch", "--help"], ["help", "launch"]]
+        attempts = [["launch", "--help"], ["help", "launch"], ["--help"]]
 
     found: set[str] = set()
     errors: list[str] = []
+    # Most specific question first, and stop at the first one answered. Asking
+    # the rest costs a timeout each against a launcher that ignores them, which
+    # is how probing a HeadlessMC jar used to take 90 seconds and learn nothing.
     for args in attempts:
         try:
             completed = subprocess.run(
@@ -99,6 +119,8 @@ def probe_launcher(
             continue
         found.update(_FLAG.findall(completed.stdout or ""))
         found.update(_FLAG.findall(completed.stderr or ""))
+        if found:
+            break
 
     if not found:
         return LauncherCapabilities(
@@ -107,12 +129,11 @@ def probe_launcher(
             detail="; ".join(errors) or "help output named no flags",
         )
 
+    required = REQUIRED_FLAGS if "--gamedir" in found else PROPERTY_DIALECT_REQUIRED
     return LauncherCapabilities(
         path=launcher,
         supported=frozenset(found),
         probed=True,
         detail=f"{len(found)} flag(s) recognised",
-        unsupported_required=tuple(
-            sorted(f for f in REQUIRED_FLAGS if f not in found)
-        ),
+        unsupported_required=tuple(sorted(f for f in required if f not in found)),
     )

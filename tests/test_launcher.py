@@ -70,7 +70,26 @@ class TestProbe:
         )
         found = probe_launcher(launcher)
         assert found.probed
-        assert found.unsupported_required == ("--gamedir", "--jvm")
+        # No --gamedir, so the property dialect applies, and that dialect still
+        # needs somewhere to put the JVM arguments.
+        assert found.unsupported_required == ("--jvm",)
+        assert not found.speaks_flags
+
+    def test_no_gamedir_but_a_jvm_flag_is_the_property_dialect(self, tmp_path):
+        """HeadlessMC 2.x, whose launch names only --jvm and --retries.
+
+        Reporting --gamedir missing here blocked a launcher that works, because
+        it takes the instance directory as a property instead.
+        """
+        launcher = fake_launcher(
+            tmp_path / "hmc",
+            "launch : Launches the game.\n  --jvm  Jvm args to use.\n"
+            "  --retries  Retry count.\n",
+        )
+        found = probe_launcher(launcher)
+        assert found.probed
+        assert not found.speaks_flags
+        assert not found.unsupported_required
 
     def test_help_naming_no_flags_at_all_is_treated_as_unreadable(self, tmp_path):
         """Indistinguishable from a launcher that would not print help."""
@@ -139,8 +158,21 @@ class TestPreflight:
         result = h.preflight(require_account=False)
         check = next(c for c in result.checks if c.name == "launcher flags")
         assert check.severity is Severity.BLOCK
-        assert "--gamedir" in check.detail
+        assert "--jvm" in check.detail
         assert not result.admissible
+
+    def test_the_property_dialect_is_not_reported_as_missing_flags(self, tmp_path):
+        launcher = fake_launcher(
+            tmp_path / "hmc",
+            "launch : Launches the game.\n  --jvm  Jvm args to use.\n",
+        )
+        h, _ = harness(tmp_path / "w", launcher)
+        check = next(
+            c for c in h.preflight(require_account=False).checks
+            if c.name == "launcher flags"
+        )
+        assert check.severity is Severity.OK
+        assert "hmc.gamedir" in check.detail
 
     def test_dropped_optional_flags_are_reported(self, tmp_path):
         launcher = fake_launcher(tmp_path / "hmc", MINIMAL_HELP)

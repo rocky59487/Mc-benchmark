@@ -621,6 +621,13 @@ class Harness:
                 ),
             )
 
+        if not capabilities.speaks_flags:
+            return Check(
+                "launcher flags", Severity.OK,
+                f"{capabilities.detail}; configured by property (hmc.gamedir, "
+                f"hmc.gameargs) rather than by flag",
+            )
+
         optional = capabilities.missing(
             frozenset(KNOWN_FLAGS) - set(capabilities.unsupported_required)
         )
@@ -1024,6 +1031,21 @@ class Harness:
             "--command", " ".join(launch),
         ]
 
+    def _launch_cwd(self, instance: Path) -> Path:
+        """Where to run the launcher from.
+
+        HeadlessMC finds its own state, including the account it logged in
+        with, relative to the working directory. Running it from the instance
+        made it create an empty state directory there and refuse the launch
+        with "you can't play the game without an account", once per run, on a
+        machine that was logged in. The instance is named by hmc.gamedir, so
+        the working directory is free to be the launcher's own.
+        """
+        if self.headlessmc is not None and not self.launcher_capabilities().speaks_flags:
+            launcher = self.headlessmc
+            return launcher.parent if launcher.is_file() else launcher
+        return instance
+
     def _headlessmc_version_id(self) -> str:
         """The version HeadlessMC installed for this suite's loader.
 
@@ -1169,7 +1191,7 @@ class Harness:
         try:
             with log_path.open("w", encoding="utf-8") as log:
                 completed = subprocess.run(
-                    command, cwd=instance, env=environment,
+                    command, cwd=self._launch_cwd(instance), env=environment,
                     stdout=log, stderr=subprocess.STDOUT,
                     timeout=timeout_s, check=False,
                 )

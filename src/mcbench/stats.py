@@ -14,6 +14,7 @@ robust estimators.
 
 from __future__ import annotations
 
+import bisect
 import math
 import random
 from collections.abc import Callable, Sequence
@@ -203,6 +204,17 @@ def mean(values: Sequence[float]) -> float:
     return math.fsum(values) / len(values)
 
 
+def _percentile_of_sorted(ordered: Sequence[float], q: float) -> float:
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = (len(ordered) - 1) * (q / 100.0)
+    lower = math.floor(pos)
+    upper = math.ceil(pos)
+    if lower == upper:
+        return ordered[int(pos)]
+    return ordered[lower] * (upper - pos) + ordered[upper] * (pos - lower)
+
+
 def percentile(values: Sequence[float], q: float) -> float:
     """Linear-interpolated percentile. ``q`` in [0, 100].
 
@@ -213,15 +225,18 @@ def percentile(values: Sequence[float], q: float) -> float:
         raise ValueError("percentile() requires at least one value")
     if not 0.0 <= q <= 100.0:
         raise ValueError(f"q must be in [0, 100], got {q}")
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return ordered[0]
-    pos = (len(ordered) - 1) * (q / 100.0)
-    lower = math.floor(pos)
-    upper = math.ceil(pos)
-    if lower == upper:
-        return ordered[int(pos)]
-    return ordered[lower] * (upper - pos) + ordered[upper] * (pos - lower)
+    return _percentile_of_sorted(sorted(values), q)
+
+
+def _interval_of(replicates: list[float], confidence: float) -> Interval:
+    """Both bounds of a bootstrap interval from one sort of the replicates."""
+    ordered = sorted(replicates)
+    alpha = 1.0 - confidence
+    return Interval(
+        low=_percentile_of_sorted(ordered, 100.0 * (alpha / 2.0)),
+        high=_percentile_of_sorted(ordered, 100.0 * (1.0 - alpha / 2.0)),
+        confidence=confidence,
+    )
 
 
 def mean_of_worst_fraction(values: Sequence[float], fraction: float) -> float:
@@ -395,18 +410,13 @@ def bootstrap_ci(
         only = float(values[0])
         return Interval(only, only, confidence)
 
-    rng = random.Random(seed)
+    # choices() draws the whole resample in one call instead of n calls to
+    # randrange(). It consumes the generator differently, so a given seed gives
+    # a different draw than before; it is still fully determined by that seed.
+    draw = random.Random(seed).choices
     pool = list(values)
-    replicates = [
-        statistic([pool[rng.randrange(n)] for _ in range(n)]) for _ in range(resamples)
-    ]
-
-    alpha = 1.0 - confidence
-    return Interval(
-        low=percentile(replicates, 100.0 * (alpha / 2.0)),
-        high=percentile(replicates, 100.0 * (1.0 - alpha / 2.0)),
-        confidence=confidence,
-    )
+    replicates = [statistic(draw(pool, k=n)) for _ in range(resamples)]
+    return _interval_of(replicates, confidence)
 
 
 def estimate(
@@ -446,33 +456,20 @@ def cliffs_delta(baseline: Sequence[float], variant: Sequence[float]) -> float:
         raise ValueError("cliffs_delta() requires non-empty samples")
 
     # O(n log n) via sorted counting rather than the O(n*m) double loop, so
-    # per-frame samples remain tractable.
+    # per-frame samples remain tractable. bisect_left counts the baseline values
+    # strictly below a variant value; bisect_right counts those at or below it.
     ordered = sorted(baseline)
+    total = len(ordered)
+    left = bisect.bisect_left
+    right = bisect.bisect_right
+
     greater = 0
     less = 0
     for value in variant:
-        lo, hi = 0, len(ordered)
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if ordered[mid] < value:
-                lo = mid + 1
-            else:
-                hi = mid
-        strictly_below = lo
+        greater += left(ordered, value)
+        less += total - right(ordered, value)
 
-        lo, hi = 0, len(ordered)
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if ordered[mid] <= value:
-                lo = mid + 1
-            else:
-                hi = mid
-        at_or_below = lo
-
-        greater += strictly_below
-        less += len(ordered) - at_or_below
-
-    return (greater - less) / (len(baseline) * len(variant))
+    return (greater - less) / (total * len(variant))
 
 
 def _relative_delta(baseline: Sequence[float], variant: Sequence[float]) -> float:
@@ -522,27 +519,22 @@ def compare(
     # Bootstrap the delta directly rather than deriving it from the two marginal
     # intervals. Comparing whether two CIs overlap is a distinctly weaker and
     # more conservative test than an interval on the difference itself.
-    rng = random.Random(seed + 2)
+    draw = random.Random(seed + 2).choices
     nb, nv = len(baseline), len(variant)
     base_pool, var_pool = list(baseline), list(variant)
+    fsum = math.fsum
     replicates: list[float] = []
+    append = replicates.append
     for _ in range(resamples):
-        b = [base_pool[rng.randrange(nb)] for _ in range(nb)]
-        v = [var_pool[rng.randrange(nv)] for _ in range(nv)]
-        b_mean = math.fsum(b) / nb
+        b_mean = fsum(draw(base_pool, k=nb)) / nb
         if b_mean == 0:
             continue
-        replicates.append((math.fsum(v) / nv - b_mean) / b_mean)
+        append((fsum(draw(var_pool, k=nv)) / nv - b_mean) / b_mean)
 
     if not replicates:
         raise ValueError("delta bootstrap produced no valid replicates")
 
-    alpha = 1.0 - confidence
-    delta_ci = Interval(
-        low=percentile(replicates, 100.0 * (alpha / 2.0)),
-        high=percentile(replicates, 100.0 * (1.0 - alpha / 2.0)),
-        confidence=confidence,
-    )
+    delta_ci = _interval_of(replicates, confidence)
     delta_est = Estimate(
         value=_relative_delta(baseline, variant), ci=delta_ci, n=min(nb, nv)
     )
@@ -681,28 +673,22 @@ def interaction_term(
             - ((math.fsum(x) / len(x) - n_mean) + (math.fsum(y) / len(y) - n_mean))
         ) / n_mean
 
-    rng = random.Random(seed)
-    pools = [list(none), list(a), list(b), list(ab)]
+    draw = random.Random(seed).choices
+    pools = [(list(pool), len(pool)) for pool in (none, a, b, ab)]
     replicates: list[float] = []
+    append = replicates.append
     for _ in range(resamples):
-        resampled = [
-            [pool[rng.randrange(len(pool))] for _ in range(len(pool))] for pool in pools
-        ]
+        resampled = [draw(pool, k=size) for pool, size in pools]
         if math.fsum(resampled[0]) == 0:
             continue
-        replicates.append(term(*resampled))
+        append(term(*resampled))
 
     if not replicates:
         raise ValueError("interaction bootstrap produced no valid replicates")
 
-    alpha = 1.0 - confidence
     return Estimate(
         value=term(none, a, b, ab),
-        ci=Interval(
-            low=percentile(replicates, 100.0 * (alpha / 2.0)),
-            high=percentile(replicates, 100.0 * (1.0 - alpha / 2.0)),
-            confidence=confidence,
-        ),
+        ci=_interval_of(replicates, confidence),
         n=min(len(none), len(a), len(b), len(ab)),
     )
 

@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from mcbench.metrics import (
+    COMMON_REFRESH_HZ,
     METRICS,
     ClientSamples,
     Direction,
     RunFlag,
     ServerSamples,
     find_steady_state,
+    frame_cap_suspected,
     reduce_client_run,
     reduce_server_run,
+    vsync_suspected,
 )
 
 NS = 1_000_000  # nanoseconds per millisecond
@@ -20,6 +25,78 @@ NS = 1_000_000  # nanoseconds per millisecond
 
 def frametimes(ms_values):
     return [int(v * NS) for v in ms_values]
+
+
+class TestVsyncDetection:
+    """A run pinned to the refresh interval measures the monitor, not the mod."""
+
+    def _locked(self, hz, count=1000, jitter=0.002):
+        interval = 1000.0 / hz
+        return [
+            interval + interval * jitter * (1 if i % 2 else -1) for i in range(count)
+        ]
+
+    @pytest.mark.parametrize("hz", COMMON_REFRESH_HZ)
+    def test_recognises_every_rate_it_claims_to_know(self, hz):
+        assert vsync_suspected(self._locked(hz)) == hz
+
+    def test_a_spread_distribution_is_not_flagged(self):
+        spread = [8.0 + (i % 400) * 0.05 for i in range(1000)]
+        assert vsync_suspected(spread) is None
+
+    def test_a_minority_at_the_interval_is_not_enough(self):
+        # 60% pinned, below the 80% share the check requires.
+        pinned = self._locked(60.0, count=600)
+        assert vsync_suspected(pinned + [40.0 + i * 0.01 for i in range(400)]) is None
+
+    def test_the_tolerance_boundary_is_inclusive(self):
+        interval = 1000.0 / 60.0
+        margin = interval * 0.06
+        at_edge = [interval + margin] * 500 + [interval - margin] * 500
+        assert vsync_suspected(at_edge, tolerance=0.06) == 60.0
+
+    def test_just_outside_the_tolerance_is_not_flagged(self):
+        interval = 1000.0 / 60.0
+        outside = [interval * 1.08] * 1000
+        assert vsync_suspected(outside, tolerance=0.06) is None
+
+    def test_a_short_run_is_never_flagged(self):
+        assert vsync_suspected(self._locked(60.0, count=199)) is None
+
+    def test_agrees_with_a_direct_scan_over_arbitrary_frametimes(self):
+        """The sorted-range count must decide exactly what a per-frame scan does.
+
+        The check reads a range of a sorted list rather than testing every frame
+        against every candidate rate. That is only a valid substitution while the
+        two agree on which frames fall inside the tolerance.
+        """
+        def by_scanning(values, tolerance=0.06, share=0.80):
+            if len(values) < 200:
+                return None
+            for hz in COMMON_REFRESH_HZ:
+                interval = 1000.0 / hz
+                near = sum(
+                    1 for v in values if abs(v - interval) <= interval * tolerance
+                )
+                if near / len(values) >= share:
+                    return hz
+            return None
+
+        rng = random.Random(4)
+        for case in range(60):
+            hz = COMMON_REFRESH_HZ[case % len(COMMON_REFRESH_HZ)]
+            interval = 1000.0 / hz
+            # Deliberately straddling the tolerance edge, where the two forms
+            # are most likely to disagree.
+            values = [
+                interval * rng.uniform(0.93, 1.07) for _ in range(rng.randint(200, 900))
+            ]
+            assert vsync_suspected(values) == by_scanning(values), case
+
+    def test_frame_cap_counts_everything_at_or_under_the_cap(self):
+        capped = [1000.0 / 60.0] * 600 + [30.0] * 400
+        assert frame_cap_suspected(capped, 60.0)
+        assert not frame_cap_suspected([30.0] * 1000, 60.0)
 
 
 class TestMetricRegistry:

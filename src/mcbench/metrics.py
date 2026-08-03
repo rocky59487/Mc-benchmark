@@ -12,6 +12,7 @@ notice. Every FPS figure mcbench reports is derived from a frametime aggregate.
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -452,16 +453,21 @@ def vsync_suspected(
     genuinely CPU-bound scene can sit near a round frametime by coincidence, and
     a false alarm that discards a good run is its own kind of damage.
     """
-    if len(frametimes_ms) < 200:
+    total = len(frametimes_ms)
+    if total < 200:
         return None
 
+    # One sort, then two bisections per candidate rate. Scanning every frame
+    # once per rate costs len(COMMON_REFRESH_HZ) passes over a list that grows
+    # with run length, and the count wanted is exactly a range of a sorted list.
+    ordered = sorted(frametimes_ms)
     for hz in COMMON_REFRESH_HZ:
         interval = 1000.0 / hz
-        near = sum(
-            1 for value in frametimes_ms
-            if abs(value - interval) <= interval * tolerance
+        margin = interval * tolerance
+        near = bisect.bisect_right(ordered, interval + margin) - bisect.bisect_left(
+            ordered, interval - margin
         )
-        if near / len(frametimes_ms) >= share:
+        if near / total >= share:
             return hz
     return None
 

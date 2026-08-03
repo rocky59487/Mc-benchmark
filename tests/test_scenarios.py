@@ -488,3 +488,57 @@ class TestFingerprintMargin:
         assert not found["reference-hardware-baseline"]
         # This one did not, on the third run of the suite.
         assert found["visual-biome-flyby"]
+
+
+class TestUnknownScenarioKeys:
+    """The schema says additionalProperties: false and nothing enforced it.
+
+    Validation is deliberately self-contained rather than delegating to a JSON
+    Schema library — the module docstring says so — but the self-contained half
+    never checked the key set. So any key at all was accepted and then read by
+    nobody, which is exactly how world.generator_settings came to sit in six
+    scenario files, doing nothing, for however long.
+    """
+
+    def _minimal(self, **world):
+        return {
+            "id": "keys", "version": "1.0.0", "title": "K",
+            "side": "client", "category": "visual",
+            "world": {"seed": 1, "generator": "flat", **world},
+            "measurement": {"warmup": {"min": 10}, "duration": {"full": 10}},
+        }
+
+    def test_an_invented_world_key_is_refused(self):
+        with pytest.raises(ScenarioError, match="nonsense"):
+            parse_scenario(self._minimal(nonsense=1))
+
+    def test_a_near_miss_is_named(self):
+        with pytest.raises(ScenarioError, match="did you mean 'generator_settings'"):
+            parse_scenario(self._minimal(generator_setting={"layers": "x"}))
+
+    def test_an_invented_top_level_key_is_refused(self):
+        with pytest.raises(ScenarioError, match="warmup_seconds"):
+            parse_scenario({**self._minimal(), "warmup_seconds": 30})
+
+    def test_an_invented_measurement_key_is_refused(self):
+        base = self._minimal()
+        base["measurement"]["primary metric"] = "fps_avg"
+        with pytest.raises(ScenarioError, match="primary metric"):
+            parse_scenario(base)
+
+    def test_an_invented_warmup_key_is_refused(self):
+        # No "did you mean" here: 'tolerance' is not close enough to
+        # 'steady_state_tolerance' to guess at, and guessing anyway would point
+        # people at the wrong key. The message lists the real ones instead.
+        base = self._minimal()
+        base["measurement"]["warmup"]["tolerance"] = 0.05
+        with pytest.raises(ScenarioError) as raised:
+            parse_scenario(base)
+        assert "'tolerance'" in str(raised.value)
+        assert "steady_state_tolerance" in str(raised.value)
+        assert "did you mean" not in str(raised.value)
+
+    def test_every_shipped_scenario_still_loads(self):
+        # The list is only right if it covers what the repository already
+        # writes; an omission here refuses a file that was always valid.
+        assert len(load_scenarios(SCENARIO_ROOT)) >= 11

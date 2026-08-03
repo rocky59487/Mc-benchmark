@@ -12,13 +12,12 @@ from __future__ import annotations
 import json
 import tomllib
 from dataclasses import dataclass, field
-from difflib import get_close_matches
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from .planner import DEFAULT_RUNS_PER_CELL, MIN_RUNS_PER_CELL, OrderStrategy
-from .scenario import Preset
+from .scenario import Preset, reject_unknown_keys
 from .stats import DEFAULT_ROPE, MIN_ADMISSIBLE_RUNS
 
 __all__ = [
@@ -250,24 +249,10 @@ MOD_KEYS = frozenset({"project", "version", "platform", "loader"})
 def _reject_unknown_keys(data: dict[str, Any], known: frozenset[str], where: str) -> None:
     """Refuse a manifest key this parser does not read.
 
-    Every setting here is read with a default, so an unrecognised key changes
-    nothing and says nothing. A suite that asks for ``replicates = 10`` and
-    runs seven, or writes ``run_per_cell``, describes an experiment it did not
-    perform — and the results document, built from the parsed configuration,
-    agrees with the run rather than with the file the operator wrote. There is
-    no later point at which that surfaces.
+    Shared with the scenario parser, which had the same hole for the same
+    reason; see :func:`mcbench.scenario.reject_unknown_keys`.
     """
-    unknown = sorted(set(data) - known)
-    if not unknown:
-        return
-    parts = []
-    for key in unknown:
-        near = get_close_matches(key, sorted(known), n=1, cutoff=0.7)
-        parts.append(f"{key!r} (did you mean {near[0]!r}?)" if near else repr(key))
-    raise ConfigError(
-        f"{where}: unknown key(s) {', '.join(parts)}. "
-        f"Known keys: {', '.join(sorted(known))}"
-    )
+    reject_unknown_keys(data, known, where, ConfigError)
 
 
 def _parse_mod(entry: Any, where: str) -> ModRef:

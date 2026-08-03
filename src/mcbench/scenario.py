@@ -19,6 +19,7 @@ import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from difflib import get_close_matches
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -46,6 +47,53 @@ _VALID_OPS = {
 }
 _VALID_GENERATORS = {"default", "flat", "amplified", "large_biomes", "void"}
 _VALID_REQUIREMENTS = {"carpet", "gamemode-creative", "flat-world"}
+
+#: Every key a scenario may carry at each level. The schema says
+#: ``additionalProperties: false`` and nothing enforced it, so any key at all
+#: was accepted and then read by nobody.
+SCENARIO_KEYS = frozenset({
+    "id", "version", "title", "description", "side", "category", "tags",
+    "minecraft_versions", "requires", "world", "measurement", "setup",
+    "workload",
+})
+WORLD_KEYS = frozenset({
+    "seed", "generator", "generator_settings", "spawn", "time", "weather",
+    "difficulty", "gamerules", "fingerprint_region", "dimension",
+})
+MEASUREMENT_KEYS = frozenset({
+    "warmup", "duration", "primary_metric", "metrics", "tick_warp", "saturated",
+})
+WARMUP_KEYS = frozenset({"min", "max_multiple", "steady_state_tolerance"})
+
+
+def reject_unknown_keys(
+    data: dict[str, Any],
+    known: frozenset[str],
+    where: str,
+    error: type[Exception],
+) -> None:
+    """Refuse a key this parser does not read.
+
+    Everything optional is read with a default, so an unrecognised key changes
+    nothing and reports nothing. ``world.generator_settings`` sat in the schema
+    and in six scenario files, read by no code, and every one of those
+    scenarios generated a world it had not asked for. A typo does the same
+    thing more quietly.
+
+    The message names the nearest real key, because the common case is a near
+    miss rather than an invention.
+    """
+    unknown = sorted(set(data) - known)
+    if not unknown:
+        return
+    parts = []
+    for key in unknown:
+        near = get_close_matches(key, sorted(known), n=1, cutoff=0.7)
+        parts.append(f"{key!r} (did you mean {near[0]!r}?)" if near else repr(key))
+    raise error(
+        f"{where}: unknown key(s) {', '.join(parts)}. "
+        f"Known keys: {', '.join(sorted(known))}"
+    )
 
 
 class Side(str, Enum):
@@ -303,6 +351,7 @@ def _require(condition: bool, message: str) -> None:
 
 def _validate_world(world: Any, where: str) -> None:
     _require(isinstance(world, dict), f"{where}: 'world' must be an object")
+    reject_unknown_keys(world, WORLD_KEYS, f"{where}: world", ScenarioError)
     _require("seed" in world, f"{where}: world.seed is required; an unfixed seed "
                               f"makes the comparison meaningless")
     _require(isinstance(world["seed"], int) and not isinstance(world["seed"], bool),
@@ -327,9 +376,15 @@ def _validate_world(world: Any, where: str) -> None:
 
 def _validate_measurement(measurement: Any, where: str) -> None:
     _require(isinstance(measurement, dict), f"{where}: 'measurement' must be an object")
+    reject_unknown_keys(
+        measurement, MEASUREMENT_KEYS, f"{where}: measurement", ScenarioError
+    )
 
     warmup = measurement.get("warmup")
     _require(isinstance(warmup, dict), f"{where}: measurement.warmup is required")
+    reject_unknown_keys(
+        warmup, WARMUP_KEYS, f"{where}: measurement.warmup", ScenarioError
+    )
     _require("min" in warmup, f"{where}: measurement.warmup.min is required")
     _require(
         isinstance(warmup["min"], (int, float)) and not isinstance(warmup["min"], bool)
@@ -396,6 +451,8 @@ def _validate(data: Any, where: str) -> None:
 
     for required in ("id", "version", "title", "side", "category", "world", "measurement"):
         _require(required in data, f"{where}: missing required field {required!r}")
+
+    reject_unknown_keys(data, SCENARIO_KEYS, where, ScenarioError)
 
     _require(
         isinstance(data["id"], str) and bool(_ID_PATTERN.match(data["id"])),

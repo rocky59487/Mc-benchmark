@@ -62,6 +62,10 @@ class Preflight:
 
     checks: list[Check] = field(default_factory=list)
     host: dict[str, str] = field(default_factory=dict)
+    forced: bool = False
+    """True when the operator overrode a blocker with ``--force``. Results from a
+    forced run must never enter the corpus, and the override travels with them so
+    that fact cannot be lost between the run and whoever reads it."""
 
     @property
     def blockers(self) -> list[Check]:
@@ -79,7 +83,35 @@ class Preflight:
     @property
     def publishable(self) -> bool:
         """Whether results may enter the shared corpus."""
-        return self.admissible and not self.warnings
+        return self.admissible and not self.warnings and not self.forced
+
+    def to_dict(self) -> dict:
+        """The whole preflight state, for the results bundle.
+
+        Every check with its severity, what was actually read, and the remedy —
+        not just the publishable verdict. Collapsing this to one boolean threw
+        away the readings a reader needs to judge whether two results are
+        comparable: two runs on machines differing in CPU scaling governor,
+        virtualisation, and free memory both serialised as ``publishable:
+        False`` and looked equivalent.
+        """
+        return {
+            "admissible": self.admissible,
+            "publishable": self.publishable,
+            "forced": self.forced,
+            "host": dict(self.host),
+            "checks": [
+                {
+                    "name": c.name,
+                    "severity": c.severity.value,
+                    "detail": c.detail,
+                    "remedy": c.remedy,
+                }
+                for c in self.checks
+            ],
+            "blockers": [c.name for c in self.blockers],
+            "warnings": [c.name for c in self.warnings],
+        }
 
 
 # --------------------------------------------------------------------------

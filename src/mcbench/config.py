@@ -141,6 +141,12 @@ class SuiteConfig:
     seed: int = 0
     interactions: tuple[tuple[str, ...], ...] = ()
     heap_mb: int = 4096
+    jvm_args: tuple[str, ...] = ()
+    """JVM arguments applied to every variant. A variant's own ``jvm_args``
+    extend these rather than replacing them; the harness enforces that model and
+    records the resulting command line per variant in provenance."""
+    game_settings: dict[str, Any] = field(default_factory=dict)
+    """Game settings applied to every variant, overridden per variant."""
     source_path: Path | None = None
 
     @property
@@ -351,6 +357,8 @@ def parse_suite(data: dict[str, Any], *, source: Path | None = None) -> SuiteCon
         seed=int(data.get("seed", 0)),
         interactions=tuple(interactions),
         heap_mb=int(data.get("heap_mb", 4096)),
+        jvm_args=tuple(data.get("jvm_args", ()) or ()),
+        game_settings=dict(data.get("game_settings", {}) or {}),
         source_path=source,
     )
 

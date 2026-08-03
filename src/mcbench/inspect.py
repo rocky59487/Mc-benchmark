@@ -40,16 +40,24 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .versions import Dialect as VersionDialect
+from .versions import Satisfaction, satisfies
+
 __all__ = [
     "ArchiveTooLarge",
     "ModMetadata",
+    "MixinConfig",
     "Finding",
     "Severity",
     "Inspection",
+    "InspectionTarget",
     "read_jar",
     "read_jars",
     "inspect_mods",
     "mixin_targets",
+    "is_ambient",
+    "flatten_mods",
+    "AMBIENT_IDS",
 ]
 
 
@@ -79,6 +87,16 @@ MAX_ENTRIES = 20_000
 #: Compression ratios above this are the signature of a bomb; real class files
 #: and JSON compress well but not like this.
 MAX_COMPRESSION_RATIO = 300
+
+#: How deep nested jars are followed. Fabric mods bundle their dependencies in
+#: ``META-INF/jars/``, and those jars may bundle their own — but only to a
+#: shallow depth in practice, while a hostile archive can nest indefinitely and
+#: turn inspection into an unbounded recursion over a few kilobytes.
+MAX_NESTING_DEPTH = 3
+
+#: Nested jars followed per archive. A legitimate library bundle holds a handful;
+#: a thousand is an attack on the inspector's time, not a modpack.
+MAX_NESTED_JARS = 64
 
 
 class ArchiveTooLarge(Exception):
@@ -152,6 +170,39 @@ class Finding:
 
 
 @dataclass
+class MixinConfig:
+    """One declared mixin configuration, as resolved from the jar.
+
+    Mixin configurations were previously *recorded and never read*: the scanner
+    instead picked classes whose path happened to contain "mixin". That misses
+    every mixin in a package named something else and picks up every helper that
+    is not one, and both errors land in the same place — the contention ranking
+    that decides where an operator points a bisect first.
+    """
+
+    resource: str
+    package: str = ""
+    common: tuple[str, ...] = ()
+    client: tuple[str, ...] = ()
+    server: tuple[str, ...] = ()
+    plugin: str = ""
+    """A mixin plugin can add configurations at runtime. Its presence means the
+    declared list is a lower bound, and the report says so rather than implying
+    the scan was exhaustive."""
+    error: str = ""
+
+    @property
+    def classes(self) -> tuple[str, ...]:
+        """Every declared mixin class, as an internal (slash-separated) name."""
+        prefix = self.package.replace(".", "/")
+        names = (*self.common, *self.client, *self.server)
+        return tuple(
+            f"{prefix}/{name.replace('.', '/')}" if prefix else name.replace(".", "/")
+            for name in names
+        )
+
+
+@dataclass
 class ModMetadata:
     """What a jar declares about itself.
 
@@ -171,8 +222,24 @@ class ModMetadata:
     recommends: dict[str, str] = field(default_factory=dict)
     provides: tuple[str, ...] = ()
     mixin_configs: tuple[str, ...] = ()
+    configs: tuple[MixinConfig, ...] = ()
+    """The declared configurations, parsed. Empty when none were declared."""
     mixin_targets: frozenset[str] = frozenset()
+    """Classes a mixin *references*. An over-approximation by construction: a
+    class merely used by a mixin appears alongside the one it transforms."""
+    verified_targets: frozenset[str] = frozenset()
+    """Classes an ``@Mixin`` annotation actually names as a target. A subset of
+    :attr:`mixin_targets`, and the only one of the two that is evidence rather
+    than a hint — kept separate so a report can say which it is showing."""
     nested_jars: tuple[str, ...] = ()
+    nested: tuple[ModMetadata, ...] = ()
+    """Metadata read out of bundled jars. Fabric libraries are routinely shipped
+    this way, and treating a bundled dependency as absent produced a confident
+    'missing dependency' error about a pack that was complete."""
+    unreadable: bool = False
+    """True when the archive or its descriptor could not be read at all. Distinct
+    from carrying a warning: nothing this jar declares is known, so every
+    conclusion involving it is unfounded."""
     errors: tuple[str, ...] = ()
 
     @property
@@ -182,6 +249,22 @@ class ModMetadata:
     @property
     def label(self) -> str:
         return f"{self.mod_id or self.path.name}@{self.version or '?'}"
+
+    @property
+    def uses_mixin_plugin(self) -> bool:
+        return any(config.plugin for config in self.configs)
+
+    def provided_ids(self) -> dict[str, str]:
+        """Ids this jar itself supplies, mapped to the version it supplies them at.
+
+        Bundled jars are *not* folded in here. They are separate entries that
+        :func:`_flatten` surfaces alongside their host, so counting them twice
+        would make every bundled library look like an accidental double-install.
+        """
+        supplied = {self.mod_id: self.version} if self.mod_id else {}
+        for alias in self.provides:
+            supplied.setdefault(alias, self.version)
+        return supplied
 
 
 # --------------------------------------------------------------------------
@@ -270,12 +353,212 @@ def _constant_pool_strings(data: bytes) -> list[str]:
 
 
 def mixin_targets(data: bytes) -> set[str]:
-    """Minecraft classes referenced by a compiled mixin class."""
+    """Minecraft classes referenced by a compiled mixin class.
+
+    An over-approximation, by design — see :func:`_constant_pool_strings`. Use
+    :func:`annotated_mixin_targets` when you need the classes the mixin actually
+    declares as targets.
+    """
     found: set[str] = set()
     for text in _constant_pool_strings(data):
         for match in _TARGET_PATTERN.findall(text):
             found.add(match)
     return found
+
+
+def annotated_mixin_targets(data: bytes) -> set[str] | None:
+    """Targets named by the class's ``@Mixin`` annotation.
+
+    Returns None when the class carries no ``@Mixin`` annotation at all, which
+    is how a helper class in a mixin package is told apart from a mixin — the
+    distinction the path-substring heuristic could not make in either direction.
+
+    Two forms are read, because both are in wide use. ``@Mixin(Foo.class)``
+    stores class constants in the annotation, and ``@Mixin(targets = "a.b.Foo")``
+    stores dotted source names as strings. The second exists precisely for
+    classes that cannot be referenced directly — inner and package-private
+    classes — which are disproportionately the interesting targets.
+
+    This walks the class file's attribute table rather than pulling in a
+    bytecode library. That is more code than ``ClassReader``, and it keeps
+    probe-adjacent tooling dependency-free, which is a property this project
+    trades a fair amount for elsewhere.
+    """
+    parsed = _parse_class(data)
+    if parsed is None:
+        return None
+    pool, offset = parsed
+
+    try:
+        # access_flags, this_class, super_class
+        offset += 6
+        interfaces = struct.unpack_from(">H", data, offset)[0]
+        offset += 2 + interfaces * 2
+        offset = _skip_members(data, offset, pool)  # fields
+        offset = _skip_members(data, offset, pool)  # methods
+        attribute_count = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+
+        for _ in range(attribute_count):
+            name_index, length = struct.unpack_from(">HI", data, offset)
+            offset += 6
+            name = pool.get(name_index)
+            if name in ("RuntimeVisibleAnnotations", "RuntimeInvisibleAnnotations"):
+                targets = _mixin_annotation_targets(data, offset, pool)
+                if targets is not None:
+                    return targets
+            offset += length
+    except (struct.error, IndexError, KeyError):
+        # A truncated or crafted class file. Returning None reports "no verified
+        # targets", which loses information; claiming targets read out of
+        # malformed bytes would invent it.
+        return None
+    return None
+
+
+def _parse_class(data: bytes) -> tuple[dict[int, Any], int] | None:
+    """Read the constant pool, returning ``(pool, offset_after_pool)``."""
+    if len(data) < 10 or data[:4] != b"\xca\xfe\xba\xbe":
+        return None
+
+    count = struct.unpack_from(">H", data, 8)[0]
+    offset = 10
+    pool: dict[int, Any] = {}
+    index = 1
+    while index < count:
+        if offset >= len(data):
+            return None
+        tag = data[offset]
+        offset += 1
+        if tag == _CONSTANT_UTF8:
+            if offset + 2 > len(data):
+                return None
+            length = struct.unpack_from(">H", data, offset)[0]
+            offset += 2
+            pool[index] = data[offset : offset + length].decode(
+                "utf-8", errors="replace"
+            )
+            offset += length
+        else:
+            size = _FIXED_SIZES.get(tag)
+            if size is None:
+                return None
+            if tag == _CONSTANT_CLASS:
+                # Retained as an indirection: resolved lazily so the pool can be
+                # walked in one pass regardless of forward references.
+                pool[index] = _ClassRef(struct.unpack_from(">H", data, offset)[0])
+            offset += size
+            if tag in (_CONSTANT_LONG, _CONSTANT_DOUBLE):
+                index += 1
+        index += 1
+    return pool, offset
+
+
+@dataclass(frozen=True)
+class _ClassRef:
+    name_index: int
+
+
+def _resolve_class(pool: dict[int, Any], index: int) -> str | None:
+    entry = pool.get(index)
+    if isinstance(entry, _ClassRef):
+        name = pool.get(entry.name_index)
+        return name if isinstance(name, str) else None
+    return entry if isinstance(entry, str) else None
+
+
+def _skip_members(data: bytes, offset: int, pool: dict[int, Any]) -> int:
+    """Skip a field_info or method_info table."""
+    count = struct.unpack_from(">H", data, offset)[0]
+    offset += 2
+    for _ in range(count):
+        offset += 6  # access_flags, name_index, descriptor_index
+        attributes = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        for _ in range(attributes):
+            length = struct.unpack_from(">I", data, offset + 2)[0]
+            offset += 6 + length
+    return offset
+
+
+_MIXIN_DESCRIPTORS = (
+    "Lorg/spongepowered/asm/mixin/Mixin;",
+    "Lorg/spongepowered/asm/mixin/Pseudo;",
+)
+
+
+def _mixin_annotation_targets(
+    data: bytes, offset: int, pool: dict[int, Any]
+) -> set[str] | None:
+    count = struct.unpack_from(">H", data, offset)[0]
+    offset += 2
+    for _ in range(count):
+        type_index = struct.unpack_from(">H", data, offset)[0]
+        descriptor = pool.get(type_index)
+        targets: set[str] = set()
+        is_mixin = descriptor in _MIXIN_DESCRIPTORS
+        offset = _read_annotation_values(data, offset + 2, pool, targets, is_mixin)
+        if is_mixin:
+            return targets
+    return None
+
+
+def _read_annotation_values(
+    data: bytes,
+    offset: int,
+    pool: dict[int, Any],
+    targets: set[str],
+    collect: bool,
+) -> int:
+    pairs = struct.unpack_from(">H", data, offset)[0]
+    offset += 2
+    for _ in range(pairs):
+        name_index = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        name = pool.get(name_index)
+        offset = _read_element_value(
+            data, offset, pool, targets,
+            collect and name in ("value", "targets"),
+        )
+    return offset
+
+
+def _read_element_value(
+    data: bytes,
+    offset: int,
+    pool: dict[int, Any],
+    targets: set[str],
+    collect: bool,
+) -> int:
+    tag = data[offset]
+    offset += 1
+    if tag == ord("c"):  # class constant: @Mixin(Foo.class)
+        index = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        descriptor = pool.get(index)
+        if collect and isinstance(descriptor, str):
+            name = descriptor.strip("L;").lstrip("[")
+            if name:
+                targets.add(name)
+    elif tag == ord("s"):  # string: @Mixin(targets = "net.minecraft.Foo")
+        index = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        value = pool.get(index)
+        if collect and isinstance(value, str) and value:
+            targets.add(value.replace(".", "/"))
+    elif tag == ord("e"):  # enum: type_name_index, const_name_index
+        offset += 4
+    elif tag == ord("@"):  # nested annotation
+        offset += 2
+        offset = _read_annotation_values(data, offset, pool, targets, False)
+    elif tag == ord("["):
+        length = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        for _ in range(length):
+            offset = _read_element_value(data, offset, pool, targets, collect)
+    else:  # primitive or Utf8 constant, always a 2-byte pool index
+        offset += 2
+    return offset
 
 
 # --------------------------------------------------------------------------
@@ -404,8 +687,113 @@ def _license_text(value: Any) -> str:
     return str(value or "")
 
 
-def read_jar(path: str | Path, *, scan_mixins: bool = True) -> ModMetadata:
-    """Read one mod jar's metadata, and optionally its mixin footprint."""
+def _read_mixin_config(
+    archive: zipfile.ZipFile, resource: str, budget: list[int]
+) -> MixinConfig:
+    """Parse one declared mixin configuration JSON."""
+    config = MixinConfig(resource=resource)
+    try:
+        raw = _safe_read(archive, resource, budget)
+    except ArchiveTooLarge as exc:
+        config.error = str(exc)
+        return config
+    if raw is None:
+        # Declared and absent. Worth reporting: a config the loader cannot find
+        # is a hard startup failure, not a cosmetic problem.
+        config.error = "declared in the mod metadata but not present in the jar"
+        return config
+
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        config.error = f"malformed mixin config: {exc}"
+        return config
+    if not isinstance(data, dict):
+        config.error = "mixin config is not an object"
+        return config
+
+    def names(key: str) -> tuple[str, ...]:
+        value = data.get(key) or []
+        if not isinstance(value, list):
+            return ()
+        return tuple(str(v) for v in value if isinstance(v, str))
+
+    config.package = str(data.get("package", ""))
+    config.common = names("mixins")
+    config.client = names("client")
+    config.server = names("server")
+    config.plugin = str(data.get("plugin", "") or "")
+    return config
+
+
+def _scan_mixin_classes(
+    archive: zipfile.ZipFile,
+    meta: ModMetadata,
+    names: set[str],
+    budget: list[int],
+    errors: list[str],
+) -> None:
+    """Resolve declared mixin classes, and read their real targets.
+
+    Declared classes are the authority. Where a jar declares nothing — a
+    configuration that could not be read, or a loader that does not use mixin
+    configs — the old path-substring heuristic is used as a fallback and the
+    result is kept in :attr:`ModMetadata.mixin_targets` only, never promoted to
+    a verified target.
+    """
+    declared: list[str] = []
+    for config in meta.configs:
+        if config.error:
+            errors.append(f"{config.resource}: {config.error}")
+        declared.extend(f"{name}.class" for name in config.classes)
+
+    if declared:
+        candidates = [name for name in declared if name in names]
+        undeclared = [name for name in declared if name not in names]
+        if undeclared:
+            errors.append(
+                f"{len(undeclared)} declared mixin class(es) are missing from the "
+                f"jar: {', '.join(sorted(undeclared)[:5])}"
+            )
+    else:
+        # Nothing declared. Fall back to the heuristic, which is an
+        # over-approximation in both directions and is labelled as such.
+        candidates = [
+            name for name in names
+            if name.endswith(".class") and "mixin" in name.lower()
+        ]
+
+    referenced: set[str] = set()
+    verified: set[str] = set()
+    for name in sorted(candidates):
+        try:
+            data = _safe_read(archive, name, budget)
+        except ArchiveTooLarge as exc:
+            errors.append(f"stopped scanning mixins: {exc}")
+            break
+        except (KeyError, zipfile.BadZipFile):
+            continue
+        if data is None:
+            continue
+        referenced |= mixin_targets(data)
+        annotated = annotated_mixin_targets(data)
+        if annotated is not None:
+            verified |= {t for t in annotated if t.startswith("net/minecraft/")}
+
+    meta.mixin_targets = frozenset(referenced)
+    meta.verified_targets = frozenset(verified)
+
+
+def read_jar(
+    path: str | Path, *, scan_mixins: bool = True, _depth: int = 0
+) -> ModMetadata:
+    """Read one mod jar's metadata, its mixin configurations, and its bundles.
+
+    Nested jars are followed to :data:`MAX_NESTING_DEPTH`. Fabric libraries ship
+    inside their dependents, and treating those as absent produced a confident
+    "missing dependency" error about a pack that was in fact complete — which is
+    the kind of false positive that teaches operators to ignore the tool.
+    """
     path = Path(path)
     meta = ModMetadata(path=path)
     errors: list[str] = []
@@ -420,6 +808,9 @@ def read_jar(path: str | Path, *, scan_mixins: bool = True) -> ModMetadata:
                     f"jar declares {len(names)} entries, over the "
                     f"{MAX_ENTRIES} limit; refusing to inspect it",
                 )
+                meta.unreadable = True
+                if not meta.mod_id:
+                    meta.mod_id = path.stem
                 return meta
 
             try:
@@ -436,41 +827,97 @@ def read_jar(path: str | Path, *, scan_mixins: bool = True) -> ModMetadata:
                         "no recognised mod metadata "
                         "(fabric.mod.json, mods.toml, or plugin.yml)"
                     )
+                    meta.unreadable = True
             except (json.JSONDecodeError, tomllib.TOMLDecodeError, KeyError) as exc:
                 errors.append(f"malformed metadata: {exc}")
+                meta.unreadable = True
             except ArchiveTooLarge as exc:
                 errors.append(f"refused to read metadata: {exc}")
+                meta.unreadable = True
 
-            meta.nested_jars = tuple(
-                n for n in names if n.startswith("META-INF/jars/") and n.endswith(".jar")
+            meta.configs = tuple(
+                _read_mixin_config(archive, resource, budget)
+                for resource in meta.mixin_configs
             )
 
+            meta.nested_jars = tuple(sorted(
+                n for n in names
+                if n.startswith("META-INF/jars/") and n.endswith(".jar")
+            ))
+            if meta.nested_jars and _depth < MAX_NESTING_DEPTH:
+                meta.nested = _read_nested(
+                    archive, meta, budget, errors,
+                    scan_mixins=scan_mixins, depth=_depth,
+                )
+            elif meta.nested_jars:
+                errors.append(
+                    f"{len(meta.nested_jars)} nested jar(s) were not inspected: "
+                    f"nesting deeper than {MAX_NESTING_DEPTH} levels"
+                )
+
             if scan_mixins:
-                targets: set[str] = set()
-                for name in names:
-                    # Mixin classes live under the package named by the mixin
-                    # config; scanning every class in the jar would pick up the
-                    # mod's own internals and drown the signal.
-                    if not name.endswith(".class") or "mixin" not in name.lower():
-                        continue
-                    try:
-                        data = _safe_read(archive, name, budget)
-                    except ArchiveTooLarge as exc:
-                        errors.append(f"stopped scanning mixins: {exc}")
-                        break
-                    except (KeyError, zipfile.BadZipFile):
-                        continue
-                    if data is not None:
-                        targets |= mixin_targets(data)
-                meta.mixin_targets = frozenset(targets)
+                _scan_mixin_classes(archive, meta, names, budget, errors)
 
     except (zipfile.BadZipFile, OSError) as exc:
         errors.append(f"cannot read jar: {exc}")
+        meta.unreadable = True
 
     meta.errors = tuple(errors)
     if not meta.mod_id:
         meta.mod_id = path.stem
     return meta
+
+
+def _read_nested(
+    archive: zipfile.ZipFile,
+    meta: ModMetadata,
+    budget: list[int],
+    errors: list[str],
+    *,
+    scan_mixins: bool,
+    depth: int,
+) -> tuple[ModMetadata, ...]:
+    """Inspect bundled jars by extracting each to a temporary file.
+
+    Extracted rather than read in place because ``zipfile`` needs a seekable
+    source and the alternative — holding every nested archive in memory —
+    would put an attacker-chosen number of megabytes on the heap. The shared
+    ``budget`` still applies, so a jar full of large bundles is refused before
+    any of it is written.
+    """
+    import tempfile
+
+    found: list[ModMetadata] = []
+    if len(meta.nested_jars) > MAX_NESTED_JARS:
+        errors.append(
+            f"jar bundles {len(meta.nested_jars)} nested jars, over the "
+            f"{MAX_NESTED_JARS} limit; none were inspected"
+        )
+        return ()
+
+    with tempfile.TemporaryDirectory(prefix="mcbench-nested-") as workspace:
+        for resource in meta.nested_jars:
+            try:
+                data = _safe_read(archive, resource, budget)
+            except ArchiveTooLarge as exc:
+                errors.append(f"{resource}: {exc}")
+                break
+            except (KeyError, zipfile.BadZipFile) as exc:
+                errors.append(f"{resource}: {exc}")
+                continue
+            if data is None:
+                continue
+
+            # Flattened name: a nested entry path is attacker-controlled and
+            # must not be able to steer the write outside the workspace.
+            target = Path(workspace) / f"{len(found)}-{Path(resource).name}"
+            target.write_bytes(data)
+            nested = read_jar(target, scan_mixins=scan_mixins, _depth=depth + 1)
+            # The temporary path is meaningless to a reader; name the entry.
+            nested.path = meta.path / resource
+            found.append(nested)
+
+    return tuple(found)
 
 
 def read_jars(paths: Iterable[str | Path], *, scan_mixins: bool = True) -> list[ModMetadata]:
@@ -482,6 +929,44 @@ def read_jars(paths: Iterable[str | Path], *, scan_mixins: bool = True) -> list[
 # --------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class InspectionTarget:
+    """What the pack is being inspected *against*.
+
+    Version ranges cannot be evaluated without one. ``depends = {"minecraft":
+    ">=1.21"}`` is the single most common declaration in the ecosystem and there
+    is no way to judge it from the jars alone — so it was previously not judged
+    at all, and a pack pinned to the wrong game version passed inspection
+    cleanly. The dialect follows the loader, because ``[1.0,2.0)`` and
+    ``>=1.0 <2.0`` are the same constraint written in two syntaxes and reading
+    one as the other produces confident nonsense.
+    """
+
+    loader: str = ""
+    minecraft_version: str = ""
+    loader_version: str = ""
+    #: Ids the provisioning profile guarantees will be present at the exact
+    #: compatible version, beyond the jars supplied. Empty by default: an
+    #: assumption that something will be there is only safe when a specific
+    #: layer is responsible for putting it there.
+    provisioned: frozenset[str] = frozenset()
+
+    @property
+    def dialect(self) -> VersionDialect:
+        return VersionDialect.for_loader(self.loader)
+
+    def environment_versions(self) -> dict[str, str]:
+        """Versions for the ids the environment supplies, where known."""
+        supplied: dict[str, str] = {}
+        if self.minecraft_version:
+            supplied["minecraft"] = self.minecraft_version
+        if self.loader_version and self.loader:
+            supplied[self.loader] = self.loader_version
+            if self.loader == "fabric":
+                supplied["fabricloader"] = self.loader_version
+        return supplied
+
+
 @dataclass
 class Inspection:
     """The result of inspecting a mod set."""
@@ -490,6 +975,10 @@ class Inspection:
     findings: list[Finding] = field(default_factory=list)
     #: Minecraft class -> mods whose mixins reference it, for 2+ mods only.
     overlaps: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: Minecraft class -> mods whose ``@Mixin`` annotation names it. A subset of
+    #: :attr:`overlaps`, and the part of it that is evidence rather than a hint.
+    verified_overlaps: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    target: InspectionTarget = field(default_factory=InspectionTarget)
 
     @property
     def errors(self) -> list[Finding]:
@@ -503,18 +992,33 @@ class Inspection:
     def ok(self) -> bool:
         return not self.errors
 
-    def hotspots(self, limit: int = 15) -> list[tuple[str, tuple[str, ...]]]:
+    def hotspots(
+        self, limit: int = 15, *, verified_only: bool = False
+    ) -> list[tuple[str, tuple[str, ...]]]:
         """Most-contended classes first — where to point a bisect."""
-        return sorted(
-            self.overlaps.items(), key=lambda kv: (-len(kv[1]), kv[0])
-        )[:limit]
+        source = self.verified_overlaps if verified_only else self.overlaps
+        return sorted(source.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:limit]
 
 
-#: Ids that are supplied by the environment rather than by a jar in the set.
-_AMBIENT_IDS = {
-    "minecraft", "java", "fabricloader", "fabric", "fabric-api",
+#: Ids supplied by the environment rather than by a jar in the set.
+#:
+#: Fabric API is deliberately **not** here. It is an ordinary mod that an
+#: operator installs, it is absent from a fresh instance, and treating it as
+#: ambient hid a hard dependency behind an assumption — a pack that would not
+#: start passed inspection because the one thing it was missing was the one
+#: thing never checked for. It is ambient only when a provisioning layer
+#: guarantees the compatible artefact, which the caller states via
+#: :attr:`InspectionTarget.provisioned`.
+AMBIENT_IDS = frozenset({
+    "minecraft", "java", "fabricloader", "quilt_loader", "fabric-loader",
     "neoforge", "forge", "mcp", "bukkit", "spigot", "paper", "server",
-}
+})
+
+
+def is_ambient(mod_id: str) -> bool:
+    """Whether an id is supplied by the platform rather than by a jar."""
+    return mod_id in AMBIENT_IDS
+
 
 #: Fabric API ships as one jar that provides dozens of module ids
 #: (``fabric-rendering-fluids-v1`` and so on). A mod depending on six modules is
@@ -527,23 +1031,62 @@ def _is_fabric_api_module(mod_id: str) -> bool:
     return bool(_FABRIC_API_MODULE.match(mod_id))
 
 
+def flatten_mods(mods: Iterable[ModMetadata]) -> list[ModMetadata]:
+    """Every mod that will be present, including ones bundled inside others.
+
+    A nested jar is installed exactly as if it had been dropped in alongside its
+    host, so anything reasoning about what is present has to see it — inspection
+    for dependency satisfaction, and the bisect's dependency graph alike.
+    """
+    out: list[ModMetadata] = []
+    for mod in mods:
+        out.append(mod)
+        out.extend(flatten_mods(mod.nested))
+    return out
+
+
 def inspect_mods(
-    mods: Sequence[ModMetadata], *, overlap_threshold: int = 2
+    mods: Sequence[ModMetadata],
+    *,
+    overlap_threshold: int = 2,
+    target: InspectionTarget | None = None,
 ) -> Inspection:
-    """Analyse a mod set for conflicts, gaps, and contention."""
-    result = Inspection(mods=list(mods))
+    """Analyse a mod set for conflicts, gaps, and contention.
 
+    Constraints are evaluated by *version*, not by presence. Checking only that
+    some jar claimed the id certified packs that could not launch (``lib >=2``
+    satisfied by ``lib 1``) and rejected packs that were fine (``breaks lib <2``
+    reported against an installed ``lib 3``). Where a range cannot be decided —
+    an unparseable version, a syntax this does not implement, a Bukkit
+    declaration that carries no range at all — the finding says so and is a
+    warning, never a silent pass.
+    """
+    target = target or InspectionTarget()
+    result = Inspection(mods=list(mods), target=target)
+    dialect = target.dialect
+
+    # Bundled jars are present in the instance exactly as if installed
+    # alongside, so they satisfy dependencies and can conflict.
+    everything = flatten_mods(mods)
+
+    versions: dict[str, str] = dict(target.environment_versions())
     by_id: dict[str, list[ModMetadata]] = {}
-    for mod in mods:
-        by_id.setdefault(mod.mod_id, []).append(mod)
-        for provided in mod.provides:
-            by_id.setdefault(provided, []).append(mod)
+    for mod in everything:
+        for supplied, version in mod.provided_ids().items():
+            by_id.setdefault(supplied, []).append(mod)
+            versions.setdefault(supplied, version)
 
-    for mod in mods:
+    for mod in everything:
+        where = mod.path.name
         for message in mod.errors:
+            # An unreadable jar is an error, not a warning. Inspection is the
+            # preflight gate for `run` and `bisect`, and a gate that exits zero
+            # on input it could not read is not a gate — the pack proceeds to a
+            # two-hour suite on the strength of a check that never happened.
             result.findings.append(Finding(
-                Severity.WARNING, "unreadable",
-                f"{mod.path.name}: {message}",
+                Severity.ERROR if mod.unreadable else Severity.WARNING,
+                "unreadable",
+                f"{where}: {message}",
                 mods=(mod.mod_id,),
             ))
 
@@ -554,30 +1097,102 @@ def inspect_mods(
             result.findings.append(Finding(
                 Severity.ERROR, "duplicate_id",
                 f"mod id {mod_id!r} is provided by {len(owners)} jars",
-                detail=", ".join(o.path.name for o in owners),
+                detail=", ".join(str(o.path.name) for o in owners),
                 mods=(mod_id,),
             ))
 
     present = set(by_id)
 
-    for mod in mods:
-        # Declared incompatibilities: the author already told us.
-        for broken, spec in mod.breaks.items():
-            if broken in present:
-                result.findings.append(Finding(
-                    Severity.ERROR, "declared_conflict",
-                    f"{mod.mod_id} declares it breaks {broken}",
-                    detail=f"incompatible range: {spec}",
-                    mods=(mod.mod_id, broken),
-                ))
+    for mod in everything:
+        _check_conflicts(result, mod, present, versions, dialect)
+        _check_dependencies(result, mod, present, versions, dialect, target)
 
-        fabric_api_modules: list[str] = []
-        for needed, spec in mod.depends.items():
-            if needed in _AMBIENT_IDS or needed in present:
-                continue
-            if _is_fabric_api_module(needed):
-                # Collected and reported once below, as the single jar it is.
+    _check_mixin_overlap(result, everything, overlap_threshold)
+    return result
+
+
+def _check_conflicts(
+    result: Inspection,
+    mod: ModMetadata,
+    present: set[str],
+    versions: dict[str, str],
+    dialect: VersionDialect,
+) -> None:
+    """Declared incompatibilities — the author already told us."""
+    for broken, spec in mod.breaks.items():
+        if broken not in present:
+            continue
+        installed = versions.get(broken, "")
+        verdict = satisfies(installed, spec, dialect=dialect)
+        if verdict is Satisfaction.VIOLATED:
+            # The installed version lies outside the forbidden range, so this is
+            # the case the presence-only check got backwards: not a conflict.
+            continue
+        if verdict is Satisfaction.UNKNOWN:
+            result.findings.append(Finding(
+                Severity.WARNING, "undecidable_conflict",
+                f"{mod.mod_id} declares it breaks {broken} {spec}, and whether "
+                f"the installed {broken} {installed or '(version unknown)'} "
+                f"falls in that range could not be determined",
+                detail=(
+                    "Reported rather than assumed in either direction: calling "
+                    "it a conflict would reject a pack that may be fine, and "
+                    "calling it clear would certify one that may not start."
+                ),
+                mods=(mod.mod_id, broken),
+            ))
+            continue
+        result.findings.append(Finding(
+            Severity.ERROR, "declared_conflict",
+            f"{mod.mod_id} declares it breaks {broken} {installed}".rstrip(),
+            detail=f"incompatible range: {spec}",
+            mods=(mod.mod_id, broken),
+        ))
+
+
+def _check_dependencies(
+    result: Inspection,
+    mod: ModMetadata,
+    present: set[str],
+    versions: dict[str, str],
+    dialect: VersionDialect,
+    target: InspectionTarget,
+) -> None:
+    fabric_api_modules: list[str] = []
+    fabric_api_present = (
+        "fabric-api" in present or "fabric-api" in target.provisioned
+    )
+
+    for needed, spec in mod.depends.items():
+        if _is_fabric_api_module(needed):
+            # One jar provides all of these module ids, so the question is only
+            # whether that jar is present. Reporting six missing dependencies
+            # for one absent artefact trains people to ignore the tool, so they
+            # are collected and reported once below.
+            if not fabric_api_present:
                 fabric_api_modules.append(needed)
+            continue
+
+        available = (
+            needed in present
+            or needed in target.provisioned
+            or (is_ambient(needed) and needed in versions)
+        )
+        if not available:
+            if is_ambient(needed):
+                # Supplied by the platform, but at a version we were not told.
+                # The range cannot be checked, and saying nothing would leave an
+                # unchecked constraint looking like a checked one.
+                result.findings.append(Finding(
+                    Severity.WARNING, "unchecked_dependency",
+                    f"{mod.mod_id} requires {needed} {spec}, which the platform "
+                    f"supplies at a version this inspection was not given",
+                    detail=(
+                        "Pass --minecraft-version and --loader-version to check "
+                        "it. Until then the constraint is recorded, not verified."
+                    ),
+                    mods=(mod.mod_id, needed),
+                ))
                 continue
             result.findings.append(Finding(
                 Severity.ERROR, "missing_dependency",
@@ -585,50 +1200,113 @@ def inspect_mods(
                 detail=f"required range: {spec}",
                 mods=(mod.mod_id, needed),
             ))
+            continue
 
-        if fabric_api_modules and "fabric-api" not in present:
+        installed = versions.get(needed, "")
+        verdict = satisfies(installed, spec, dialect=dialect)
+        if verdict is Satisfaction.SATISFIED:
+            continue
+        if verdict is Satisfaction.VIOLATED:
             result.findings.append(Finding(
-                Severity.ERROR, "missing_dependency",
-                f"{mod.mod_id} requires Fabric API, which is not in this set",
+                Severity.ERROR, "version_conflict",
+                f"{mod.mod_id} requires {needed} {spec}, but {needed} "
+                f"{installed} is installed",
                 detail=(
-                    f"needs {len(fabric_api_modules)} of its modules: "
-                    + ", ".join(sorted(fabric_api_modules))
+                    "The id is present and the version is not compatible. This "
+                    "is the failure a presence-only check certifies as fine and "
+                    "the loader then refuses at startup."
                 ),
-                mods=(mod.mod_id, "fabric-api"),
+                mods=(mod.mod_id, needed),
             ))
+            continue
+        result.findings.append(Finding(
+            Severity.WARNING, "undecidable_dependency",
+            f"{mod.mod_id} requires {needed} {spec}, and whether {needed} "
+            f"{installed or '(version unknown)'} satisfies it could not be "
+            f"determined",
+            mods=(mod.mod_id, needed),
+        ))
 
-        for wanted, spec in mod.recommends.items():
-            if wanted in _AMBIENT_IDS or wanted in present:
-                continue
-            result.findings.append(Finding(
-                Severity.INFO, "missing_recommendation",
-                f"{mod.mod_id} recommends {wanted}, which is absent",
-                detail=f"recommended range: {spec}",
-                mods=(mod.mod_id,),
-            ))
+    if fabric_api_modules:
+        result.findings.append(Finding(
+            Severity.ERROR, "missing_dependency",
+            f"{mod.mod_id} requires Fabric API, which is not in this set",
+            detail=(
+                f"needs {len(fabric_api_modules)} of its modules: "
+                + ", ".join(sorted(fabric_api_modules))
+                + ". Fabric API is an ordinary mod that has to be installed; "
+                  "it is not supplied by the loader."
+            ),
+            mods=(mod.mod_id, "fabric-api"),
+        ))
 
-    # Mixin contention.
-    owners_by_target: dict[str, list[str]] = {}
+    for wanted, spec in mod.recommends.items():
+        if wanted in present or wanted in target.provisioned or is_ambient(wanted):
+            continue
+        result.findings.append(Finding(
+            Severity.INFO, "missing_recommendation",
+            f"{mod.mod_id} recommends {wanted}, which is absent",
+            detail=f"recommended range: {spec}",
+            mods=(mod.mod_id,),
+        ))
+
+
+def _check_mixin_overlap(
+    result: Inspection, mods: Sequence[ModMetadata], overlap_threshold: int
+) -> None:
+    referenced: dict[str, list[str]] = {}
+    verified: dict[str, list[str]] = {}
     for mod in mods:
-        for target in mod.mixin_targets:
-            owners_by_target.setdefault(target, []).append(mod.mod_id)
+        for target_class in mod.mixin_targets:
+            referenced.setdefault(target_class, []).append(mod.mod_id)
+        for target_class in mod.verified_targets:
+            verified.setdefault(target_class, []).append(mod.mod_id)
 
-    for target, owners in owners_by_target.items():
-        unique = sorted(set(owners))
-        if len(unique) >= overlap_threshold:
-            result.overlaps[target] = tuple(unique)
+    for source, sink in ((referenced, result.overlaps), (verified,
+                                                         result.verified_overlaps)):
+        for target_class, owners in source.items():
+            unique = sorted(set(owners))
+            if len(unique) >= overlap_threshold:
+                sink[target_class] = tuple(unique)
 
-    if result.overlaps:
-        worst = max(len(v) for v in result.overlaps.values())
+    if result.verified_overlaps:
+        worst = max(len(v) for v in result.verified_overlaps.values())
         result.findings.append(Finding(
             Severity.INFO, "mixin_overlap",
-            f"{len(result.overlaps)} Minecraft class(es) are transformed by "
-            f"more than one mod (up to {worst} mods on one class)",
+            f"{len(result.verified_overlaps)} Minecraft class(es) are targeted "
+            f"by more than one mod's @Mixin annotation (up to {worst} on one "
+            f"class)",
             detail=(
-                "Overlap is where conflicts come from, but it is not proof of "
-                "one — mods routinely coexist on the same class. Treat this as "
-                "the list of places to point a bisect first."
+                "These are declared targets read from the bytecode, not classes "
+                "that merely appear near a mixin. Overlap is still not proof of "
+                "a conflict — mods routinely coexist on the same class — but it "
+                "is the list of places to point a bisect first."
+            ),
+        ))
+    elif result.overlaps:
+        worst = max(len(v) for v in result.overlaps.values())
+        result.findings.append(Finding(
+            Severity.INFO, "mixin_footprint_overlap",
+            f"{len(result.overlaps)} Minecraft class(es) are referenced by more "
+            f"than one mod's mixin code (up to {worst} mods on one class)",
+            detail=(
+                "No @Mixin annotation targets could be read, so this is the "
+                "constant-pool footprint: classes a mixin mentions, which "
+                "includes ones it only calls into. Weaker evidence than a "
+                "declared target and ranked accordingly."
             ),
         ))
 
-    return result
+    plugins = [m.mod_id for m in mods if m.uses_mixin_plugin]
+    if plugins:
+        result.findings.append(Finding(
+            Severity.INFO, "mixin_plugin",
+            f"{len(plugins)} mod(s) use a mixin plugin, which can add or "
+            f"suppress mixins at runtime",
+            detail=(
+                "The mixin lists read here are therefore a lower bound for "
+                f"{', '.join(sorted(plugins))}; what actually applies is decided "
+                f"when the game starts."
+            ),
+            mods=tuple(sorted(plugins)),
+        ))

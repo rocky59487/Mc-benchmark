@@ -27,7 +27,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from .diagnose import SubsetClosure
-from .inspect import ModMetadata, is_ambient
+from .inspect import ModMetadata, flatten_mods, is_ambient
 
 __all__ = [
     "DependencyGraph",
@@ -109,7 +109,13 @@ def graph_from_metadata(
     suite's mod list. A dependency on something outside that set but present in
     the pack is not a missing dependency, it is a fixture: it is installed in
     every probe regardless, so it neither needs adding nor counts as absent.
+
+    Bundled jars count as present. A library shipped inside its dependent is
+    installed whenever that dependent is, so a subset containing the dependent
+    already satisfies the dependency and adding a separate copy would be a
+    duplicate install rather than a fix.
     """
+    mods = flatten_mods(mods)
     toggleable = set(candidates) if candidates is not None else {m.mod_id for m in mods}
 
     provided_by: dict[str, str] = {}

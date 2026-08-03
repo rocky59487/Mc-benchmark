@@ -1,9 +1,17 @@
-"""A minimal NBT reader.
+"""A minimal NBT reader, and just enough writer to author a ``level.dat``.
 
-Only what a world fingerprint needs: enough of the format to walk a chunk's
-block data and nothing else. There is no writer, and tags are decoded lazily
-where skipping is cheaper than materialising — a region file holds up to 1024
-chunks and a benchmark run touches several region files per instance.
+The reader covers what a world fingerprint needs: enough of the format to walk a
+chunk's block data and nothing else. Tags are decoded lazily where skipping is
+cheaper than materialising — a region file holds up to 1024 chunks and a
+benchmark run touches several region files per instance.
+
+The writer exists for one job: a client run has to be launched *into* a world,
+and quick-play will only enter a world that already exists on disk. Rather than
+letting the game create one — whose seed and settings would then be whatever the
+client felt like, differing between variants — the harness authors the save
+itself, from the scenario's seed. Tag types are explicit rather than inferred,
+because Python's ``int`` covers four different NBT tags and guessing wrong
+produces a file the game rejects with no useful message.
 
 Pure standard library, like the rest of mcbench. NBT is a small enough format
 that a dependency would cost more than it saves, and the project's claim that a
@@ -19,7 +27,19 @@ import zlib
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["NbtError", "TagType", "parse_nbt", "decompress_chunk"]
+__all__ = [
+    "NbtError",
+    "TagType",
+    "parse_nbt",
+    "decompress_chunk",
+    "Byte",
+    "Short",
+    "Int",
+    "Long",
+    "Float",
+    "Double",
+    "write_nbt",
+]
 
 
 class NbtError(ValueError):
@@ -190,3 +210,138 @@ def decompress_chunk(compression: int, payload: bytes) -> bytes:
             f"chunk inflates to more than {MAX_CHUNK_BYTES} bytes; refusing"
         )
     return raw
+
+
+# --------------------------------------------------------------------------
+# Writing
+# --------------------------------------------------------------------------
+#
+# Tag types are carried by wrapper classes rather than inferred from Python
+# types. A Python ``int`` is a candidate for BYTE, SHORT, INT and LONG, and the
+# game reads a mistyped field as garbage or refuses the file outright with a
+# message that names neither the field nor the type — so the ambiguity has to be
+# resolved by the caller, once, where the meaning is known.
+
+
+class _Typed(int):
+    """An integer that remembers which NBT tag it is."""
+
+    __slots__ = ()
+    tag = TagType.INT
+    fmt = ">i"
+
+
+class Byte(_Typed):
+    tag = TagType.BYTE
+    fmt = ">b"
+
+
+class Short(_Typed):
+    tag = TagType.SHORT
+    fmt = ">h"
+
+
+class Int(_Typed):
+    tag = TagType.INT
+    fmt = ">i"
+
+
+class Long(_Typed):
+    tag = TagType.LONG
+    fmt = ">q"
+
+
+class _TypedFloat(float):
+    __slots__ = ()
+    tag = TagType.DOUBLE
+    fmt = ">d"
+
+
+class Float(_TypedFloat):
+    tag = TagType.FLOAT
+    fmt = ">f"
+
+
+class Double(_TypedFloat):
+    tag = TagType.DOUBLE
+    fmt = ">d"
+
+
+def _write_string(out: bytearray, value: str) -> None:
+    encoded = value.encode("utf-8", errors="surrogatepass")
+    if len(encoded) > 0xFFFF:
+        raise NbtError(f"string of {len(encoded)} bytes exceeds the NBT limit")
+    out += struct.pack(">H", len(encoded))
+    out += encoded
+
+
+def _tag_of(value: Any) -> int:
+    if isinstance(value, (_Typed, _TypedFloat)):
+        return value.tag
+    if isinstance(value, bool):
+        # Before the int check: bool is a subclass of int, and NBT has no boolean.
+        return TagType.BYTE
+    if isinstance(value, str):
+        return TagType.STRING
+    if isinstance(value, dict):
+        return TagType.COMPOUND
+    if isinstance(value, (list, tuple)):
+        return TagType.LIST
+    if isinstance(value, (bytes, bytearray)):
+        return TagType.BYTE_ARRAY
+    raise NbtError(
+        f"cannot write {type(value).__name__}; wrap integers in Byte/Short/"
+        f"Int/Long and reals in Float/Double so the tag type is explicit"
+    )
+
+
+def _write_payload(out: bytearray, value: Any, depth: int = 0) -> None:
+    if depth > MAX_DEPTH:
+        raise NbtError(f"nesting deeper than {MAX_DEPTH}; refusing to recurse")
+
+    tag = _tag_of(value)
+    if tag == TagType.STRING:
+        _write_string(out, value)
+    elif tag == TagType.COMPOUND:
+        for key, item in value.items():
+            out.append(_tag_of(item))
+            _write_string(out, key)
+            _write_payload(out, item, depth + 1)
+        out.append(TagType.END)
+    elif tag == TagType.LIST:
+        items = list(value)
+        # An empty list is written as END-typed, which is what the game emits
+        # and what its reader expects; writing some other type would make an
+        # empty list and a list of that type indistinguishable on the way back.
+        element = _tag_of(items[0]) if items else TagType.END
+        for item in items:
+            if _tag_of(item) != element:
+                raise NbtError("NBT lists are homogeneous; got mixed tag types")
+        out.append(element)
+        out += struct.pack(">i", len(items))
+        for item in items:
+            _write_payload(out, item, depth + 1)
+    elif tag == TagType.BYTE_ARRAY:
+        out += struct.pack(">i", len(value))
+        out += bytes(value)
+    elif isinstance(value, bool):
+        out += struct.pack(">b", 1 if value else 0)
+    else:
+        out += struct.pack(value.fmt, value)
+
+
+def write_nbt(root: dict[str, Any], *, name: str = "", compress: bool = True) -> bytes:
+    """Serialise a compound as a complete NBT document.
+
+    ``compress`` produces the gzip stream every ``level.dat`` on disk is stored
+    as; the uncompressed form is useful for round-tripping in tests.
+    """
+    out = bytearray()
+    out.append(TagType.COMPOUND)
+    _write_string(out, name)
+    _write_payload(out, root)
+    data = bytes(out)
+    # mtime is pinned so the same world description produces byte-identical
+    # bytes; a timestamp in the header would make every instance's level.dat
+    # differ and undermine the point of authoring it deterministically.
+    return gzip.compress(data, mtime=0) if compress else data

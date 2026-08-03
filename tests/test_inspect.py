@@ -33,11 +33,82 @@ def class_naming(targets: list[str]) -> bytes:
     )
 
 
-def fabric_jar(path: Path, meta: dict, mixin_classes: dict[str, list[str]] | None = None):
+def annotated_class(targets: list[str]) -> bytes:
+    """A complete class file carrying ``@Mixin(Foo.class, ...)``.
+
+    Built by hand because the point of the reader under test is that it works
+    on what mod authors ship without a bytecode library in the dependency tree.
+    """
+    strings = [
+        "Lorg/spongepowered/asm/mixin/Mixin;",   # 1
+        "RuntimeVisibleAnnotations",             # 2
+        "value",                                 # 3
+        "java/lang/Object",                      # 4
+    ]
+    descriptors = [f"L{t};" for t in targets]
+    strings.extend(descriptors)
+
+    pool = b"".join(
+        b"\x01" + struct.pack(">H", len(s)) + s.encode() for s in strings
+    )
+    # One CONSTANT_Class pointing at "java/lang/Object", for this_class/super.
+    class_index = len(strings) + 1
+    pool += b"\x07" + struct.pack(">H", 4)
+
+    # element_value: an array of class constants, one per target.
+    element = b"[" + struct.pack(">H", len(descriptors))
+    for offset in range(len(descriptors)):
+        element += b"c" + struct.pack(">H", 5 + offset)
+
+    # annotation: type_index, num_element_value_pairs, then (name_index, value)
+    annotation = (
+        struct.pack(">H", 1)        # type_index -> the @Mixin descriptor
+        + struct.pack(">H", 1)      # one element-value pair
+        + struct.pack(">H", 3)      # element name_index -> "value"
+        + element
+    )
+    annotations = struct.pack(">H", 1) + annotation
+    attribute = (
+        struct.pack(">H", 2) + struct.pack(">I", len(annotations)) + annotations
+    )
+
+    return (
+        b"\xca\xfe\xba\xbe"
+        + struct.pack(">HH", 0, 65)
+        + struct.pack(">H", class_index + 1)
+        + pool
+        + struct.pack(">H", 0x0021)          # access_flags
+        + struct.pack(">H", class_index)     # this_class
+        + struct.pack(">H", class_index)     # super_class
+        + struct.pack(">H", 0)               # interfaces
+        + struct.pack(">H", 0)               # fields
+        + struct.pack(">H", 0)               # methods
+        + struct.pack(">H", 1)               # attributes
+        + attribute
+    )
+
+
+def fabric_jar(
+    path: Path,
+    meta: dict,
+    mixin_classes: dict[str, list[str]] | None = None,
+    *,
+    config: dict | None = None,
+    config_name: str = "mod.mixins.json",
+    annotated: dict[str, list[str]] | None = None,
+    nested: dict[str, Path] | None = None,
+):
     with zipfile.ZipFile(path, "w") as archive:
+        if config is not None:
+            meta = {**meta, "mixins": [config_name]}
+            archive.writestr(config_name, json.dumps(config))
         archive.writestr("fabric.mod.json", json.dumps({"schemaVersion": 1, **meta}))
         for name, targets in (mixin_classes or {}).items():
             archive.writestr(f"mixin/{name}.class", class_naming(targets))
+        for name, targets in (annotated or {}).items():
+            archive.writestr(f"{name}.class", annotated_class(targets))
+        for name, source in (nested or {}).items():
+            archive.writestr(f"META-INF/jars/{name}", Path(source).read_bytes())
     return path
 
 
@@ -254,7 +325,12 @@ class TestMixinOverlap:
         b = fabric_jar(tmp_path / "b.jar", {"id": "b", "version": "1"}, {
             "M": ["Lnet/minecraft/client/Camera;"]})
         result = inspect_mods(read_jars([a, b]))
-        overlap = next(f for f in result.findings if f.code == "mixin_overlap")
+        # No @Mixin annotation could be read from these, so the finding is the
+        # weaker footprint one — kept as a distinct code so a reader can tell a
+        # declared target from a class a mixin merely mentions.
+        overlap = next(
+            f for f in result.findings if f.code == "mixin_footprint_overlap"
+        )
         assert overlap.severity is Severity.INFO
         assert result.ok
 

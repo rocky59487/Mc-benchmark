@@ -57,6 +57,12 @@ class ResultsError(ValueError):
 MAX_RUNS_PER_CELL = 10_000
 MAX_CELLS = 5_000
 
+#: How an attempt ended. ``failed`` runs carry no values and are excluded from
+#: every estimate, but they are ingested and counted: a document that only
+#: contained successes would describe the runs that worked rather than the
+#: experiment that was run.
+RUN_STATUSES = frozenset({"completed", "inadmissible", "failed"})
+
 
 def parse_results_document(raw: Any) -> tuple[str, str, dict[str, list[dict[str, Any]]]]:
     """Validate a results document and return ``(suite, baseline, cells)``.
@@ -136,12 +142,33 @@ def parse_results_document(raw: Any) -> tuple[str, str, dict[str, list[dict[str,
             if not isinstance(flags, list) or not all(isinstance(f, str) for f in flags):
                 raise ResultsError(f"{where}: 'flags' must be a list of strings")
 
-            entry: dict[str, Any] = {"values": checked, "flags": flags}
+            status = run.get("status", "completed" if checked else "failed")
+            if status not in RUN_STATUSES:
+                raise ResultsError(
+                    f"{where}: unknown status {status!r}; expected one of "
+                    f"{sorted(RUN_STATUSES)}"
+                )
+            if status == "completed" and not checked:
+                # A run claiming to have completed with nothing to show for it
+                # would be counted toward the run floor and contribute no values,
+                # which is the one way to make a cell look better-evidenced than
+                # it is. Rejected rather than silently reclassified.
+                raise ResultsError(
+                    f"{where}: status is 'completed' but no metric values are "
+                    f"present; a run that produced nothing is 'failed'"
+                )
+
+            entry: dict[str, Any] = {
+                "values": checked, "flags": flags, "status": status
+            }
             position = run.get("position")
             if position is not None:
                 if isinstance(position, bool) or not isinstance(position, int):
                     raise ResultsError(f"{where}: 'position' must be an integer")
                 entry["position"] = position
+            for optional in ("error", "log", "exit_code", "world"):
+                if optional in run:
+                    entry[optional] = run[optional]
             checked_runs.append(entry)
 
         cleaned[key] = checked_runs

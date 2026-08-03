@@ -29,7 +29,7 @@ from ..planner import Cell, PlannedRun, RunPlan, plan_runs
 from ..providers import ModrinthClient, ModrinthError, ResolvedMod
 from ..scenario import Scenario, Side
 from ..targets import Target
-from ..world import WorldError, fingerprint_world
+from ..world import WorldError, create_world, fingerprint_world
 from .plan import check_target, write_plan
 from .preflight import Check, Preflight, Severity, run_preflight
 from .protocol import (
@@ -52,10 +52,85 @@ class HarnessError(RuntimeError):
     """The harness could not execute a run or a suite."""
 
 
+def _spawn_of(scenario: Scenario) -> tuple[int, int, int]:
+    """The scenario's declared spawn, or the vanilla default."""
+    spawn = scenario.world.get("spawn")
+    if not isinstance(spawn, dict):
+        return (0, 64, 0)
+    return tuple(int(spawn.get(axis, default))
+                 for axis, default in (("x", 0), ("y", 64), ("z", 0)))
+
+
+def _sha256(path: Path | None) -> str:
+    """Hash an artefact, or "" when it cannot be read.
+
+    SHA-256 alongside the provider's SHA-512: the provider's hash proves the
+    download matched what the index promised, and this one identifies the file
+    that was actually installed, including local jars a provider never saw.
+    """
+    import hashlib
+
+    if path is None:
+        return ""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _java_version() -> str:
+    """The JVM that will run the game, as it reports itself."""
+    try:
+        completed = subprocess.run(
+            ["java", "-version"], capture_output=True, text=True, timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    output = (completed.stderr or completed.stdout or "").strip().splitlines()
+    return output[0] if output else "unknown"
+
+
+def _option_value(value: Any) -> str:
+    """Render a value the way options.txt expects it."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _repository_root() -> Path:
+    """The checkout this module lives in, for locating built probe artefacts."""
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "probe").is_dir() and (parent / "docs").is_dir():
+            return parent
+    return Path.cwd()
+
+
 #: The world name written into server.properties. Stated rather than left to the
 #: server's default so the fingerprinter has a path it knows rather than one it
 #: guesses.
 SERVER_LEVEL_NAME = "mcbench"
+
+#: The world a client run is bootstrapped into. The Fabric probe only begins
+#: once the integrated server has started, so a client that sits at the title
+#: screen produces no stream at all — the run has to enter a world by itself.
+CLIENT_LEVEL_NAME = "mcbench"
+
+#: Frame cap written into options.txt.
+#:
+#: 260 is the top of vanilla's slider, where the launcher's UI reads
+#: "Unlimited" and the frame limiter is disabled. That is why it is the value
+#: written — but it is a number in a file, not an absence of one, and mods and
+#: forks are free to honour it literally. The code previously wrote it while
+#: describing the client as uncapped, so a run that genuinely sat at the cap was
+#: indistinguishable from one that never approached it.
+#:
+#: The value is now recorded in provenance, and :func:`~mcbench.metrics
+#: .frame_cap_suspected` checks the frametime distribution for a run that piled
+#: up against it.
+CLIENT_FPS_CAP = 260
+
 
 
 @dataclass
@@ -79,6 +154,47 @@ class RunOutcome:
     def succeeded(self) -> bool:
         return self.metrics is not None and self.metrics.admissible
 
+    @property
+    def status(self) -> str:
+        """How this attempt ended, in one word.
+
+        Four outcomes, kept distinct because they need different responses.
+        ``failed`` means no metrics at all — the launch died, timed out, or the
+        probe never wrote a stream. ``inadmissible`` means the run produced
+        numbers that the methodology refuses to pool, which is a measurement
+        that happened and must not be used. ``completed`` is the normal case.
+        """
+        if self.metrics is None:
+            return "failed"
+        return "completed" if self.metrics.admissible else "inadmissible"
+
+    def to_record(self) -> dict[str, Any]:
+        """Serialise this attempt, whether or not it produced a measurement.
+
+        Every planned attempt appears in the results document. A failed launch
+        that vanished from serialisation made a seven-run cell with two failures
+        indistinguishable from a clean five-run cell, which understates failure
+        rate, instability, and the real cost of the suite — and hides the one
+        signal that most often explains a surprising result.
+        """
+        record: dict[str, Any] = {
+            "status": self.status,
+            "position": self.planned.position,
+            "replicate": self.planned.replicate,
+            "round": self.planned.round_index,
+            "values": dict(self.metrics.values) if self.metrics else {},
+            "flags": [f.value for f in self.metrics.flags] if self.metrics else [],
+            "wall_clock_s": round(self.wall_clock_s, 3),
+            "world": self.world_fingerprint,
+        }
+        if self.error:
+            record["error"] = self.error
+        if self.exit_code is not None:
+            record["exit_code"] = self.exit_code
+        if self.log_path is not None:
+            record["log"] = str(self.log_path)
+        return record
+
 
 @dataclass
 class ResolvedVariant:
@@ -87,6 +203,86 @@ class ResolvedVariant:
     variant: Variant
     jars: list[Path] = field(default_factory=list)
     provenance: list[dict[str, str]] = field(default_factory=list)
+
+
+class ProbeArtifacts:
+    """The probe jar for a target, plus whatever that probe itself requires.
+
+    The harness writes ``MCBENCH_PROBE_CONFIG`` into the launch environment and
+    then waits for a ``probe.jsonl`` that only exists if something inside the
+    game is reading it. Nothing was ever installing that something: instances
+    received the variant's mods and nothing else, so a vanilla baseline had no
+    in-game consumer for the configuration at all and could not produce a
+    stream. The documented end-to-end command could not work.
+
+    This resolves the artefact for the selected platform and, for Fabric, the
+    Fabric API the probe hard-depends on. Nothing is downloaded silently: a
+    missing artefact is a preflight blocker naming the build command, because
+    discovering it after a two-hour suite has produced nothing is the worst
+    possible moment to find out.
+    """
+
+    #: Where each platform's probe jar is built, relative to the repository.
+    BUILD_PATHS = {
+        "fabric": "probe/adapters/probe-fabric/build/libs",
+        "neoforge": "probe/adapters/probe-neoforge/build/libs",
+        "forge": "probe/adapters/probe-forge/build/libs",
+        "paper": "probe/adapters/probe-paper/build/libs",
+        "spigot": "probe/adapters/probe-paper/build/libs",
+        "bukkit": "probe/adapters/probe-paper/build/libs",
+    }
+
+    #: Fabric's probe declares a hard dependency on Fabric API, so an instance
+    #: without it loads the probe and then refuses to start it.
+    FABRIC_API_PROJECT = "fabric-api"
+
+    def __init__(
+        self,
+        loader: str,
+        *,
+        jar: Path | None = None,
+        api_jar: Path | None = None,
+    ) -> None:
+        self.loader = loader
+        self.jar = jar
+        self.api_jar = api_jar
+
+    @property
+    def needs_fabric_api(self) -> bool:
+        return self.loader == "fabric"
+
+    @property
+    def install_dir(self) -> str:
+        """Where the platform loads its extensions from.
+
+        Paper reads ``plugins/``; a plugin jar dropped into ``mods/`` is simply
+        never loaded, which is exactly what was happening — every Paper run
+        installed its plugins into a directory the server does not read, so the
+        server started cleanly and measured nothing.
+        """
+        return "plugins" if self.loader in ("paper", "spigot", "bukkit") else "mods"
+
+    def missing(self) -> list[str]:
+        """What still has to be provided before a run can produce a stream."""
+        gaps: list[str] = []
+        if self.jar is None or not self.jar.exists():
+            gaps.append(
+                f"the {self.loader} probe artefact. Build it with "
+                f"`cd {self.BUILD_PATHS.get(self.loader, 'probe/adapters')} "
+                f"&& ../gradlew build`, then pass --probe-jar."
+            )
+        if self.needs_fabric_api and (self.api_jar is None or not self.api_jar.exists()):
+            gaps.append(
+                "Fabric API, which the Fabric probe hard-depends on. Pass "
+                "--fabric-api-jar, or let the harness resolve it from Modrinth."
+            )
+        return gaps
+
+    def jars(self) -> list[Path]:
+        found = [self.jar] if self.jar is not None else []
+        if self.needs_fabric_api and self.api_jar is not None:
+            found.append(self.api_jar)
+        return [p for p in found if p.exists()]
 
 
 def _resolve_local_jar(
@@ -221,6 +417,8 @@ class Harness:
         modrinth: ModrinthClient | None = None,
         local_root: str | Path | None = None,
         agent_jar: str | Path | None = None,
+        probe_jar: str | Path | None = None,
+        fabric_api_jar: str | Path | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.suite = suite
@@ -234,6 +432,12 @@ class Harness:
         self.local_root = Path(local_root) if local_root else Path.cwd()
         self.on_event = on_event or (lambda event, payload: None)
         self._resolved: dict[str, ResolvedVariant] = {}
+        self.probe = ProbeArtifacts(
+            suite.loader.value,
+            jar=Path(probe_jar) if probe_jar else self._find_probe_jar(),
+            api_jar=Path(fabric_api_jar) if fabric_api_jar else None,
+        )
+        self._probe_provenance: list[dict[str, str]] = []
 
     # -- setup -----------------------------------------------------------
 
@@ -248,6 +452,31 @@ class Harness:
         ):
             if candidate.exists():
                 return candidate
+        return None
+
+    def _find_probe_jar(self) -> Path | None:
+        """Locate a locally built probe for this platform, if there is one.
+
+        Convenience for the common case of running from a checkout that has just
+        built the probe. Never a substitute for the preflight check: finding
+        nothing here returns None and the blocker fires, rather than the run
+        proceeding and failing later for a reason that looks unrelated.
+        """
+        relative = ProbeArtifacts.BUILD_PATHS.get(self.suite.loader.value)
+        if relative is None:
+            return None
+        for root in (Path.cwd(), _repository_root()):
+            libs = root / relative
+            if not libs.is_dir():
+                continue
+            # Prefer the shadowed/fat jar; the thin one is missing probe-core.
+            jars = sorted(
+                (p for p in libs.glob("*.jar")
+                 if not p.name.endswith(("-sources.jar", "-javadoc.jar"))),
+                key=lambda p: ("all" not in p.stem, p.name),
+            )
+            if jars:
+                return jars[0]
         return None
 
     @property
@@ -321,6 +550,28 @@ class Harness:
                 ),
             )
         )
+
+        # Without a probe in the instance there is no measurement to be had, on
+        # any variant including the mod-free baseline. Checked here so the suite
+        # refuses up front rather than launching for hours and producing empty
+        # streams that look like crashes.
+        gaps = self.probe.missing()
+        result.checks.append(
+            Check(
+                "probe",
+                Severity.OK,
+                f"{self.suite.loader.value} probe at {self.probe.jar}"
+                + (f", Fabric API at {self.probe.api_jar}"
+                   if self.probe.needs_fabric_api and self.probe.api_jar else ""),
+            )
+            if not gaps
+            else Check(
+                "probe", Severity.BLOCK,
+                "no probe artefact for this target; runs would produce no "
+                "measurement stream at all",
+                remedy=" ".join(gaps),
+            )
+        )
         return result
 
     def resolve_all(self) -> dict[str, ResolvedVariant]:
@@ -330,6 +581,7 @@ class Harness:
         two hours into a suite wastes the whole suite, and the failure has
         nothing to do with the measurement.
         """
+        self.resolve_probe()
         for variant in self.suite.variants:
             self.on_event("resolve.start", {"variant": variant.name})
             self._resolved[variant.name] = resolve_variant_mods(
@@ -344,6 +596,111 @@ class Harness:
                 "jars": len(self._resolved[variant.name].jars),
             })
         return self._resolved
+
+    def resolve_probe(self) -> ProbeArtifacts:
+        """Make sure the probe — and what the probe needs — is on disk.
+
+        Fabric API is fetched from Modrinth when it was not supplied, because
+        the alternative is telling every Fabric operator to hunt down a specific
+        build of a library that only exists to satisfy our own mod. It is
+        recorded in provenance like any other artefact: it is installed in every
+        instance including the baseline, so it is part of what was measured and
+        a result that hid it would be describing a configuration nobody ran.
+        """
+        if not self.probe.needs_fabric_api or self.probe.api_jar is not None:
+            return self.probe
+
+        self.on_event("resolve.start", {"variant": "<probe>"})
+        try:
+            found = self.modrinth.resolve(
+                ProbeArtifacts.FABRIC_API_PROJECT,
+                game_version=self.suite.minecraft_version,
+                loader=self.suite.loader.value,
+            )
+        except ModrinthError as exc:
+            # Not fatal here: preflight reports the gap with a remedy, and an
+            # operator who has the jar locally can pass it directly rather than
+            # needing the network at all.
+            self.on_event("resolve.done", {
+                "variant": "<probe>", "error": f"Fabric API: {exc}",
+            })
+            return self.probe
+
+        self.probe.api_jar = self.modrinth.download(found)
+        self._probe_provenance.append({
+            "role": "probe_dependency",
+            "platform": "modrinth",
+            "project": found.project_slug,
+            "version": found.version_number,
+            "sha512": found.sha512,
+        })
+        self.on_event("resolve.done", {"variant": "<probe>", "jars": 1})
+        return self.probe
+
+    def provenance(self, preflight: Preflight | None = None) -> dict[str, Any]:
+        """Everything needed to reconstruct what was actually launched.
+
+        A result bundle previously recorded the host, the Minecraft version, the
+        loader name and a publishability string. That is not enough to tell two
+        materially different runs apart: different loader builds, different JVM
+        flags, different artefacts, and different host conditions all produced
+        bundles that looked equivalent, so the reproducibility the schema implies
+        was not something the data could support.
+
+        What is recorded now is the *effective* configuration — the resolved
+        artefacts with their hashes, the exact JVM arguments per variant, the
+        probe and its dependencies, the scenario content hashes, and the client
+        frame cap by value rather than by adjective.
+        """
+        from .. import __version__
+
+        artifacts: dict[str, list[dict[str, str]]] = {}
+        for name, resolved in self._resolved.items():
+            artifacts[name] = [
+                {**entry, "filename": jar.name, "sha256": _sha256(jar)}
+                for entry, jar in zip(resolved.provenance, resolved.jars, strict=True)
+            ]
+
+        payload: dict[str, Any] = {
+            "mcbench": __version__,
+            "minecraft_version": self.suite.minecraft_version,
+            "loader": self.suite.loader.value,
+            "loader_version": self.suite.loader_version or "unpinned",
+            "preset": self.suite.preset.value,
+            "heap_mb": self.suite.heap_mb,
+            "java": _java_version(),
+            "launcher": str(self.headlessmc) if self.headlessmc else "",
+            "client_max_fps": CLIENT_FPS_CAP,
+            "artifacts": artifacts,
+            "jvm_args": {
+                variant.name: self.effective_jvm_args(variant)
+                for variant in self.suite.variants
+            },
+            "game_settings": {
+                variant.name: self.effective_game_settings(variant)
+                for variant in self.suite.variants
+            },
+            "probe": {
+                "install_dir": self.probe.install_dir,
+                "jar": self.probe.jar.name if self.probe.jar else "",
+                "sha256": _sha256(self.probe.jar) if self.probe.jar else "",
+                "dependencies": list(self._probe_provenance),
+                "agent": self.agent_jar.name if self.agent_jar else "",
+            },
+            "scenarios": {
+                name: {
+                    "version": scenario.version,
+                    "content_hash": scenario.content_hash,
+                    "pool_key": scenario.pool_key,
+                }
+                for name, scenario in self.scenarios.items()
+                if name in self.suite.scenarios
+            },
+        }
+        if preflight is not None:
+            payload.update(preflight.host)
+            payload["preflight_publishable"] = str(preflight.publishable)
+        return payload
 
     def build_plan(self) -> RunPlan:
         return plan_runs(
@@ -379,8 +736,12 @@ class Harness:
         instance = self._instance_dir(planned)
         if instance.exists():
             shutil.rmtree(instance)
-        mods_dir = instance / "mods"
-        mods_dir.mkdir(parents=True, exist_ok=True)
+
+        # Plugins go in plugins/, mods go in mods/. Paper does not read mods/ at
+        # all, so every plugin previously installed there was silently ignored
+        # and the "variant" being measured was in fact vanilla Paper.
+        install_dir = instance / self.probe.install_dir
+        install_dir.mkdir(parents=True, exist_ok=True)
 
         if jars is None:
             resolved = self._resolved.get(planned.cell.variant)
@@ -390,8 +751,12 @@ class Harness:
                     f"call resolve_all() first"
                 )
             jars = resolved.jars
-        for jar in jars:
-            shutil.copy2(jar, mods_dir / jar.name)
+
+        # The probe goes into every instance, before the variant's own jars and
+        # regardless of which variant this is. A baseline without it produces no
+        # stream, so there would be nothing to compare against.
+        for jar in [*self.probe.jars(), *jars]:
+            shutil.copy2(jar, install_dir / jar.name)
 
         probe_dir = instance / "mcbench"
         probe_dir.mkdir(parents=True, exist_ok=True)
@@ -412,8 +777,14 @@ class Harness:
         )
 
         # Render and simulation distance are not commands in vanilla, so they are
-        # applied as instance configuration rather than silently dropped.
-        self._apply_instance_settings(instance, scenario, plan.instance_settings)
+        # applied as instance configuration rather than silently dropped. The
+        # variant's own game_settings are layered on top: they were accepted by
+        # the suite model and then never applied anywhere, so a suite that set
+        # them measured something other than what it declared.
+        self._apply_instance_settings(
+            instance, scenario,
+            {**plan.instance_settings, **self.effective_game_settings(variant)},
+        )
 
         # Kept for provenance and debugging: the plan is generated, and being able
         # to see what it was generated from is what makes a surprising result
@@ -438,13 +809,38 @@ class Harness:
         )
         return instance
 
+    def effective_game_settings(self, variant: Variant | None) -> dict[str, Any]:
+        """Game settings actually applied to a variant's instances.
+
+        The model is **global settings, overridden per variant**. Stating it
+        matters: the fields existed on the suite model and were applied nowhere,
+        so whether a variant's settings replaced or extended the suite's was
+        undefined and the answer was in practice "neither".
+        """
+        base = dict(self.suite.game_settings)
+        if variant is not None:
+            base.update(variant.game_settings)
+        return base
+
+    def effective_jvm_args(self, variant: Variant | None) -> list[str]:
+        """JVM arguments actually applied to a variant's launches.
+
+        Same model: the suite's arguments, then the variant's. Launch
+        construction previously used the *baseline* variant's arguments for
+        every variant, so a variant declaring its own flags was launched without
+        them — and a suite that varied JVM flags on purpose measured the same
+        configuration twice while reporting a difference between two mod sets.
+        """
+        args = [f"-Xmx{self.suite.heap_mb}m", "-XX:+UseG1GC"]
+        args.extend(self.suite.jvm_args)
+        if variant is not None:
+            args.extend(variant.jvm_args)
+        return args
+
     def _apply_instance_settings(
         self, instance: Path, scenario: Scenario, settings: dict[str, Any]
     ) -> None:
         """Write settings that have no command equivalent into the instance's config."""
-        if not settings:
-            return
-
         if scenario.side in (Side.SERVER, Side.BOTH):
             simulation = settings.get("simulation_distance")
             view = settings.get("render_distance")
@@ -470,30 +866,55 @@ class Harness:
             )
 
         if scenario.side in (Side.CLIENT, Side.BOTH):
-            render = settings.get("render_distance")
-            if render is None:
-                return
+            # Author the world the launch command quick-plays into. Without it
+            # the client stops at the world-selection screen, no integrated
+            # server starts, and the probe — which waits for SERVER_STARTED —
+            # never fires. The run then times out having measured a menu.
+            create_world(
+                instance / "saves",
+                name=self._client_world_name(scenario),
+                seed=scenario.seed,
+                generator=str(scenario.world.get("generator", "default")),
+                spawn=_spawn_of(scenario),
+            )
+
             options = instance / "options.txt"
-            # Frame rate is left uncapped and vsync off: a capped or vsync-locked
-            # client measures the display, not the renderer, so every variant
-            # would score the same refresh rate and the benchmark would report
-            # nothing at all.
+            # Vsync off: a vsync-locked client measures the display rather than
+            # the renderer, so every variant would score the refresh rate and the
+            # benchmark would report equivalence it never measured.
+            #
+            # maxFps is set to the top of vanilla's slider, which vanilla treats
+            # as no limiter. It is still a number in a file, so it is written
+            # from a named constant, recorded in provenance, and checked for
+            # afterwards — describing this as "uncapped" without recording the
+            # value made a run that piled up against it indistinguishable from
+            # one that never came near it.
+            values: dict[str, Any] = {
+                "maxFps": CLIENT_FPS_CAP,
+                "enableVsync": "false",
+                "graphicsMode": 1,
+                "gamma": 1.0,
+                "pauseOnLostFocus": "false",
+            }
+            if (render := settings.get("render_distance")) is not None:
+                values["renderDistance"] = render
+            # Whatever the suite declared wins, so an operator can deliberately
+            # measure a capped or fancy-graphics configuration.
+            for key, value in settings.items():
+                if key not in ("render_distance", "simulation_distance"):
+                    values[key] = value
+
             options.write_text(
-                "\n".join(
-                    [
-                        f"renderDistance:{render}",
-                        "maxFps:260",
-                        "enableVsync:false",
-                        "graphicsMode:1",
-                        "gamma:1.0",
-                        "pauseOnLostFocus:false",
-                    ]
-                )
-                + "\n",
+                "\n".join(f"{k}:{_option_value(v)}" for k, v in values.items()) + "\n",
                 encoding="utf-8",
             )
 
-    def _launch_command(self, instance: Path, scenario: Scenario) -> list[str]:
+    def _launch_command(
+        self,
+        instance: Path,
+        scenario: Scenario,
+        variant: Variant | None = None,
+    ) -> list[str]:
         if self.headlessmc is None:
             raise HarnessError(
                 "HeadlessMC was not found. Install it and pass --headlessmc, or "
@@ -502,8 +923,7 @@ class Harness:
                 "credentials or redistributes game files itself."
             )
 
-        heap = f"-Xmx{self.suite.heap_mb}m"
-        jvm_args = [heap, "-XX:+UseG1GC", *self.suite.baseline_variant.jvm_args]
+        jvm_args = self.effective_jvm_args(variant)
 
         if self.agent_jar is not None and scenario.side.measures_frames:
             # Attached for rendering scenarios only. On a server run the agent
@@ -535,9 +955,32 @@ class Harness:
             "--gamedir", str(instance),
             "--jvm", " ".join(jvm_args),
         ]
+        # The suite could pin a loader version and nothing ever asked for it, so
+        # two runs on materially different Fabric builds produced bundles that
+        # claimed the same configuration.
+        if self.suite.loader_version:
+            command += ["--loader-version", str(self.suite.loader_version)]
+
         if scenario.side is Side.SERVER:
             command.append("--server")
+        elif scenario.side in (Side.CLIENT, Side.BOTH):
+            # Quick-play straight into the scenario's world. Without it the
+            # client sits at the title screen: no integrated server starts, the
+            # Fabric probe never fires (it waits for SERVER_STARTED), and the
+            # run times out having measured the main menu.
+            command += ["--quickPlaySingleplayer", self._client_world_name(scenario)]
         return command
+
+    @staticmethod
+    def _client_world_name(scenario: Scenario) -> str:
+        """The save directory a client run enters.
+
+        Named after the scenario rather than a constant, so an instance holding
+        more than one save is never ambiguous — and so ``_world_dir`` can find
+        the right one to fingerprint instead of guessing.
+        """
+        safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in scenario.id)
+        return f"{CLIENT_LEVEL_NAME}-{safe}" if safe else CLIENT_LEVEL_NAME
 
     def measure_subset(
         self,
@@ -625,8 +1068,11 @@ class Harness:
         exit_code: int | None = None
         error = ""
 
+        variant = next(
+            (v for v in self.suite.variants if v.name == planned.cell.variant), None
+        )
         try:
-            command = self._launch_command(instance, scenario)
+            command = self._launch_command(instance, scenario, variant)
         except HarnessError as exc:
             # Emit the failure rather than returning quietly: a run that dies
             # without saying why leaves the operator staring at a progress line
@@ -717,11 +1163,17 @@ class Harness:
         saves = instance / "saves"
         if not saves.is_dir():
             return None
+        # The harness authors the save, so its name is known rather than
+        # guessed. The old code compared a directory name against
+        # ``scenario.world``, which is the world *description* object — a
+        # comparison that could never match, so the disambiguating branch never
+        # fired and an instance with two saves silently fingerprinted nothing.
+        expected = saves / self._client_world_name(scenario)
+        if (expected / "region").is_dir():
+            return expected
+
         worlds = [d for d in sorted(saves.iterdir()) if (d / "region").is_dir()]
-        if len(worlds) == 1:
-            return worlds[0]
-        named = [d for d in worlds if d.name == scenario.world]
-        return named[0] if len(named) == 1 else None
+        return worlds[0] if len(worlds) == 1 else None
 
     def _fingerprint_world(
         self, instance: Path, scenario: Scenario, planned: PlannedRun
@@ -892,6 +1344,14 @@ def outcomes_to_cells(
 ) -> dict[str, list[dict[str, Any]]]:
     """Convert run outcomes into the analysis input format.
 
+    **Every planned attempt is serialised**, including the ones that produced no
+    metrics. Skipping failures made the results document describe the runs that
+    worked rather than the experiment that was run: a seven-run cell with two
+    launch failures serialised as a clean five-run cell, so failure rate,
+    instability and the true cost of the suite all read better than they were.
+    Failed attempts carry ``status: "failed"`` and an empty ``values``, which
+    keeps them out of every numerical estimate and visible in every report.
+
     Keeps the execution position on every run so the report can plot order
     effects and an operator can audit whether interleaving actually held.
 
@@ -904,13 +1364,32 @@ def outcomes_to_cells(
 
     cells: dict[str, list[dict[str, Any]]] = {}
     for outcome in outcomes:
-        if outcome.metrics is None:
-            continue
         key = f"{outcome.planned.cell.scenario}/{outcome.planned.cell.variant}"
-        cells.setdefault(key, []).append({
-            "values": outcome.metrics.values,
-            "flags": [f.value for f in outcome.metrics.flags],
-            "position": outcome.planned.position,
-            "world": outcome.world_fingerprint,
-        })
+        cells.setdefault(key, []).append(outcome.to_record())
     return cells
+
+
+def run_counts(outcomes: Sequence[RunOutcome]) -> dict[str, dict[str, int]]:
+    """Per cell: attempted, completed, admissible, and failed.
+
+    Four counts rather than one, because they answer different questions and the
+    gaps between them are the interesting part. ``attempted`` is what the plan
+    scheduled and what the suite cost; ``completed`` is what produced numbers;
+    ``admissible`` is what may enter a comparison. A large gap between the first
+    two is an unstable environment, and between the last two a methodology
+    violation — and reporting only the last of the three hid both.
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for outcome in outcomes:
+        key = str(outcome.planned.cell)
+        entry = counts.setdefault(
+            key, {"attempted": 0, "completed": 0, "admissible": 0, "failed": 0}
+        )
+        entry["attempted"] += 1
+        if outcome.metrics is None:
+            entry["failed"] += 1
+            continue
+        entry["completed"] += 1
+        if outcome.metrics.admissible:
+            entry["admissible"] += 1
+    return counts

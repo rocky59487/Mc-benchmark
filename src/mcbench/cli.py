@@ -11,15 +11,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__
-from .config import ConfigError, load_suite
+from .config import ConfigError, Loader, load_suite
 from .metrics import METRICS, RunFlag, RunMetrics
 from .planner import Cell, OrderStrategy, plan_runs
 from .report import (
+    DEFAULT_FDR,
+    REFERENCE_SCENARIO,
     ResultsError,
     SuiteResult,
     aggregate_cell,
+    apply_fdr,
     compare_to_baseline,
     parse_results_document,
+    reference_ratios,
     render_json,
     render_markdown,
 )
@@ -226,19 +230,32 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     # statistics, because a non-finite value poisons everything downstream.
     suite_name, baseline_name, cells_raw = parse_results_document(raw)
 
+    # Failed attempts are separated here rather than dropped. They carry no
+    # values and so contribute nothing to any estimate, but they are counted, so
+    # that a cell of five values out of twelve attempts cannot serialise as
+    # though five were all that were ever planned.
     cells: dict[Cell, list[RunMetrics]] = {}
+    attempts: dict[Cell, int] = {}
+    failures: dict[Cell, int] = {}
     for key, runs in cells_raw.items():
         scenario, _, variant = key.partition("/")
-        cells[Cell(scenario, variant)] = [
+        cell = Cell(scenario, variant)
+        attempts[cell] = len(runs)
+        failures[cell] = sum(1 for run in runs if run.get("status") == "failed")
+        cells[cell] = [
             RunMetrics(
                 values={k: v for k, v in run["values"].items() if k in METRICS},
                 flags=[RunFlag(f) for f in run["flags"] if f in set(RunFlag)],
             )
             for run in runs
+            if run.get("status") != "failed"
         ]
 
     aggregated = {
-        cell: aggregate_cell(cell, runs, seed=args.seed)
+        cell: aggregate_cell(
+            cell, runs, seed=args.seed,
+            attempted=attempts[cell], failed=failures[cell],
+        )
         for cell, runs in cells.items()
     }
 
@@ -267,6 +284,24 @@ def cmd_analyse(args: argparse.Namespace) -> int:
                     baseline_cell, data, rope=args.rope, seed=args.seed
                 )
             )
+
+    # Multiplicity control, interaction terms, and reference normalisation are
+    # applied here, on the ordinary analysis path. Each of these was implemented
+    # in the library and documented as part of the method while no normal run
+    # produced it, which is worse than not having them: a reader who knows the
+    # methodology assumes the protection was applied.
+    result.multiplicity = apply_fdr(result.comparisons, fdr=args.fdr)
+    result.interactions = _build_interactions(
+        aggregated,
+        groups=_interaction_groups(raw, args.suite),
+        baseline=baseline_name,
+        rope=args.rope,
+        seed=args.seed,
+    )
+    result.normalised = reference_ratios(
+        aggregated, baseline=baseline_name,
+        reference_scenario=args.reference_scenario,
+    )
 
     # Order effects are plotted from the execution positions recorded at run
     # time, so a reader can audit whether interleaving actually held.
@@ -316,6 +351,74 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     else:
         print(output)
     return 0
+
+
+def _interaction_groups(
+    raw: dict, suite_path: str | None
+) -> list[tuple[str, str, str]]:
+    """Which mod pairs to compute an interaction term for.
+
+    Taken from the results document when the run recorded them, and from a suite
+    manifest when the operator points at one. Re-analysis is a first-class
+    operation here — the whole reason analysis is a separate command — so the
+    declaration has to survive in the results document rather than living only
+    in a manifest that may not be to hand.
+    """
+    groups: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(entry) -> None:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            raise ResultsError(
+                f"interaction group {entry!r} must name exactly three variants: "
+                f"[A, B, A+B]. The fourth cell is the suite's baseline."
+            )
+        key = tuple(str(name) for name in entry)
+        if key not in seen:
+            seen.add(key)
+            groups.append(key)
+
+    for entry in raw.get("interactions") or []:
+        add(entry)
+
+    if suite_path:
+        for entry in load_suite(suite_path).interactions:
+            add(list(entry))
+
+    return groups
+
+
+def _build_interactions(
+    cells: dict[Cell, "object"],
+    *,
+    groups: Sequence[tuple[str, str, str]],
+    baseline: str,
+    rope: float,
+    seed: int,
+) -> list[dict]:
+    """Build every declared interaction contrast that has four populated cells."""
+    from .report import build_interaction
+
+    out: list[dict] = []
+    for scenario in sorted({c.scenario for c in cells}):
+        by_variant = {
+            c.variant: data for c, data in cells.items() if c.scenario == scenario
+        }
+        if baseline not in by_variant:
+            continue
+        metrics = sorted(by_variant[baseline].samples)
+        for index, (a, b, ab) in enumerate(groups):
+            if not {a, b, ab} <= set(by_variant):
+                continue
+            for offset, metric in enumerate(metrics):
+                item = build_interaction(
+                    scenario, metric, by_variant,
+                    none_key=baseline, a_key=a, b_key=b, ab_key=ab,
+                    rope=rope, seed=seed + index * 101 + offset * 7,
+                )
+                if item is not None:
+                    out.append(item)
+    return out
 
 
 def cmd_world(args: argparse.Namespace) -> int:
@@ -380,45 +483,85 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     fastest useful answer about a modpack is the one you get before spending two
     hours benchmarking a pack that was never going to load.
     """
+    from .inspect import InspectionTarget
     from .inspect import Severity as InspectSeverity
     from .inspect import inspect_mods, read_jars
 
     paths: list[Path] = []
+    missing: list[str] = []
     for entry in args.paths:
         path = Path(entry)
         if path.is_dir():
             paths.extend(sorted(path.glob("*.jar")))
-        else:
+        elif path.is_file():
             paths.append(path)
+        else:
+            missing.append(entry)
 
+    if missing:
+        # Named and absent. Silently inspecting the rest would report on a
+        # different pack than the operator asked about.
+        print(f"✗ not found: {', '.join(missing)}", file=sys.stderr)
+        return 2
     if not paths:
         print("✗ no jars found", file=sys.stderr)
         return 2
 
+    target = InspectionTarget(
+        loader=args.loader or "",
+        minecraft_version=args.minecraft_version or "",
+        loader_version=args.loader_version or "",
+        provisioned=frozenset(args.provisioned or ()),
+    )
+
     mods = read_jars(paths, scan_mixins=not args.no_mixins)
-    result = inspect_mods(mods, overlap_threshold=args.overlap_threshold)
+    result = inspect_mods(
+        mods, overlap_threshold=args.overlap_threshold, target=target
+    )
 
     if args.json:
         print(json.dumps({
+            "target": {
+                "loader": target.loader,
+                "minecraft_version": target.minecraft_version,
+                "loader_version": target.loader_version,
+                "provisioned": sorted(target.provisioned),
+                "range_dialect": target.dialect.value,
+            },
             "mods": [
                 {
                     "id": m.mod_id, "version": m.version, "loader": m.loader,
                     "environment": m.environment, "license": m.license,
                     "file": m.path.name,
                     "depends": m.depends, "breaks": m.breaks,
+                    "recommends": m.recommends,
+                    "provides": list(m.provides),
+                    "mixin_configs": list(m.mixin_configs),
                     "mixin_targets": sorted(m.mixin_targets),
+                    "verified_mixin_targets": sorted(m.verified_targets),
+                    "nested_jars": list(m.nested_jars),
+                    "nested": [
+                        {"id": n.mod_id, "version": n.version,
+                         "provides": list(n.provides)}
+                        for n in m.nested
+                    ],
+                    "unreadable": m.unreadable,
                     "errors": list(m.errors),
                 }
                 for m in result.mods
             ],
-            "findings": [
-                {
-                    "severity": f.severity.value, "code": f.code,
-                    "summary": f.summary, "detail": f.detail, "mods": list(f.mods),
-                }
-                for f in result.findings
-            ],
+            # Errors and warnings are separated in the structured output, not
+            # merely tagged. A consumer deciding whether to proceed should not
+            # have to filter a flat list correctly to avoid running a pack that
+            # cannot load.
+            "errors": [_finding_json(f) for f in result.errors],
+            "warnings": [_finding_json(f) for f in result.warnings],
+            "findings": [_finding_json(f) for f in result.findings],
             "overlaps": {k: list(v) for k, v in result.overlaps.items()},
+            "verified_overlaps": {
+                k: list(v) for k, v in result.verified_overlaps.items()
+            },
+            "ok": result.ok,
         }, indent=2))
         return 0 if result.ok else 1
 
@@ -441,19 +584,38 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 for line in _wrap(finding.detail, 2):
                     print(line)
 
-    hotspots = result.hotspots(limit=args.top)
+    verified = bool(result.verified_overlaps)
+    hotspots = result.hotspots(limit=args.top, verified_only=verified)
     if hotspots:
-        print("\nMost contended classes (where a conflict would show up first):")
-        for target, owners in hotspots:
-            print(f"  {len(owners)}x  {target}")
+        source = (
+            "declared @Mixin targets" if verified
+            else "mixin constant-pool references — weaker evidence"
+        )
+        print(f"\nMost contended classes, from {source}:")
+        for contended, owners in hotspots:
+            print(f"  {len(owners)}x  {contended}")
             print(f"        {', '.join(owners)}")
 
     print()
     if result.ok:
-        print("✓ no blocking problems found")
+        if result.warnings:
+            print(f"✓ no blocking problems found "
+                  f"({len(result.warnings)} warning(s) above)")
+        else:
+            print("✓ no blocking problems found")
     else:
         print(f"✗ {len(result.errors)} blocking problem(s)")
     return 0 if result.ok else 1
+
+
+def _finding_json(finding) -> dict:
+    return {
+        "severity": finding.severity.value,
+        "code": finding.code,
+        "summary": finding.summary,
+        "detail": finding.detail,
+        "mods": list(finding.mods),
+    }
 
 
 def cmd_targets(args: argparse.Namespace) -> int:
@@ -591,7 +753,7 @@ def _wrap(text: str, indent: int, width: int = 78) -> list[str]:
 def cmd_run(args: argparse.Namespace) -> int:
     """Execute a suite headlessly and write the results."""
     from .runner import Harness, HarnessError
-    from .runner.harness import outcomes_to_cells
+    from .runner.harness import outcomes_to_cells, run_counts
 
     suite = load_suite(args.suite)
     scenarios = {s.id: s for s in load_scenarios(_scenario_root(args.scenario_root))}
@@ -622,10 +784,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         headlessmc=args.headlessmc,
         local_root=args.local_root,
         agent_jar=args.agent_jar,
+        probe_jar=args.probe_jar,
+        fabric_api_jar=args.fabric_api_jar,
         on_event=emit,
     )
 
     preflight = harness.preflight(require_account=not args.no_account_check)
+    preflight.forced = args.force and not preflight.admissible
     if not preflight.admissible and not args.force:
         print("✗ preflight failed; refusing to run:", file=sys.stderr)
         for check in preflight.blockers:
@@ -651,31 +816,61 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"✗ {exc}", file=sys.stderr)
         return 1
 
+    counts = run_counts(outcomes)
     payload = {
         "suite": suite.name,
         "baseline": suite.baseline,
-        "provenance": {
-            **preflight.host,
-            "minecraft_version": suite.minecraft_version,
-            "loader": suite.loader.value,
-            "mcbench": __version__,
-            "preflight_publishable": str(preflight.publishable),
-        },
+        "provenance": harness.provenance(preflight),
+        # Carried so that re-analysis can compute the interaction terms without
+        # the manifest to hand; analysis is a separate command precisely so a
+        # result can be re-read later, and a declaration that lived only in the
+        # suite file would not survive that.
+        "interactions": [list(group) for group in suite.interactions],
+        "runs": counts,
+        "preflight": preflight.to_dict(),
         "cells": outcomes_to_cells(outcomes),
     }
     Path(args.output).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    succeeded = sum(1 for o in outcomes if o.succeeded)
-    print(f"\n{succeeded}/{len(outcomes)} runs usable → {args.output}")
-    if succeeded < len(outcomes):
-        print("  Failed runs are recorded with their flags; inspect the "
-              "instance logs under the work directory.")
-    return 0 if succeeded else 1
+    attempted = len(outcomes)
+    completed = sum(1 for o in outcomes if o.metrics is not None)
+    admissible = sum(1 for o in outcomes if o.succeeded)
+    print(f"\n{attempted} run(s) attempted → {args.output}")
+    print(f"  {completed} produced measurements, {admissible} admissible")
+    if admissible < attempted:
+        print(f"  {attempted - completed} failed to produce any measurement; "
+              f"every attempt is recorded in the results document with its "
+              f"status, error, and log path.")
+    return 0 if admissible else 1
+
+
+def _dependency_graph(jars_by_id: dict, candidates: Sequence[str]):
+    """Build the bisect's dependency graph by reading the resolved jars.
+
+    Metadata that cannot be read yields no edges for that mod rather than an
+    error. A jar whose descriptor is unreadable is a real problem, but it is
+    ``mcbench inspect``'s problem to report; refusing to bisect over it would
+    turn a diagnostic tool off exactly when something is wrong.
+    """
+    from .deps import graph_from_metadata
+    from .inspect import read_jars
+
+    mods = read_jars(sorted(set(jars_by_id.values())), scan_mixins=False)
+    # inspect keys on the id a jar declares; the bisect keys on the id the suite
+    # used. Reconciled here so a project slug that differs from the mod id does
+    # not silently produce a graph with no edges at all.
+    by_path = {mod.path: mod for mod in mods}
+    for project, jar in jars_by_id.items():
+        found = by_path.get(jar)
+        if found is not None and found.mod_id != project:
+            found.provides = (*found.provides, found.mod_id)
+            found.mod_id = project
+    return graph_from_metadata(mods, candidates=candidates)
 
 
 def cmd_bisect(args: argparse.Namespace) -> int:
     """Isolate which mod, or which combination, causes a regression."""
-    from .diagnose import isolate
+    from .diagnose import Outcome, isolate
     from .runner import Harness, HarnessError
     from .runner.oracle import BenchmarkOracle
 
@@ -693,9 +888,12 @@ def cmd_bisect(args: argparse.Namespace) -> int:
         headlessmc=args.headlessmc,
         local_root=args.local_root,
         agent_jar=args.agent_jar,
+        probe_jar=args.probe_jar,
+        fabric_api_jar=args.fabric_api_jar,
     )
 
     preflight = harness.preflight(require_account=not args.no_account_check)
+    preflight.forced = args.force and not preflight.admissible
     if not preflight.admissible and not args.force:
         print("✗ preflight failed; refusing to bisect:", file=sys.stderr)
         for check in preflight.blockers:
@@ -729,6 +927,21 @@ def cmd_bisect(args: argparse.Namespace) -> int:
         print("✗ no mods to bisect", file=sys.stderr)
         return 2
 
+    # Read the jars so the search knows which mods need which. Without this a
+    # subset is launched exactly as asked, and a culprit that needs a library
+    # fails to launch on its own while the library alone fails to reproduce —
+    # from which the search concludes the two interact, and two mod authors get
+    # a bug report about a conflict that does not exist.
+    graph = _dependency_graph(jars_by_id, candidates)
+    unlaunchable = sorted(graph.unresolved)
+    if unlaunchable:
+        print(
+            f"⚠ {len(unlaunchable)} mod(s) declare dependencies nothing in this "
+            f"pack provides; subsets containing them are reported invalid rather "
+            f"than clean: {', '.join(unlaunchable)}\n",
+            file=sys.stderr,
+        )
+
     def measure(mods, replicate):
         return harness.measure_subset(
             scenario_id, mods, replicate,
@@ -758,24 +971,48 @@ def cmd_bisect(args: argparse.Namespace) -> int:
     print(f"Metric: {args.metric}  ROPE: ±{args.rope * 100:g}%  "
           f"{args.runs_per_probe} runs per arm per probe\n")
 
-    result = isolate(candidates, oracle, max_probes=args.max_probes)
+    result = isolate(
+        candidates, oracle, max_probes=args.max_probes, closure=graph.closure
+    )
 
     print()
-    for record, probe in zip(oracle.records, result.probes, strict=True):
+    # Probes that were never launched — an unsatisfiable subset — have no oracle
+    # record, so the two lists are matched by walking the records in order
+    # rather than zipped positionally.
+    records = iter(oracle.records)
+    for probe in result.probes:
         label = "+".join(probe.subset) or "baseline"
         if len(label) > 60:
             label = label[:57] + "…"
-        print(f"  {probe.outcome.value:<13} {record.note or ''}  [{label}]")
+        note = probe.detail
+        if probe.outcome is not Outcome.INVALID:
+            note = next(records, None).note if oracle.records else ""
+        support = f" (+{len(probe.support)} dep)" if probe.support else ""
+        print(f"  {probe.outcome.value:<13} {note or ''}  [{label}]{support}")
 
     print()
     print(result.summary())
-    print(f"Cost: {result.probe_count} probes, {oracle.total_runs} game launches")
+    print(
+        f"Cost: {result.probe_count} probes, {oracle.total_runs} game launches "
+        f"({oracle.failed_runs} of which failed)"
+    )
 
+    if result.support:
+        print(
+            f"\nInstalled to satisfy dependencies, not implicated: "
+            f"{', '.join(result.support)}. The search never had the option of "
+            f"testing the set without them, so they are not ruled out either."
+        )
     if result.is_interaction:
         print(
-            "\nThis is an interaction: no single mod reproduces it. Neither "
-            "author would\nfind this alone, which is why it is worth reporting "
-            "to both."
+            "\nThis is an interaction: no single mod reproduces it, and every "
+            "single removal\nwas tested and stopped reproducing. Neither author "
+            "would find this alone, which is\nwhy it is worth reporting to both."
+        )
+    elif len(result.culprits) > 1:
+        print(
+            "\nMore than one mod is left, but minimality is unconfirmed — this "
+            "is not yet an\ninteraction claim. See the note below."
         )
     if result.note:
         print(f"\nNote: {result.note}")
@@ -786,12 +1023,29 @@ def cmd_bisect(args: argparse.Namespace) -> int:
             "metric": args.metric,
             "candidates": candidates,
             "culprits": list(result.culprits),
+            "support": list(result.support),
             "converged": result.converged,
+            "minimal": result.minimal,
+            "revalidated": result.revalidated,
             "is_interaction": result.is_interaction,
             "probe_count": result.probe_count,
+            "inconclusive_probes": result.inconclusive_probes,
+            "invalid_probes": result.invalid_probes,
             "total_runs": oracle.total_runs,
+            "successful_runs": oracle.successful_runs,
+            "failed_runs": oracle.failed_runs,
             "note": result.note,
             "probes": oracle.audit(),
+            "search": [
+                {
+                    "subset": list(p.subset),
+                    "tested": list(p.tested),
+                    "support": list(p.support),
+                    "outcome": p.outcome.value,
+                    "detail": p.detail,
+                }
+                for p in result.probes
+            ],
         }, indent=2), encoding="utf-8")
         print(f"\nWrote {args.output}")
 
@@ -852,6 +1106,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rope", type=float, default=0.02,
                    help="region of practical equivalence (default 0.02 = ±2%%)")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--fdr", type=float, default=DEFAULT_FDR,
+                   help="false-discovery rate for Benjamini-Hochberg control "
+                        "across each scenario/metric family (default 0.05)")
+    p.add_argument("--suite",
+                   help="suite manifest to take interaction groups from, when "
+                        "the results document does not carry them")
+    p.add_argument("--reference-scenario", default=REFERENCE_SCENARIO,
+                   help="scenario used as the hardware-normalisation "
+                        "denominator (METHODOLOGY section 8)")
     p.add_argument("--export-dir",
                    help="write the full bundle: HTML report with charts, "
                         "Markdown, JSON, and data tables")
@@ -878,6 +1141,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="report classes touched by at least this many mods")
     p.add_argument("--top", type=int, default=15,
                    help="how many contended classes to list")
+    p.add_argument("--loader", choices=[loader.value for loader in Loader],
+                   help="target loader; selects the version-range syntax "
+                        "declared constraints are read in")
+    p.add_argument("--minecraft-version",
+                   help="target Minecraft version, so 'depends: minecraft "
+                        ">=1.21' can be checked rather than merely recorded")
+    p.add_argument("--loader-version",
+                   help="target loader version, for the same reason")
+    p.add_argument("--provisioned", action="append",
+                   help="mod id the provisioning layer guarantees at a "
+                        "compatible version (repeatable). Nothing is assumed "
+                        "ambient without this — Fabric API included")
     p.set_defaults(func=cmd_inspect)
 
     p = sub.add_parser("targets", help="which scenarios run on which platforms")
@@ -909,6 +1184,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="attach the mcbench JVM agent for frame timing; works "
                         "on any version and any loader, including ones with no "
                         "adapter (probe/adapters/probe-agent)")
+    p.add_argument("--probe-jar",
+                   help="the mcbench probe for this platform. Installed into "
+                        "every instance including the baseline; without it "
+                        "nothing in the game reads the scenario and no run "
+                        "produces a measurement stream")
+    p.add_argument("--fabric-api-jar",
+                   help="Fabric API, which the Fabric probe hard-depends on. "
+                        "Resolved from Modrinth when not given")
     p.add_argument("--timeout", type=float, help="per-run timeout in seconds")
     p.add_argument("--stop-on-failure", action="store_true")
     p.add_argument("--no-account-check", action="store_true")
@@ -936,6 +1219,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--headlessmc")
     p.add_argument("--local-root")
     p.add_argument("--agent-jar")
+    p.add_argument("--probe-jar")
+    p.add_argument("--fabric-api-jar")
     p.add_argument("--timeout", type=float)
     p.add_argument("--no-account-check", action="store_true")
     p.add_argument("--force", action="store_true")

@@ -160,7 +160,7 @@ class TestScenarioValidation:
             ))
 
     def test_rejects_tick_warp_without_declaring_carpet(self):
-        with pytest.raises(ScenarioError, match="tick_warp requires Carpet"):
+        with pytest.raises(ScenarioError, match="measured at 20 TPS"):
             parse_scenario(self._minimal(measurement={
                 "warmup": {"min": 100}, "duration": {"full": 1000}, "tick_warp": True,
             }))

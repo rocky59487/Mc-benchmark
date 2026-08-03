@@ -321,9 +321,16 @@ def _validate(data: Any, where: str) -> None:
         raise ScenarioError(
             f"{where}: tick_warp is server-side but side is 'client'"
         )
+    # Carpet is what provides tick warp below 1.20.3, where vanilla has no
+    # /tick. Recorded on the scenario because the scenario is version-
+    # independent and this is the older half of the answer; which half applies
+    # to a given run is decided by Capability.TICK_WARP against its target, and
+    # that is the check with teeth. `requires` is a declaration, not a gate.
     if measurement.get("tick_warp") and "carpet" not in (data.get("requires") or []):
         raise ScenarioError(
-            f"{where}: tick_warp requires Carpet; add \"carpet\" to 'requires'"
+            f"{where}: tick_warp needs vanilla /tick (1.20.3+) or Carpet below "
+            f"that; declare \"carpet\" in 'requires' so a target that has "
+            f"neither is refused rather than measured at 20 TPS"
         )
 
 

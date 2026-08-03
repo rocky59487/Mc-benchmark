@@ -256,6 +256,21 @@ class TestPreflight:
         gamedir = next(p for p in command if p.startswith("-Dhmc.gamedir="))
         assert Path(gamedir.split("=", 1)[1]).is_absolute()
 
+    def test_instance_directories_are_absolute(self, tmp_path, monkeypatch):
+        """Every path that crosses into another process has to be absolute.
+
+        The probe reads MCBENCH_PROBE_CONFIG from the environment and stays
+        inert when it cannot find it, by design, because that is how it behaves
+        in a normal play session. A relative path therefore produced a run that
+        launched, played, and recorded nothing, with no error anywhere.
+        """
+        monkeypatch.chdir(tmp_path)
+        launcher = printing_stand_in(tmp_path / "hmc", FULL_HELP)
+        h, _ = harness(Path("relative-work"), launcher)
+
+        planned = h.build_plan().runs[0]
+        assert h._instance_dir(planned).is_absolute()
+
     def test_jvm_arguments_survive_being_more_than_one(self, tmp_path):
         launcher = printing_stand_in(
             tmp_path / "hmc.jar", "launch : Launches the game.\n  --jvm  Jvm args.\n"

@@ -745,10 +745,18 @@ class Harness:
     # -- execution -------------------------------------------------------
 
     def _instance_dir(self, planned: PlannedRun) -> Path:
+        """Absolute, because these paths cross into other processes.
+
+        The launcher runs from its own directory and the game from the instance,
+        so a relative path means something different in each. Neither reports an
+        error when it resolves to the wrong place: the launcher creates an empty
+        game directory, and the probe finds no config and stays inert, which is
+        exactly what it is designed to do when it was not launched by mcbench.
+        """
         return (
             self.work_dir / "instances"
             / f"{planned.cell.scenario}__{planned.cell.variant}__r{planned.replicate}"
-        )
+        ).resolve()
 
     def _prepare_instance(
         self,

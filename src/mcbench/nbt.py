@@ -25,7 +25,7 @@ import gzip
 import struct
 import zlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 __all__ = [
     "NbtError",
@@ -85,6 +85,12 @@ class _Cursor:
     offset: int = 0
     depth: int = 0
 
+    #: Every scalar layout NBT uses, compiled once.
+    _PACKERS: ClassVar[dict[str, struct.Struct]] = {
+        fmt: struct.Struct(fmt)
+        for fmt in (">b", ">h", ">H", ">i", ">q", ">f", ">d")
+    }
+
     def take(self, count: int) -> bytes:
         end = self.offset + count
         if count < 0 or end > len(self.data):
@@ -97,8 +103,19 @@ class _Cursor:
         return chunk
 
     def unpack(self, fmt: str) -> Any:
-        size = struct.calcsize(fmt)
-        return struct.unpack(fmt, self.take(size))[0]
+        # Precompiled, and read in place. Recomputing calcsize and slicing a
+        # fresh bytes object per primitive was most of the cost of reading a
+        # chunk, and a region file is millions of primitives.
+        packer = self._PACKERS[fmt]
+        end = self.offset + packer.size
+        if end > len(self.data):
+            raise NbtError(
+                f"truncated at offset {self.offset}: wanted {packer.size} bytes, "
+                f"{len(self.data) - self.offset} remain"
+            )
+        value = packer.unpack_from(self.data, self.offset)[0]
+        self.offset = end
+        return value
 
 
 def _read_string(cursor: _Cursor) -> str:

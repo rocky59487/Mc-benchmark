@@ -27,7 +27,8 @@ from __future__ import annotations
 import hashlib
 import struct
 import zlib
-from collections.abc import Iterator
+from array import array
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -98,12 +99,19 @@ class WorldFingerprint:
         return f"{self.sha256[:16]}… over {self.chunks} chunks{suffix}"
 
 
-def iter_region_chunks(path: Path) -> Iterator[tuple[ChunkRef, dict[str, Any]]]:
+def iter_region_chunks(
+    path: Path, wanted: Callable[[ChunkRef], bool] | None = None
+) -> Iterator[tuple[ChunkRef, dict[str, Any]]]:
     """Yield ``(ChunkRef, root_compound)`` for every chunk present in a region.
 
     Absent chunks, the common case near a world's edge, are skipped silently.
     A chunk that is present but unreadable raises, so the caller can record it
     rather than quietly fingerprint a partial world.
+
+    ``wanted`` filters by position before the chunk is decompressed and parsed.
+    The header carries the coordinates, so a caller reading one region of a
+    world does not have to pay for the rest: fingerprinting a 289-chunk radius
+    was parsing all 3684 chunks the region files held.
     """
     data = path.read_bytes()
     if len(data) < SECTOR_BYTES * HEADER_SECTORS:
@@ -127,6 +135,13 @@ def iter_region_chunks(path: Path) -> Iterator[tuple[ChunkRef, dict[str, Any]]]:
         if sectors > MAX_CHUNK_SECTORS:
             raise WorldError(f"{path.name}: chunk {index} claims {sectors} sectors")
 
+        chunk = ChunkRef(
+            x=region_x * 32 + (index % 32),
+            z=region_z * 32 + (index // 32),
+        )
+        if wanted is not None and not wanted(chunk):
+            continue
+
         start = offset * SECTOR_BYTES
         end = start + sectors * SECTOR_BYTES
         if end > len(data):
@@ -145,10 +160,6 @@ def iter_region_chunks(path: Path) -> Iterator[tuple[ChunkRef, dict[str, Any]]]:
         except (NbtError, OSError, zlib.error) as exc:
             raise WorldError(f"{path.name}: chunk {index}: {exc}") from None
 
-        chunk = ChunkRef(
-            x=region_x * 32 + (index % 32),
-            z=region_z * 32 + (index // 32),
-        )
         yield chunk, root
 
 
@@ -175,69 +186,91 @@ def _bit_width(size: int, minimum: int) -> int:
     return max(minimum, width)
 
 
-def _unpack(data: Any, size: int, count: int, minimum: int, padded: bool) -> list[int]:
-    """Palette indices, one per block or biome position.
+def _unpack(
+    data: Any, size: int, count: int, minimum: int, padded: bool,
+    remap: Sequence[int],
+) -> list[int]:
+    """Canonical palette index for each block or biome position.
 
     Resolving these is what makes the fingerprint independent of the order the
     generator happened to intern blocks in. Two runs of one seed produce
     identical terrain with palettes in different orders, so hashing the stored
     indices against the stored palette reports every pair of runs as different
     worlds.
+
+    ``remap`` sends a stored index to its place in the sorted palette, and is
+    applied here rather than in a second pass: a section is 4096 positions and
+    a world is thousands of sections.
     """
     if not isinstance(data, list) or not data:
         # A palette of one needs no data: every position holds that entry.
-        return [0] * count if size <= 1 else []
+        return [remap[0]] * count if size <= 1 else []
 
     bits = _bit_width(size, minimum)
     mask = (1 << bits) - 1
+    top = len(remap) - 1
     out: list[int] = []
+    extend = out.extend
+
     if padded:
-        per_word = 64 // bits
+        shifts = [slot * bits for slot in range(64 // bits)]
         for word in data:
             value = word & 0xFFFFFFFFFFFFFFFF
-            for slot in range(per_word):
-                out.append((value >> (slot * bits)) & mask)
+            extend([
+                remap[index] if (index := (value >> shift) & mask) <= top else 0
+                for shift in shifts
+            ])
+            if len(out) >= count:
+                break
+    else:
+        # Pre-1.16: entries run continuously across long boundaries.
+        accumulated = 0
+        available = 0
+        for word in data:
+            accumulated |= (word & 0xFFFFFFFFFFFFFFFF) << available
+            available += 64
+            while available >= bits:
+                index = accumulated & mask
+                out.append(remap[index] if index <= top else 0)
+                accumulated >>= bits
+                available -= bits
                 if len(out) == count:
-                    return out
-        return out
-
-    # Pre-1.16: entries run continuously across long boundaries.
-    accumulated = 0
-    available = 0
-    for word in data:
-        accumulated |= (word & 0xFFFFFFFFFFFFFFFF) << available
-        available += 64
-        while available >= bits:
-            out.append(accumulated & mask)
-            accumulated >>= bits
-            available -= bits
+                    break
             if len(out) == count:
-                return out
+                break
+
+    del out[count:]
     return out
 
 
 def _resolved(palette: Any, data: Any, count: int, minimum: int, padded: bool) -> Any:
-    """A section's contents as block states in position order.
+    """A section's contents, in a form that does not depend on palette order.
 
-    Naming each position's state directly, rather than its index into a palette
-    whose order is an artefact of generation, is what lets two runs of the same
-    seed agree.
+    The palette is sorted and the stored indices are remapped onto it, which is
+    the same content as naming every position's block state but without
+    building four thousand objects per section to say so.
     """
     entries = _canonical_palette(palette)
     if entries is None:
         return None
+
+    order = sorted(range(len(entries)), key=lambda i: repr(entries[i]))
+    canonical = [entries[i] for i in order]
     if len(entries) == 1:
         # Uniform section. Stating it once keeps the common all-air and
-        # all-stone sections cheap to hash.
-        return ["uniform", entries[0]]
+        # all-stone sections cheap.
+        return ["uniform", canonical[0]]
 
-    indices = _unpack(data, len(entries), count, minimum, padded)
+    remap = [0] * len(entries)
+    for position, original in enumerate(order):
+        remap[original] = position
+
+    indices = _unpack(data, len(entries), count, minimum, padded, remap)
     if not indices:
         # Packed data that could not be read. Fall back to the stored pair
         # rather than inventing content; the caller reports the difference.
-        return ["raw", entries, list(data) if isinstance(data, list) else None]
-    limit = len(entries) - 1
-    return ["states", [entries[i] if i <= limit else None for i in indices]]
+        return ["raw", canonical, list(data) if isinstance(data, list) else None]
+    return ["states", canonical, array("H", indices).tobytes()]
 
 
 def _canonical_block_content(root: dict[str, Any]) -> list[Any]:
@@ -386,9 +419,7 @@ def fingerprint_world(
 
     for region in regions:
         try:
-            for chunk, chunk_root in iter_region_chunks(region):
-                if not inside(chunk):
-                    continue
+            for chunk, chunk_root in iter_region_chunks(region, inside):
                 digest = _digest_chunk(chunk, chunk_root)
                 if digest is not None:
                     digests.append(digest)

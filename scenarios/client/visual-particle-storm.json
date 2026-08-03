@@ -1,6 +1,6 @@
 {
   "id": "visual-particle-storm",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "title": "Particle storm",
   "description": "Dense sustained particle emission from a static viewpoint. Isolates the particle pipeline — allocation, update, sort, and draw — from terrain rendering by holding the camera still and the terrain pre-meshed. A common source of frametime spikes that whole-scene benchmarks average away.",
   "side": "client",
@@ -30,7 +30,6 @@
   "workload": [
     {
       "op": "loop",
-      "duration_s": 60,
       "comment": "Emitters are spread across seven particle types at fixed rates so the mix is reproducible, not dominated by whichever type happens to be cheapest.",
       "body": [
         { "op": "command", "value": "particle minecraft:flame 0 6 0 8 3 8 0.05 400 force" },

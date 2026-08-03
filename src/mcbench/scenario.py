@@ -39,12 +39,33 @@ __all__ = [
 _ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
-_VALID_OPS = {
-    "wait", "teleport", "camera_path", "look", "fill", "setblock",
-    "summon", "spawn_ring", "give", "command", "gamerule",
-    "load_chunks", "generate_chunks", "unload_chunks", "place_structure",
-    "set_render_distance", "set_simulation_distance", "loop",
+#: The fields each op reads, taken from the compiler in runner/plan.py. Every
+#: one of them has a default, so a misspelt field is not a no-op: the op runs
+#: with the default instead. ``generate_chunks`` with ``radius`` rather than
+#: ``radius_chunks`` pre-generates radius 8 while the scenario says 20.
+_OP_FIELDS: dict[str, frozenset[str]] = {
+    "command": frozenset({"value"}),
+    "wait": frozenset({"ticks"}),
+    "gamerule": frozenset({"name", "value"}),
+    "setblock": frozenset({"at", "x", "y", "z", "block"}),
+    "fill": frozenset({"from", "to", "block", "mode", "spacing"}),
+    "summon": frozenset({"at", "x", "y", "z", "type", "entity", "nbt"}),
+    "spawn_ring": frozenset({"entities", "radius", "y", "persistent", "no_ai"}),
+    "teleport": frozenset({"to", "x", "y", "z", "target", "yaw", "pitch"}),
+    "look": frozenset({"yaw", "pitch"}),
+    "give": frozenset({"item", "count"}),
+    "camera_path": frozenset({"points", "duration_s"}),
+    "generate_chunks": frozenset({"origin", "radius_chunks"}),
+    "load_chunks": frozenset({"origin", "radius_chunks"}),
+    "unload_chunks": frozenset(),
+    "place_structure": frozenset(
+        {"template", "origin", "count", "spacing", "parameters"}
+    ),
+    "set_render_distance": frozenset({"chunks"}),
+    "set_simulation_distance": frozenset({"chunks"}),
+    "loop": frozenset({"body", "tick_period"}),
 }
+_VALID_OPS = frozenset(_OP_FIELDS)
 _VALID_GENERATORS = {"default", "flat", "amplified", "large_biomes", "void"}
 _VALID_REQUIREMENTS = {"carpet", "gamemode-creative", "flat-world"}
 
@@ -59,6 +80,7 @@ SCENARIO_KEYS = frozenset({
 WORLD_KEYS = frozenset({
     "seed", "generator", "generator_settings", "spawn", "time", "weather",
     "difficulty", "gamerules", "fingerprint_region", "dimension",
+    "force_fresh",
 })
 MEASUREMENT_KEYS = frozenset({
     "warmup", "duration", "primary_metric", "metrics", "tick_warp", "saturated",
@@ -171,6 +193,18 @@ class Scenario:
     @property
     def seed(self) -> int:
         return int(self.world["seed"])
+
+    @property
+    def force_fresh(self) -> bool:
+        """Whether this scenario has to generate its terrain every run.
+
+        Terrain is generated once per scenario and reused, because Minecraft's
+        worldgen is not reproducible block for block and a per-run world makes
+        every pair of runs a fingerprint mismatch. A scenario that measures
+        generation itself cannot accept that: handed a cached world it would
+        time chunk loading instead, and report it as worldgen.
+        """
+        return bool(self.world.get("force_fresh", False))
 
     @property
     def fingerprint_radius_chunks(self) -> int | None:
@@ -429,6 +463,18 @@ def _validate_actions(actions: Any, key: str, where: str) -> None:
             f"{where}: {key}[{index}] has unknown op {action['op']!r}; "
             f"expected one of {sorted(_VALID_OPS)}",
         )
+        op = action["op"]
+        # 'comment' is allowed everywhere: it has a reader, just not a
+        # programmatic one, and nine scenarios use it to record why a step is
+        # shaped the way it is.
+        reject_unknown_keys(
+            action,
+            _OP_FIELDS[op] | {"op", "comment"},
+            f"{where}: {key}[{index}] ({op})",
+            ScenarioError,
+        )
+        if op == "loop":
+            _validate_actions(action.get("body") or [], "body", f"{where}: {key}[{index}]")
 
 
 def _content_hash(data: dict[str, Any]) -> str:

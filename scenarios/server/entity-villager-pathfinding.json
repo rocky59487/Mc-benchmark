@@ -1,6 +1,6 @@
 {
   "id": "entity-villager-pathfinding",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "Villager brain and pathfinding load",
   "description": "A dense villager population with workstations and beds, exercising the brain/behaviour system and the pathfinder. Deliberately separate from the mobcap scenario: villager AI is the single most expensive vanilla entity workload and it stresses entirely different code from simple hostile-mob ticking. Mob-optimisation mods frequently improve one and regress the other, which a combined scenario would hide.",
   "side": "server",
@@ -48,7 +48,6 @@
       "op": "spawn_ring",
       "entities": [{ "type": "minecraft:villager", "count": 250 }],
       "radius": 40,
-      "layout": "lattice",
       "y": 6,
       "persistent": true
     },

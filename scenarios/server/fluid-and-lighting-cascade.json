@@ -1,6 +1,6 @@
 {
   "id": "fluid-and-lighting-cascade",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "Fluid spread with lighting cascade",
   "description": "Large-volume water release into a carved basin, triggering sustained fluid tick scheduling and a corresponding cascade of light updates as the fluid occludes and reveals blocks. Fluid and lighting are paired deliberately: they are coupled in the engine, and measuring either alone misrepresents the cost a player experiences.",
   "side": "server",
@@ -36,7 +36,6 @@
   "workload": [
     {
       "op": "loop",
-      "duration_s": 0,
       "tick_period": 400,
       "comment": "Periodic release-and-reset keeps the load steady and loopable; a one-shot release would decay to nothing partway through the measurement window.",
       "body": [

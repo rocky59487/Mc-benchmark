@@ -365,7 +365,7 @@ class TestWorldgenReach:
                 {"op": "generate_chunks", "radius_chunks": 12},
             ],
             "workload": [{
-                "op": "camera_path", "duration_s": 30, "loop": True,
+                "op": "camera_path", "duration_s": 30,
                 "points": [{"x": 0, "y": 80, "z": 0}, {"x": 32, "y": 80, "z": 32}],
             }],
         }
@@ -389,7 +389,7 @@ class TestWorldgenReach:
 
     def test_a_distant_camera_point_counts(self):
         scenario = self._client(workload=[{
-            "op": "camera_path", "duration_s": 30, "loop": True,
+            "op": "camera_path", "duration_s": 30,
             "points": [{"x": 0, "y": 80, "z": 0}, {"x": 400, "y": 80, "z": 0}],
         }])
         assert "reaches 33 chunks" in scenario.worldgen_reach_gap()
@@ -480,14 +480,31 @@ class TestFingerprintMargin:
         assert scenario.fingerprint_margin_gap() == ""
 
     def test_the_shipped_scenarios_split_the_way_they_were_measured(self):
-        found = {
-            s.id: bool(s.fingerprint_margin_gap())
-            for s in load_scenarios(SCENARIO_ROOT)
-        }
-        # Thirty runs of this one agreed on a digest.
-        assert not found["reference-hardware-baseline"]
-        # This one did not, on the third run of the suite.
-        assert found["visual-biome-flyby"]
+        """Both client scenarios are clear; five server ones are not.
+
+        visual-biome-flyby declared radius 16 against a reach of 12, and its
+        nineteen saved worlds fell into four fingerprints with every disagreeing
+        chunk in rings 13 to 16 — terrain still being written when the run
+        ended. At radius 12 all nineteen agree, and keep agreeing down to 6, so
+        the scenario declares 12 and the client side is settled by measurement.
+
+        The five server scenarios all sit at a margin of four. That is the same
+        shape, but nothing has run them on real hardware yet, and the threshold
+        of six was calibrated on one client scenario. Narrowing five fingerprint
+        regions on that basis would be a guess that invalidated five corpora, so
+        they are left declared as they are and listed here. Resolve it with a
+        server run, not with arithmetic.
+        """
+        offenders = sorted(
+            s.id for s in load_scenarios(SCENARIO_ROOT) if s.fingerprint_margin_gap()
+        )
+        assert offenders == [
+            "block-entity-hopper-chains",
+            "entity-mobcap-saturation",
+            "entity-villager-pathfinding",
+            "fluid-and-lighting-cascade",
+            "redstone-observer-clocks",
+        ]
 
 
 class TestUnknownScenarioKeys:
@@ -542,6 +559,39 @@ class TestUnknownScenarioKeys:
         # The list is only right if it covers what the repository already
         # writes; an omission here refuses a file that was always valid.
         assert len(load_scenarios(SCENARIO_ROOT)) >= 11
+
+    def test_a_misspelt_field_inside_an_op_is_refused(self):
+        # Ops are where the scenario's content lives and every field has a
+        # default, so a typo is not a no-op: the op runs with the default and
+        # the scenario measures something it did not ask for.
+        base = self._minimal()
+        base["setup"] = [{"op": "generate_chunks", "radius": 20}]
+        with pytest.raises(ScenarioError) as raised:
+            parse_scenario(base)
+        assert "'radius'" in str(raised.value)
+        assert "radius_chunks" in str(raised.value)
+
+    def test_a_typo_nested_in_a_loop_body_is_refused(self):
+        # A loop compiles its body through the same compiler, so its body has
+        # to go through the same validation.
+        base = self._minimal()
+        base["setup"] = [{"op": "loop", "body": [{"op": "wait", "tick": 5}]}]
+        with pytest.raises(ScenarioError) as raised:
+            parse_scenario(base)
+        assert "did you mean 'ticks'" in str(raised.value)
+
+    def test_a_comment_is_allowed_on_every_op(self):
+        # It has a reader, just not a programmatic one.
+        base = self._minimal()
+        base["setup"] = [{"op": "wait", "ticks": 5, "comment": "settle"}]
+        parse_scenario(base)
+
+    def test_every_op_declares_its_fields(self):
+        # A new op added without an entry would raise KeyError on the first
+        # scenario that used it, which is a worse way to find out.
+        from mcbench.scenario import _OP_FIELDS, _VALID_OPS
+
+        assert set(_OP_FIELDS) == set(_VALID_OPS)
 
 
 class TestTheSchemaMatchesTheParser:

@@ -1,6 +1,6 @@
 {
   "id": "reference-hardware-baseline",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "Reference hardware baseline",
   "description": "Fixed, mod-free vanilla workload used to normalise results across machines. Every suite runs this in the same session as the mods under test; results are reported primarily as ratios to it. This is what makes contributions from different hardware compose into one corpus (METHODOLOGY.md section 8). Its definition must stay frozen — a change here invalidates cross-machine comparability for the whole corpus.",
   "side": "client",
@@ -31,7 +31,6 @@
     {
       "op": "camera_path",
       "comment": "Closed loop so the workload is identical on every repetition.",
-      "loop": true,
       "duration_s": 60,
       "points": [
         { "x": 0, "y": 80, "z": 0, "yaw": 0, "pitch": 0 },

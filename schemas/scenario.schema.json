@@ -70,9 +70,13 @@
           "type": "object",
           "additionalProperties": { "type": ["string", "number", "boolean"] }
         },
+        "force_fresh": {
+          "type": "boolean",
+          "description": "Generate this scenario's terrain on every run instead of reusing one generated world. Only for scenarios that measure generation itself; the fingerprint then differs every run by construction and stops gating pooling."
+        },
         "fingerprint_region": {
           "type": "object",
-          "description": "Region hashed to produce the world fingerprint. Runs with differing fingerprints are never pooled.",
+          "description": "Region hashed to produce the world fingerprint. Runs with differing fingerprints are never pooled, unless the scenario sets force_fresh.",
           "required": ["radius_chunks"],
           "additionalProperties": false,
           "properties": {

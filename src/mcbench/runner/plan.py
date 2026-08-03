@@ -272,7 +272,14 @@ def _split_volume(
 def _observer_clock_bank(
     origin: tuple[int, int, int], parameters: dict[str, Any], dialect: Dialect
 ) -> list[str]:
-    """A self-sustaining observer clock driving a bank of pistons."""
+    """A self-sustaining observer clock driving a bank of pistons.
+
+    Two observers facing each other, which is the fastest clock the game has: a
+    period of two game ticks. The period follows from the arrangement, so it is
+    not a parameter. Two scenarios used to declare ``clock_period_ticks: 2``
+    and nothing read it, which was accurate only by coincidence — any other
+    number would have been built as a 2 all the same.
+    """
     piston_count = int(parameters.get("piston_count", 4))
     x, y, z = origin
     lines = [
@@ -312,6 +319,14 @@ def _hopper_chain(
 STRUCTURE_TEMPLATES = {
     "observer_clock_bank": _observer_clock_bank,
     "hopper_chain": _hopper_chain,
+}
+
+#: What each template reads out of ``parameters``. Every one has a default, so
+#: an unrecognised name is not inert: the structure is built to the default and
+#: the scenario measures a load it did not ask for.
+STRUCTURE_PARAMETERS = {
+    "observer_clock_bank": frozenset({"piston_count"}),
+    "hopper_chain": frozenset({"length", "with_comparator", "preload_items"}),
 }
 
 
@@ -360,7 +375,12 @@ def _compile_action(
         entity = action.get("type") or action.get("entity")
         if not entity:
             raise PlanError(f"{where}: 'summon' needs 'type'")
-        lines.append(f"summon {entity} {_num(x)} {_num(y)} {_num(z)}")
+        # Separated by a space, as in _compile_spawn_ring: /summon takes the tag
+        # as an argument of its own.
+        nbt = action.get("nbt") or ""
+        lines.append(
+            f"summon {entity} {_num(x)} {_num(y)} {_num(z)} {nbt}".rstrip()
+        )
 
     elif op == "spawn_ring":
         lines.extend(_compile_spawn_ring(action, where))
@@ -604,6 +624,12 @@ def _compile_structures(
     spacing = int(action.get("spacing", 4))
     origin = _point(action.get("origin"), f"{where}.origin")
     parameters = action.get("parameters") or {}
+    if unknown := set(parameters) - STRUCTURE_PARAMETERS[template]:
+        raise PlanError(
+            f"{where}: {template!r} does not read "
+            f"{', '.join(repr(name) for name in sorted(unknown))}; "
+            f"it reads {sorted(STRUCTURE_PARAMETERS[template])}"
+        )
 
     side = max(1, math.ceil(math.sqrt(count)))
     lines: list[str] = []

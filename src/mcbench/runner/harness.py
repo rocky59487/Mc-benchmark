@@ -19,7 +19,7 @@ import re
 import shutil
 import subprocess
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -1619,10 +1619,14 @@ class Harness:
         """Where a scenario's generated terrain is kept between runs."""
         return self.work_dir / "worlds" / self._client_world_name(scenario)
 
-    @property
-    def shares_world(self) -> bool:
-        """Whether every run of a scenario measures one generated world."""
-        return not self.fresh_world
+    def shares_world(self, scenario: Scenario) -> bool:
+        """Whether every run of this scenario measures one generated world.
+
+        A scenario may refuse the cache, which is how worldgen-fresh-chunks
+        stays a worldgen measurement: reuse would hand it finished terrain and
+        it would time chunk loading instead.
+        """
+        return not self.fresh_world and not scenario.force_fresh
 
     def _restore_cached_world(self, scenario: Scenario, world: Path) -> bool:
         """Give this run the terrain an earlier run of the scenario generated.
@@ -1645,7 +1649,7 @@ class Harness:
         stays under the working directory (docs/LICENSING.md).
         """
         cached = self._world_cache(scenario)
-        if not self.shares_world or not (cached / "region").is_dir():
+        if not self.shares_world(scenario) or not (cached / "region").is_dir():
             return False
         for source in _region_dirs(cached):
             shutil.copytree(
@@ -1656,7 +1660,7 @@ class Harness:
     def _cache_world(self, scenario: Scenario, world: Path) -> None:
         """Keep this run's terrain for every later run of the scenario."""
         cached = self._world_cache(scenario)
-        if not self.shares_world:
+        if not self.shares_world(scenario):
             return
         if (cached / "region").is_dir() or not (world / "region").is_dir():
             return
@@ -2013,7 +2017,10 @@ class Harness:
         return outcomes
 
 
-def flag_world_mismatches(outcomes: Sequence[RunOutcome]) -> dict[str, list[str]]:
+def flag_world_mismatches(
+    outcomes: Sequence[RunOutcome],
+    scenarios: Mapping[str, Scenario] | None = None,
+) -> dict[str, list[str]]:
     """Flag runs of a scenario whose world differed from the scenario's majority.
 
     METHODOLOGY §7 promises that runs whose fingerprints differ are never pooled.
@@ -2043,10 +2050,25 @@ def flag_world_mismatches(outcomes: Sequence[RunOutcome]) -> dict[str, list[str]
     record saying which it was, so a reader is not left to conclude that a mod
     altered worldgen. ``Scenario.fingerprint_margin_gap`` is what prevents it.
 
+    **A scenario that generates its terrain every run is exempt.** Worldgen is
+    not reproducible block for block, so for those the fingerprints differ every
+    time by construction: gating on them would flag every run and the scenario
+    would never produce a verdict at all. The fingerprint is still recorded, so
+    a reader can see the terrain differed; it just cannot be evidence that a mod
+    changed anything when vanilla does not agree with itself either. Scenarios
+    are optional here, and without them nothing is exempt.
+
     :returns: scenario id to the differing fingerprints found, for reporting.
     """
+    exempt = {
+        scenario_id
+        for scenario_id, scenario in (scenarios or {}).items()
+        if scenario.force_fresh
+    }
     by_scenario: dict[str, list[RunOutcome]] = {}
     for outcome in outcomes:
+        if outcome.planned.cell.scenario in exempt:
+            continue
         if outcome.metrics is not None and outcome.world_fingerprint:
             by_scenario.setdefault(outcome.planned.cell.scenario, []).append(outcome)
 
@@ -2079,6 +2101,7 @@ def flag_world_mismatches(outcomes: Sequence[RunOutcome]) -> dict[str, list[str]
 
 def outcomes_to_cells(
     outcomes: Sequence[RunOutcome],
+    scenarios: Mapping[str, Scenario] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Convert run outcomes into the analysis input format.
 
@@ -2096,7 +2119,7 @@ def outcomes_to_cells(
     aggregate, and a fairness check that an analysis path can bypass is not a
     check.
     """
-    flag_world_mismatches(outcomes)
+    flag_world_mismatches(outcomes, scenarios)
 
     cells: dict[str, list[dict[str, Any]]] = {}
     for outcome in outcomes:

@@ -1,6 +1,6 @@
 {
   "id": "chunkio-load-throughput",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "Chunk load and unload throughput",
   "description": "Repeated load/unload cycling over a pre-generated region, measuring deserialisation, NBT parsing, and region-file I/O rather than generation. Distinct from worldgen-fresh-chunks: a mod can speed generation while slowing load, and the two costs fall on completely different players — one on world creation, one on every session thereafter.",
   "side": "server",
@@ -26,7 +26,7 @@
       "radius_chunks": 24,
       "comment": "Full pre-generation during untimed setup; the measurement must never pay generation cost."
     },
-    { "op": "unload_chunks", "all": true },
+    { "op": "unload_chunks" },
     { "op": "wait", "ticks": 200, "comment": "Flush to disk so the first measured load is a real read, not a cache hit." }
   ],
   "workload": [
@@ -34,9 +34,9 @@
       "op": "loop",
       "comment": "Cycling a wide radius defeats the OS page cache, so this measures I/O rather than memory bandwidth.",
       "body": [
-        { "op": "load_chunks", "radius_chunks": 20, "origin": { "x": 0, "z": 0 }, "order": "spiral" },
+        { "op": "load_chunks", "radius_chunks": 20, "origin": { "x": 0, "z": 0 } },
         { "op": "wait", "ticks": 40 },
-        { "op": "unload_chunks", "all": true },
+        { "op": "unload_chunks" },
         { "op": "wait", "ticks": 40 }
       ]
     }

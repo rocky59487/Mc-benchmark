@@ -1,6 +1,6 @@
 {
   "id": "visual-biome-flyby",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "title": "Cinematic biome flyby",
   "description": "Sustained camera traversal across varied terrain and biomes at high render distance. The broadest client rendering workload: terrain meshing, chunk upload, culling, and translucency sorting all under continuous load. This is the scenario most sensitive to renderer replacements.",
   "side": "client",
@@ -18,7 +18,7 @@
       "doMobSpawning": false,
       "randomTickSpeed": 0
     },
-    "fingerprint_region": { "radius_chunks": 16 }
+    "fingerprint_region": { "radius_chunks": 12 }
   },
   "setup": [
     { "op": "set_render_distance", "chunks": 16 },
@@ -29,9 +29,7 @@
   "workload": [
     {
       "op": "camera_path",
-      "loop": true,
       "duration_s": 90,
-      "interpolation": "catmull-rom",
       "comment": "Smooth interpolation so frame cost varies continuously rather than stepping, which would create artificial frametime spikes at waypoints.",
       "points": [
         { "x": -200, "y": 96, "z": -200, "yaw": 45, "pitch": -5 },

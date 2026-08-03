@@ -1,6 +1,6 @@
 {
   "id": "entity-mobcap-saturation",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "Entity tick under mobcap saturation",
   "description": "A large, stable population of hostile and passive mobs ticking within simulation distance. The primary scenario for mob-optimisation mods: entity ticking, mob AI goal selection, collision, and despawn checks. Run under tick warp so the cost is measurable even when the server would otherwise sit comfortably at 20 TPS — below budget, TPS reports 20 for every configuration and reveals nothing.",
   "side": "server",
@@ -39,7 +39,6 @@
         { "type": "minecraft:creeper", "count": 100 }
       ],
       "radius": 64,
-      "layout": "lattice",
       "y": 5,
       "persistent": true,
       "no_ai": false

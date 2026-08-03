@@ -1,6 +1,6 @@
 {
   "id": "redstone-observer-clocks",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "Redstone update storm",
   "description": "An array of observer clocks driving piston banks, producing a sustained high rate of block updates and neighbour notifications. Stresses the update propagation path, which is largely single-threaded and a frequent target of optimisation mods.",
   "side": "server",
@@ -30,7 +30,7 @@
       "count": 64,
       "spacing": 6,
       "origin": { "x": -48, "y": 5, "z": -48 },
-      "parameters": { "piston_count": 4, "clock_period_ticks": 2 }
+      "parameters": { "piston_count": 4 }
     },
     { "op": "wait", "ticks": 200 }
   ],

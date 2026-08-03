@@ -442,6 +442,29 @@ class TestSharedWorldCarriesTerrainOnly:
         (target / "region").mkdir(parents=True)
         assert not h._restore_cached_world(scenario, target)
 
+    def test_a_scenario_that_measures_generation_refuses_the_cache(self, tmp_path):
+        # worldgen-fresh-chunks declared force_fresh and nothing read it, so
+        # every run after the first was handed finished terrain and timed chunk
+        # loading — which is what chunkio-load-throughput measures, and the
+        # opposite of what this scenario is for.
+        h = self._harness(tmp_path)
+        scenario = scenarios()["worldgen-fresh-chunks"]
+        assert scenario.force_fresh
+        assert not h.shares_world(scenario)
+
+        h._cache_world(scenario, self._world(tmp_path / "first"))
+        target = tmp_path / "second" / "w"
+        (target / "region").mkdir(parents=True)
+        assert not h._restore_cached_world(scenario, target)
+
+    def test_every_other_scenario_still_shares_one_world(self, tmp_path):
+        # Generating per run would make every pair of runs a fingerprint
+        # mismatch, so the refusal has to stay confined to the one scenario
+        # that asks for it.
+        h = self._harness(tmp_path)
+        refusing = [s.id for s in scenarios().values() if not h.shares_world(s)]
+        assert refusing == ["worldgen-fresh-chunks"]
+
 
 class TestWindowResolution:
     """METHODOLOGY section 7 promises the resolution is recorded. It was not.

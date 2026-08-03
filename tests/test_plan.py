@@ -64,10 +64,24 @@ class TestSimpleActions:
             {"op": "summon", "type": "minecraft:cow", "x": 0, "y": 5, "z": 0}
         ) == ["summon minecraft:cow 0 5 0"]
 
+    def test_summon_separates_its_nbt_tag(self):
+        # `/summon` takes the tag as an argument of its own, so Brigadier wants
+        # whitespace before it. Block and item NBT attaches with no separator,
+        # and writing the tag that way here ends the position argument and then
+        # finds `{` where a separator has to be.
+        assert compile_one(
+            {
+                "op": "summon",
+                "type": "minecraft:cow",
+                "x": 0,
+                "y": 5,
+                "z": 0,
+                "nbt": "{NoAI:1b}",
+            }
+        ) == ["summon minecraft:cow 0 5 0 {NoAI:1b}"]
+
     def test_unload_chunks(self):
-        assert compile_one({"op": "unload_chunks", "all": True}) == [
-            "forceload remove all"
-        ]
+        assert compile_one({"op": "unload_chunks"}) == ["forceload remove all"]
 
     def test_unknown_op_is_fatal(self):
         """Silently skipping would build a world that is not the scenario.
@@ -417,6 +431,25 @@ class TestStructures:
                 "template": "death_star",
                 "origin": {"x": 0, "y": 0, "z": 0},
             })
+
+    def test_a_parameter_the_template_does_not_read_is_fatal(self):
+        # Every parameter has a default, so an unread one is not inert: the
+        # structure is built to the default. Two scenarios asked for
+        # 'clock_period_ticks: 2' and got a two-tick clock because that is the
+        # only clock the builder makes, which held right up until someone
+        # wrote a different number.
+        with pytest.raises(PlanError, match="does not read 'clock_period_ticks'"):
+            compile_one({
+                "op": "place_structure",
+                "template": "observer_clock_bank",
+                "origin": {"x": 0, "y": 5, "z": 0},
+                "parameters": {"piston_count": 4, "clock_period_ticks": 2},
+            })
+
+    def test_every_template_declares_its_parameters(self):
+        from mcbench.runner.plan import STRUCTURE_PARAMETERS, STRUCTURE_TEMPLATES
+
+        assert set(STRUCTURE_TEMPLATES) == set(STRUCTURE_PARAMETERS)
 
 
 class TestInstanceSettings:

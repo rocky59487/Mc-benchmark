@@ -885,7 +885,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "interactions": [list(group) for group in suite.interactions],
         "runs": counts,
         "preflight": preflight.to_dict(),
-        "cells": outcomes_to_cells(outcomes),
+        "cells": outcomes_to_cells(outcomes, scenarios),
     }
     Path(args.output).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

@@ -542,3 +542,56 @@ class TestUnknownScenarioKeys:
         # The list is only right if it covers what the repository already
         # writes; an omission here refuses a file that was always valid.
         assert len(load_scenarios(SCENARIO_ROOT)) >= 11
+
+
+class TestTheSchemaMatchesTheParser:
+    """The schema is the normative document for external tooling.
+
+    Nothing in src/, tests/ or docs/ so much as mentions it, and until tonight
+    nothing enforced it either, so it could describe a format this parser does
+    not accept — or omit one it does — and no run would notice. It is checked
+    here against the key sets the parser actually holds files to, because two
+    statements of one fact drift unless something compares them.
+    """
+
+    def _schema(self):
+        import json
+
+        return json.loads(
+            (REPO / "schemas" / "scenario.schema.json").read_text(encoding="utf-8")
+        )
+
+    def _properties(self, node):
+        return set((node.get("properties") or {}).keys())
+
+    def test_every_level_agrees(self):
+        from mcbench.scenario import (
+            MEASUREMENT_KEYS,
+            SCENARIO_KEYS,
+            WARMUP_KEYS,
+            WORLD_KEYS,
+        )
+
+        schema = self._schema()
+        measurement = schema["properties"]["measurement"]
+        for label, declared, enforced in (
+            ("top level", self._properties(schema), SCENARIO_KEYS),
+            ("world", self._properties(schema["properties"]["world"]), WORLD_KEYS),
+            ("measurement", self._properties(measurement), MEASUREMENT_KEYS),
+            ("warmup", self._properties(measurement["properties"]["warmup"]),
+             WARMUP_KEYS),
+        ):
+            assert declared == enforced, (
+                f"{label}: schema has {sorted(declared - enforced)} that the "
+                f"parser refuses, and the parser allows "
+                f"{sorted(enforced - declared)} the schema does not describe"
+            )
+
+    def test_the_schema_still_says_it_is_closed(self):
+        # The key sets only mean anything because the schema claims to be
+        # exhaustive. Dropping that claim would make disagreement legal.
+        schema = self._schema()
+        measurement = schema["properties"]["measurement"]
+        for node in (schema, schema["properties"]["world"], measurement,
+                     measurement["properties"]["warmup"]):
+            assert node.get("additionalProperties") is False

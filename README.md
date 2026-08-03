@@ -257,10 +257,10 @@ executor, and a shutdown request. That is the entire version-coupled surface,
 which is what makes "every version, every platform" tractable: a new Minecraft
 version normally needs no code change, only a rebuild.
 
-Three adapters exist, and they are the evidence the SPI is the right size.
-Fabric (a mod loader with a client) and Paper (a server plugin platform with no
-client at all) are unrelated ecosystems, yet their adapters are nearly the same
-length and neither contains a single line of methodology.
+Four adapters exist, and they are the evidence the SPI is the right size.
+Fabric, NeoForge and Forge are mod loaders with clients; Paper is a server
+plugin platform with no client at all. Four unrelated ecosystems, four nearly
+identical files, none containing a single line of methodology.
 
 Underneath them sits a **JVM agent** that needs no loader at all. It times
 frames on any version and any loader — including vanilla — by instrumenting
@@ -400,17 +400,13 @@ adapter SPI — with cross-implementation conformance tests between the Java
 writer and the Python reader.
 
 Plus the scenario-to-command compiler that joins the harness to the probe, and
-adapters for Fabric and Paper.
+adapters for Fabric, NeoForge, Forge and Paper — every loader anyone runs —
+each built against a real toolchain. Plus the JVM agent that times frames on any
+version and any loader, including vanilla, by instrumenting LWJGL instead of the
+game. Security hardening with a threat model, and CI enforcing tests, lint,
+protocol conformance, security regressions and licence compliance.
 
-Adapters for Fabric, NeoForge and Paper, each built against a real toolchain,
-plus the JVM agent that times frames on any version and any loader — including
-vanilla — by instrumenting LWJGL instead of the game. Security hardening with a
-threat model, and CI enforcing tests, lint, protocol conformance, security
-regressions and licence compliance.
-
-**Next:** the Forge adapter — the last loader without one.
-
-**Then** — vsync detection in preflight (required before trusting agent-sourced
+**Next** — vsync detection in preflight (required before trusting agent-sourced
 frame timings); world fingerprinting; CurseForge provider (opt-in, no caching);
 cross-loader and cross-version comparison; bot-driven player load; the public
 results corpus.

@@ -333,6 +333,63 @@ class TestHarnessPreflight:
         assert not harness.needs_gpu
 
 
+class TestAgentAttachment:
+    """--agent-jar puts the JVM agent on the launch command."""
+
+    def _harness(self, tmp_path, agent_jar=None):
+        from pathlib import Path
+
+        from mcbench.config import parse_suite
+        from mcbench.runner import Harness
+        from mcbench.scenario import load_scenarios
+
+        repo = Path(__file__).resolve().parents[1]
+        scenarios = {s.id: s for s in load_scenarios(repo / "scenarios")}
+        suite = parse_suite({
+            "name": "t", "minecraft_version": "1.21.1", "loader": "neoforge",
+            "scenarios": ["visual-biome-flyby"],
+            "variants": [{"name": "base", "mods": []}],
+            "baseline": "base",
+        })
+        stub = tmp_path / "headlessmc-launcher.jar"
+        stub.write_bytes(b"")
+        return Harness(suite, scenarios, work_dir=tmp_path,
+                       headlessmc=stub, agent_jar=agent_jar), scenarios
+
+    def test_attached_for_rendering_scenarios(self, tmp_path):
+        jar = tmp_path / "agent.jar"
+        jar.write_bytes(b"")
+        harness, scenarios = self._harness(tmp_path, agent_jar=jar)
+        command = harness._launch_command(tmp_path, scenarios["visual-biome-flyby"])
+        jvm = command[command.index("--jvm") + 1]
+        assert f"-javaagent:{jar.resolve()}" in jvm
+
+    def test_not_attached_for_server_scenarios(self, tmp_path):
+        # A server run has no frames to time, so the transformer would pay a
+        # pass over every class load for nothing.
+        jar = tmp_path / "agent.jar"
+        jar.write_bytes(b"")
+        harness, scenarios = self._harness(tmp_path, agent_jar=jar)
+        command = harness._launch_command(
+            tmp_path, scenarios["entity-mobcap-saturation"]
+        )
+        assert "-javaagent" not in " ".join(command)
+
+    def test_absent_by_default(self, tmp_path):
+        harness, scenarios = self._harness(tmp_path)
+        command = harness._launch_command(tmp_path, scenarios["visual-biome-flyby"])
+        assert "-javaagent" not in " ".join(command)
+
+    def test_a_missing_jar_fails_loudly_rather_than_silently_unmeasured(self, tmp_path):
+        # Silently dropping it would produce a run with no frames and no
+        # explanation — the exact failure mode the agent exists to prevent.
+        from mcbench.runner import HarnessError
+
+        harness, scenarios = self._harness(tmp_path, agent_jar=tmp_path / "nope.jar")
+        with pytest.raises(HarnessError, match="agent jar not found"):
+            harness._launch_command(tmp_path, scenarios["visual-biome-flyby"])
+
+
 class TestPluginPlatforms:
     """Paper and friends are server plugin platforms, not mod loaders."""
 

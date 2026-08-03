@@ -64,9 +64,16 @@ parser, no dependency, and no knowledge of the methodology it is enforcing.
 | Fabric | `HudRenderCallback` / `ServerTickEvents` | **builds against 1.21.1** |
 | Paper / Spigot / Purpur | repeating `Scheduler` task | **builds against paper-api** |
 | NeoForge | `ClientTickEvent` / `ServerTickEvent` | **builds against 1.21.1** |
-| Forge | `TickEvent` | planned |
+| Forge | `TickEvent.RenderTickEvent` / `TickEvent.ServerTickEvent` | **builds against 1.21.1** |
 | Quilt | Fabric adapter loads directly | expected to work as-is |
 | **Any version, any loader** | **JVM agent**, `glfwSwapBuffers` | **builds, runs, frames only** — see below |
+
+Forge is the one loader with a per-frame event of its own —
+`TickEvent.RenderTickEvent` fires once per frame with no mixin required. Fabric
+has to reach for `HudRenderCallback` and NeoForge has nothing at all, which is
+part of why the agent exists. All four adapters target 1.21.1 deliberately: a
+cross-loader comparison is only meaningful when the game underneath is the same
+build, so any difference measured is the loader.
 
 ## The universal fallback: a JVM agent
 

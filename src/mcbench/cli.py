@@ -414,7 +414,8 @@ def cmd_targets(args: argparse.Namespace) -> int:
 
     scenarios = load_scenarios(_scenario_root(args.scenario_root))
     specs = args.target or [
-        "fabric:1.21.1", "neoforge:1.21.1", "paper:1.21.1", "paper:1.20.4",
+        "fabric:1.21.1", "neoforge:1.21.1", "forge:1.21.1",
+        "paper:1.21.1", "paper:1.20.4",
     ]
     mods = args.with_mod or []
 
@@ -565,6 +566,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         work_dir=args.work_dir,
         headlessmc=args.headlessmc,
         local_root=args.local_root,
+        agent_jar=args.agent_jar,
         on_event=emit,
     )
 
@@ -635,6 +637,7 @@ def cmd_bisect(args: argparse.Namespace) -> int:
         work_dir=args.work_dir,
         headlessmc=args.headlessmc,
         local_root=args.local_root,
+        agent_jar=args.agent_jar,
     )
 
     preflight = harness.preflight(require_account=not args.no_account_check)
@@ -838,6 +841,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--work-dir", default="work")
     p.add_argument("--headlessmc", help="path to the HeadlessMC jar or binary")
     p.add_argument("--local-root", help="root for resolving local: mod paths")
+    p.add_argument("--agent-jar",
+                   help="attach the mcbench JVM agent for frame timing; works "
+                        "on any version and any loader, including ones with no "
+                        "adapter (probe/adapters/probe-agent)")
     p.add_argument("--timeout", type=float, help="per-run timeout in seconds")
     p.add_argument("--stop-on-failure", action="store_true")
     p.add_argument("--no-account-check", action="store_true")
@@ -864,6 +871,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--work-dir", default="work")
     p.add_argument("--headlessmc")
     p.add_argument("--local-root")
+    p.add_argument("--agent-jar")
     p.add_argument("--timeout", type=float)
     p.add_argument("--no-account-check", action="store_true")
     p.add_argument("--force", action="store_true")

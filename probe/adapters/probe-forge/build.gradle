@@ -1,0 +1,57 @@
+plugins {
+    id 'java'
+    id 'net.minecraftforge.gradle' version "${forgegradle_version}"
+}
+
+group = 'dev.mcbench'
+version = '0.1.0'
+base { archivesName = 'mcbench-probe-forge' }
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+}
+
+minecraft {
+    // Official Mojang mappings, same as the NeoForge adapter. Yarn would mean a
+    // third set of names for the same operations for no gain; the whole point of
+    // a three-method coupled surface is that the mapping choice is contained.
+    mappings channel: 'official', version: project.minecraft_version
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // ForgeGradle has no jarJar-by-default like ModDevGradle, so probe-core is
+    // packed in directly below. It has no dependencies of its own, so nothing
+    // else comes with it and there is nothing to shade or relocate.
+    implementation 'dev.mcbench:probe-core:0.1.0'
+}
+
+tasks.withType(JavaCompile).configureEach { options.release = 21 }
+
+jar {
+    // Pack probe-core's classes into the mod jar. Forge loads one jar per mod
+    // and will not see a sibling on the classpath.
+    from {
+        configurations.runtimeClasspath
+                .filter { it.name.startsWith('probe-core') }
+                .collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    manifest {
+        attributes(
+            'Implementation-Title': 'mcbench probe (Forge)',
+            'Implementation-Version': project.version,
+        )
+    }
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('META-INF/mods.toml') { expand version: project.version }
+}

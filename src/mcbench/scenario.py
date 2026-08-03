@@ -53,6 +53,17 @@ class Side(str, Enum):
     SERVER = "server"
     BOTH = "both"
 
+    @property
+    def measures_frames(self) -> bool:
+        """Whether a run of this scenario has frames to time at all.
+
+        The same question ``ProbeConfig.measuresFrames()`` answers in Java, and
+        it must answer it the same way — the probe and the harness disagreeing
+        about whether a run has a client is the kind of seam that produces an
+        empty result file and no explanation.
+        """
+        return self is not Side.SERVER
+
 
 class Category(str, Enum):
     VISUAL = "visual"

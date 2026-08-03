@@ -1,0 +1,18 @@
+// Standalone build, like every adapter: ForgeGradle downloads, decompiles and
+// remaps Minecraft, and probe-core's offline one-second test run is worth
+// protecting from that. See ../../../docs/PLATFORMS.md.
+pluginManagement {
+    repositories {
+        maven { name = 'MinecraftForge'; url = 'https://maven.minecraftforge.net/' }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'mcbench-probe-forge'
+
+includeBuild('../..') {
+    dependencySubstitution {
+        substitute module('dev.mcbench:probe-core') using project(':probe-core')
+    }
+}

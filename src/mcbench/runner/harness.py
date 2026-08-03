@@ -208,12 +208,14 @@ class Harness:
         headlessmc: str | Path | None = None,
         modrinth: ModrinthClient | None = None,
         local_root: str | Path | None = None,
+        agent_jar: str | Path | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.suite = suite
         self.scenarios = scenarios
         self.work_dir = Path(work_dir)
         self.headlessmc = Path(headlessmc) if headlessmc else self._find_headlessmc()
+        self.agent_jar = Path(agent_jar) if agent_jar else None
         self.modrinth = modrinth or ModrinthClient(
             cache_dir=self.work_dir / "cache" / "mods"
         )
@@ -487,6 +489,25 @@ class Harness:
 
         heap = f"-Xmx{self.suite.heap_mb}m"
         jvm_args = [heap, "-XX:+UseG1GC", *self.suite.baseline_variant.jvm_args]
+
+        if self.agent_jar is not None and scenario.side.measures_frames:
+            # Attached for rendering scenarios only. On a server run the agent
+            # would find no frames to time and cost a transformer pass over
+            # every class load for nothing.
+            #
+            # It is attached even where the loader has its own frame hook: the
+            # agent instruments the buffer swap, which is the moment a frame is
+            # actually presented, and the harness prefers it over an adapter's
+            # frames when both arrive (adopt_agent_frames). Every variant in a
+            # comparison gets the same treatment, which is what matters.
+            if not self.agent_jar.exists():
+                raise HarnessError(
+                    f"agent jar not found: {self.agent_jar}. Build it with "
+                    f"`cd probe/adapters/probe-agent && ./gradlew shadowJar`, "
+                    f"or drop --agent-jar to measure frames through the "
+                    f"loader adapter instead."
+                )
+            jvm_args.append(f"-javaagent:{self.agent_jar.resolve()}")
 
         if str(self.headlessmc).endswith(".jar"):
             command = ["java", "-jar", str(self.headlessmc)]

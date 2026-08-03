@@ -1016,8 +1016,12 @@ class Harness:
         spawned, and the harness has to wait for the process it is timing.
         """
         assert self.headlessmc is not None
+        # Absolute, because the launcher runs from its own directory and would
+        # otherwise resolve a relative instance path against that. It does not
+        # fail when it does: it creates the directory, finds no mods and no
+        # world in it, and leaves the game sitting at the title screen.
         properties = [
-            f"-Dhmc.gamedir={instance}",
+            f"-Dhmc.gamedir={instance.resolve()}",
             # One command, then exit, rather than an interactive shell on stdin.
             "-Dhmc.exit.on.failed.command=true",
         ]
@@ -1194,10 +1198,19 @@ class Harness:
         # which has happened once already on this seam.
         environment["MCBENCH_AGENT_OUTPUT"] = str(agent_path)
 
+        launch_cwd = self._launch_cwd(instance)
         try:
             with log_path.open("w", encoding="utf-8") as log:
+                # The exact invocation, so a run that behaved oddly can be
+                # reproduced by hand from its own log rather than reconstructed
+                # from the suite and the harness's defaults.
+                log.write(f"# cwd: {launch_cwd}\n")
+                log.write(f"# command: {subprocess.list2cmdline(command)}\n")
+                for name in ("MCBENCH_PROBE_CONFIG", "MCBENCH_PROBE_OUTPUT"):
+                    log.write(f"# {name}={environment[name]}\n")
+                log.flush()
                 completed = subprocess.run(
-                    command, cwd=self._launch_cwd(instance), env=environment,
+                    command, cwd=launch_cwd, env=environment,
                     stdout=log, stderr=subprocess.STDOUT,
                     timeout=timeout_s, check=False,
                 )

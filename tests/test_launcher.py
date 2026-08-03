@@ -234,6 +234,28 @@ class TestPreflight:
         assert "--jvm" not in launch
         assert any(p.startswith("-Dhmc.jvmargs=") for p in command)
 
+    def test_the_instance_path_is_absolute(self, tmp_path, monkeypatch):
+        """The launcher runs from its own directory, not from the instance.
+
+        A relative hmc.gamedir resolved against the launcher's directory
+        instead. HeadlessMC did not complain: it created that directory, found
+        no mods and no world in it, and left the game at the title screen, so
+        every run failed with "probe output not found" and nothing said why.
+        """
+        monkeypatch.chdir(tmp_path)
+        launcher = printing_stand_in(
+            tmp_path / "hmc.jar", "launch : Launches the game.\n  --jvm  Jvm args.\n"
+        )
+        h, scenarios = harness(tmp_path / "w", launcher)
+
+        command = h._launch_command(
+            Path("relative/instance"),
+            scenarios["entity-mobcap-saturation"],
+            h.suite.variants[0],
+        )
+        gamedir = next(p for p in command if p.startswith("-Dhmc.gamedir="))
+        assert Path(gamedir.split("=", 1)[1]).is_absolute()
+
     def test_jvm_arguments_survive_being_more_than_one(self, tmp_path):
         launcher = printing_stand_in(
             tmp_path / "hmc.jar", "launch : Launches the game.\n  --jvm  Jvm args.\n"

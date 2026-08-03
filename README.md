@@ -397,8 +397,12 @@ writer and the Python reader.
 Plus the scenario-to-command compiler that joins the harness to the probe, and
 adapters for Fabric and Paper.
 
-**Next:** NeoForge and Forge adapters, then the JVM agent that covers every
-remaining version and loader.
+Adapters for Fabric, NeoForge and Paper, each built against a real toolchain.
+Security hardening with a threat model, and CI enforcing tests, lint, protocol
+conformance, security regressions and licence compliance.
+
+**Next:** the Forge adapter, then the JVM agent that covers every remaining
+version and loader by instrumenting LWJGL instead of the game.
 
 **Then** — vsync detection in preflight (required before trusting agent-sourced
 frame timings); world fingerprinting; CurseForge provider (opt-in, no caching);

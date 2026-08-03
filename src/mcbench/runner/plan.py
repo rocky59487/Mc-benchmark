@@ -471,8 +471,15 @@ def _compile_spawn_ring(action: dict[str, Any], where: str) -> list[str]:
                     break
                 x = -radius + column * step + step / 2
                 z = -radius + row * step + step / 2
+                # A space before the tag. Block and item NBT attaches with no
+                # separator — `setblock x y z minecraft:chest{Items:[...]}` —
+                # because there it is part of one argument's grammar. /summon
+                # takes the tag as an argument of its own, and Brigadier
+                # requires whitespace between arguments, so writing it the
+                # block way ends the position and then finds `{` where a
+                # separator has to be.
                 lines.append(
-                    f"summon {entity_type} {x:.1f} {_num(y)} {z:.1f}{nbt}"
+                    f"summon {entity_type} {x:.1f} {_num(y)} {z:.1f} {nbt}".rstrip()
                 )
                 placed += 1
     return lines

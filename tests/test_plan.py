@@ -203,6 +203,40 @@ class TestSpawnRing:
         assert all("PersistenceRequired:1b" in line for line in lines)
         assert all("NoAI:1b" in line for line in lines)
 
+    def test_the_tag_is_a_separate_argument(self):
+        """`summon` takes NBT as its own argument, so it needs a separator.
+
+        Block and item NBT attaches with none — `minecraft:chest{Items:[...]}`
+        — because there it belongs to one argument's grammar, and writing
+        summon the same way is the natural mistake. Brigadier ends the position
+        argument at `{` and then requires whitespace before the next, so every
+        spawn_ring command was rejected and every run of the two scenarios that
+        use one failed its setup.
+
+        The assertion above passes either way, which is how it survived.
+        """
+        lines = compile_one({
+            "op": "spawn_ring",
+            "entities": [{"type": "minecraft:cow", "count": 2}],
+            "radius": 8,
+            "persistent": True,
+        })
+        for line in lines:
+            head, sep, tag = line.partition("{")
+            assert sep, line
+            assert head.endswith(" "), line
+            # And the coordinate before it is still a coordinate.
+            assert head.split()[-1].replace("-", "").replace(".", "").isdigit(), line
+
+    def test_no_flags_leaves_no_trailing_space(self):
+        lines = compile_one({
+            "op": "spawn_ring",
+            "entities": [{"type": "minecraft:cow", "count": 1}],
+            "radius": 8,
+        })
+        assert lines == [line.rstrip() for line in lines]
+        assert "{" not in lines[0]
+
     def test_handles_several_entity_types(self):
         lines = compile_one({
             "op": "spawn_ring",

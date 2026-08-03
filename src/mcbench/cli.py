@@ -325,6 +325,79 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_targets(args: argparse.Namespace) -> int:
+    """Show which scenarios compile for which targets.
+
+    The point of the target layer is that one scenario definition serves every
+    platform. This makes that claim checkable instead of asserted, and it is how
+    you find out that a scenario silently needs Carpet before a suite spends two
+    hours discovering it.
+    """
+    from .runner.plan import check_target
+    from .targets import Dialect, Target, UnsupportedTarget
+
+    scenarios = load_scenarios(_scenario_root(args.scenario_root))
+    specs = args.target or [
+        "fabric:1.21.1", "neoforge:1.21.1", "paper:1.21.1", "paper:1.20.4",
+    ]
+    mods = args.with_mod or []
+
+    try:
+        targets = [Target.parse(spec, mods=mods) for spec in specs]
+    except UnsupportedTarget as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+
+    rows = []
+    for scenario in scenarios:
+        row = {"scenario": scenario.id, "results": {}}
+        for target in targets:
+            missing = check_target(scenario, target)
+            row["results"][str(target)] = {
+                "ok": not missing,
+                "missing": [c.value for c in missing],
+                "reasons": [Dialect(target).explain(c) for c in missing],
+            }
+        rows.append(row)
+
+    if args.json:
+        print(json.dumps({
+            "targets": [str(t) for t in targets],
+            "mods": mods,
+            "scenarios": rows,
+        }, indent=2))
+        return 0
+
+    width = max(len(r["scenario"]) for r in rows)
+    headers = [str(t) for t in targets]
+    column = max(max((len(h) for h in headers), default=8), 8)
+
+    print(" " * width + "  " + "  ".join(h.ljust(column) for h in headers))
+    for row in rows:
+        cells = []
+        for header in headers:
+            result = row["results"][header]
+            cells.append(("✓" if result["ok"] else "✗").ljust(column))
+        print(f"{row['scenario']:<{width}}  " + "  ".join(cells))
+
+    print()
+    if mods:
+        print(f"Assuming these mods present: {', '.join(mods)}")
+    for header in headers:
+        blocked = [r for r in rows if not r["results"][header]["ok"]]
+        if not blocked:
+            print(f"{header}: all {len(rows)} scenarios runnable")
+            continue
+        print(f"{header}: {len(rows) - len(blocked)}/{len(rows)} runnable")
+        seen: set[str] = set()
+        for row in blocked:
+            for reason in row["results"][header]["reasons"]:
+                if reason not in seen:
+                    seen.add(reason)
+                    print(f"    - {reason}")
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Check whether this machine can produce a publishable measurement."""
     from .runner import Severity, run_preflight
@@ -528,6 +601,15 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["csv", "tsv", "md", "html"],
                    help="table formats for --export-dir (repeatable, default csv)")
     p.set_defaults(func=cmd_analyse)
+
+    p = sub.add_parser("targets", help="which scenarios run on which platforms")
+    p.add_argument("--scenario-root")
+    p.add_argument("--target", action="append",
+                   help="platform:version, e.g. fabric:1.21.1 (repeatable)")
+    p.add_argument("--with-mod", action="append",
+                   help="assume this mod is present, e.g. carpet (repeatable)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_targets)
 
     p = sub.add_parser("doctor", help="check whether this machine can measure")
     p.add_argument("--side", choices=["client", "server", "both"], default="both",

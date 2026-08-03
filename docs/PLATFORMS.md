@@ -94,6 +94,65 @@ a machine with vsync enabled measures the display rather than the renderer. The
 harness must therefore verify vsync is off before trusting agent-sourced frame
 timings — a check that belongs in preflight alongside the GPU check.
 
+## One scenario, every target
+
+The adapter SPI makes the *probe* portable. Making the *scenarios* portable is a
+separate problem, and it is what `src/mcbench/targets.py` solves.
+
+Commands are stable but not uniform. `/item replace block` is 1.17 and later;
+before that it was `/replaceitem`. `/forceload` arrived in 1.13.1. `/tick warp`
+is vanilla from 1.20.3, but on older versions it needs Carpet — which has no
+build for plugin platforms at all. And Paper has no client, so a rendering
+scenario cannot run there in any spelling.
+
+Compiling one scenario for every target with a single hard-coded dialect would
+therefore emit commands that fail, or quietly do nothing, on some of them. So
+compilation takes a **target**:
+
+```python
+compile_plan(scenario, target=Target.parse("paper:1.21.1"))
+```
+
+A `Target` is `(platform, version, mods)`. A `Dialect` answers two questions
+about it: *can this target do X*, and *how does it spell X*. The compiler asks
+rather than assuming, so supporting an older version or a new platform changes
+that one class and nothing else.
+
+Requirements are **derived from what a scenario actually does**, not from a
+hand-written list, so a scenario cannot forget to declare something and then
+appear to run on a target that silently drops half of it.
+
+The governing rule is the project's usual one: **a target that cannot express a
+scenario refuses it, loudly, with a reason.** A scenario that half-executes
+still produces numbers, and those numbers look entirely valid.
+
+```
+$ mcbench targets --with-mod carpet
+                             fabric:1.21.1  neoforge:1.21.1  paper:1.21.1  paper:1.20.4
+reference-hardware-baseline  ✓              ✓                ✗             ✗
+entity-mobcap-saturation     ✓              ✓                ✓             ✓
+...
+paper:1.21.1: 8/11 runnable
+    - paper is a server platform with no client, so rendering cannot be measured on it
+```
+
+### Versions
+
+Both numbering schemes order in one sequence. Classic releases are `1.MAJOR.MINOR`
+and releases from 2026 are year-based (`26.1.2`); because 26 > 1 a plain tuple
+comparison already sorts the new scheme after every `1.x` with no special case.
+Snapshots cannot be ordered against releases meaningfully and are treated as
+unknown, which makes every capability gate fail closed — a clear refusal rather
+than a command the target rejects.
+
+### The pre-1.13 floor
+
+Targets older than 1.13 are refused wholesale. The flattening renamed essentially
+every block and item, so a scenario written with modern identifiers would build a
+*different world* rather than fail — and that world would measure as though it
+were correct. Supporting them needs an identifier mapping, which is a separate
+piece of work; until then, refusing is the honest option.
+
 ## Evidence the SPI is the right size
 
 Fabric and Paper are unrelated ecosystems — one is a mod loader with a client,

@@ -29,14 +29,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from ..config import Loader
 from ..scenario import Preset, Scenario, Side
+from ..targets import (
+    Capability,
+    Dialect,
+    Target,
+    UnsupportedTarget,
+    required_capabilities,
+)
 
 __all__ = [
     "PlanError",
     "ProbePlan",
     "compile_plan",
+    "scenario_ops",
     "write_plan",
 ]
+
+#: Used when a caller does not name a target. Modern enough to support every
+#: capability, so an untargeted compile exercises the full command set.
+DEFAULT_TARGET = Target(platform=Loader.FABRIC, minecraft_version="1.21.1",
+                        mods=frozenset({"carpet"}))
 
 #: Vanilla ``/fill`` refuses volumes larger than this, so large regions are split.
 #: Exceeding it is a command failure at run time, which would leave the world in a
@@ -155,7 +169,7 @@ def _split_volume(
 
 
 def _observer_clock_bank(
-    origin: tuple[int, int, int], parameters: dict[str, Any]
+    origin: tuple[int, int, int], parameters: dict[str, Any], dialect: Dialect
 ) -> list[str]:
     """A self-sustaining observer clock driving a bank of pistons."""
     piston_count = int(parameters.get("piston_count", 4))
@@ -170,7 +184,9 @@ def _observer_clock_bank(
     return lines
 
 
-def _hopper_chain(origin: tuple[int, int, int], parameters: dict[str, Any]) -> list[str]:
+def _hopper_chain(
+    origin: tuple[int, int, int], parameters: dict[str, Any], dialect: Dialect
+) -> list[str]:
     """A chain of hoppers moving items, optionally read by a comparator."""
     length = int(parameters.get("length", 16))
     x, y, z = origin
@@ -182,9 +198,12 @@ def _hopper_chain(origin: tuple[int, int, int], parameters: dict[str, Any]) -> l
     if (preload := int(parameters.get("preload_items", 0))) > 0:
         # Pre-loaded so the measurement window sees steady-state transfer rather
         # than a fill-up transient that decays partway through.
+        # Spelled by the dialect: this was /replaceitem before 1.17, and the
+        # hard-coded modern form silently failed on older targets.
         lines.append(
-            f"item replace block {x} {y} {z} container.0 "
-            f"with minecraft:cobblestone {min(preload, 64)}"
+            dialect.item_replace_block(
+                x, y, z, "container.0", "minecraft:cobblestone", min(preload, 64)
+            )
         )
     return lines
 
@@ -200,8 +219,12 @@ STRUCTURE_TEMPLATES = {
 # --------------------------------------------------------------------------
 
 
-def _compile_action(action: dict[str, Any], where: str) -> tuple[list[str], dict[str, Any]]:
+def _compile_action(
+    action: dict[str, Any], where: str, dialect: Dialect | None = None
+) -> tuple[list[str], dict[str, Any]]:
     """Compile one action into command lines plus any instance settings."""
+    if dialect is None:
+        dialect = Dialect(DEFAULT_TARGET)
     op = action.get("op")
     lines: list[str] = []
     settings: dict[str, Any] = {}
@@ -269,7 +292,7 @@ def _compile_action(action: dict[str, Any], where: str) -> tuple[list[str], dict
         lines.append("forceload remove all")
 
     elif op == "place_structure":
-        lines.extend(_compile_structures(action, where))
+        lines.extend(_compile_structures(action, where, dialect))
 
     elif op == "set_render_distance":
         settings["render_distance"] = int(action.get("chunks", 12))
@@ -282,7 +305,9 @@ def _compile_action(action: dict[str, Any], where: str) -> tuple[list[str], dict
         # tick_period spaces repetitions apart.
         body = action.get("body") or []
         for index, inner in enumerate(body):
-            inner_lines, inner_settings = _compile_action(inner, f"{where}.loop[{index}]")
+            inner_lines, inner_settings = _compile_action(
+                inner, f"{where}.loop[{index}]", dialect
+            )
             lines.extend(inner_lines)
             settings.update(inner_settings)
         if (period := int(action.get("tick_period", 0))) > 0:
@@ -447,7 +472,9 @@ def _compile_forceload(action: dict[str, Any], where: str) -> list[str]:
     return lines
 
 
-def _compile_structures(action: dict[str, Any], where: str) -> list[str]:
+def _compile_structures(
+    action: dict[str, Any], where: str, dialect: Dialect
+) -> list[str]:
     template = action.get("template")
     builder = STRUCTURE_TEMPLATES.get(template)
     if builder is None:
@@ -473,7 +500,7 @@ def _compile_structures(action: dict[str, Any], where: str) -> list[str]:
                 int(origin[1]),
                 int(origin[2]) + row * spacing,
             )
-            lines.extend(builder(at, parameters))
+            lines.extend(builder(at, parameters, dialect))
             placed += 1
     return lines
 
@@ -484,28 +511,93 @@ def _compile_structures(action: dict[str, Any], where: str) -> list[str]:
 
 
 def _compile_actions(
-    actions: Iterable[dict[str, Any]], label: str
+    actions: Iterable[dict[str, Any]], label: str, dialect: Dialect
 ) -> tuple[list[str], dict[str, Any]]:
     lines: list[str] = []
     settings: dict[str, Any] = {}
     for index, action in enumerate(actions):
-        action_lines, action_settings = _compile_action(action, f"{label}[{index}]")
+        action_lines, action_settings = _compile_action(
+            action, f"{label}[{index}]", dialect
+        )
         lines.extend(action_lines)
         settings.update(action_settings)
     return lines, settings
 
 
+def scenario_ops(scenario: Scenario) -> set[str]:
+    """Every action op a scenario uses, including inside loop bodies.
+
+    Capabilities are derived from this rather than from a hand-written
+    ``requires`` list, so a scenario cannot forget to declare a requirement and
+    then appear to run on a target that silently drops half of it.
+    """
+    ops: set[str] = set()
+
+    def walk(actions: Iterable[dict[str, Any]]) -> None:
+        for action in actions:
+            op = action.get("op")
+            if op:
+                ops.add(op)
+            if op == "loop":
+                walk(action.get("body") or [])
+
+    walk(scenario.setup)
+    walk(scenario.workload)
+    return ops
+
+
+def check_target(scenario: Scenario, target: Target) -> list[Capability]:
+    """Capabilities ``scenario`` needs that ``target`` lacks.
+
+    Empty means the scenario compiles for that target. This is the check that
+    makes one scenario definition safe to point at many platforms: without it a
+    rendering scenario would compile happily for a headless server and record
+    nothing, and a tick-warp scenario would compile for a target with no warp
+    command and silently measure at 20 TPS instead.
+    """
+    dialect = Dialect(target)
+    needed = required_capabilities(
+        side=scenario.side.value,
+        uses_tick_warp=scenario.uses_tick_warp,
+        ops=scenario_ops(scenario),
+    )
+    return dialect.missing(sorted(needed, key=lambda c: c.value))
+
+
 def compile_plan(
     scenario: Scenario,
     *,
+    target: Target | None = None,
     preset: Preset = Preset.FULL,
     probe_output: str = "mcbench/probe.jsonl",
+    strict: bool = True,
 ) -> ProbePlan:
-    """Compile a scenario into an executable probe plan."""
+    """Compile a scenario into an executable probe plan for one target.
+
+    Args:
+        target: Platform and version to compile for. Defaults to a modern Fabric
+            target supporting every capability.
+        strict: Raise :class:`UnsupportedTarget` when the target cannot express
+            the scenario. Disabling this is for tooling that wants to report a
+            compatibility matrix, never for producing a plan to actually run.
+    """
+    target = target or DEFAULT_TARGET
+    dialect = Dialect(target)
+
+    if strict:
+        missing = check_target(scenario, target)
+        if missing:
+            reasons = "\n  ".join(dialect.explain(c) for c in missing)
+            raise UnsupportedTarget(
+                f"scenario {scenario.id!r} cannot run on {target}:\n  {reasons}"
+            )
+
     plan = ProbePlan()
 
-    setup_lines, setup_settings = _compile_actions(scenario.setup, "setup")
-    workload_lines, workload_settings = _compile_actions(scenario.workload, "workload")
+    setup_lines, setup_settings = _compile_actions(scenario.setup, "setup", dialect)
+    workload_lines, workload_settings = _compile_actions(
+        scenario.workload, "workload", dialect
+    )
 
     # World-level gamerules run before anything else so setup never races the
     # rules that are meant to hold it steady — mob spawning in particular.
@@ -514,13 +606,13 @@ def compile_plan(
         for name, value in sorted((scenario.world.get("gamerules") or {}).items())
     ]
     if (time := scenario.world.get("time")) is not None:
-        gamerules.append(f"time set {int(time)}")
+        gamerules.append(dialect.time_set(int(time)))
     weather = scenario.world.get("weather")
     if weather:
-        gamerules.append(f"weather {weather}")
+        gamerules.append(dialect.weather(weather))
     difficulty = scenario.world.get("difficulty")
     if difficulty:
-        gamerules.append(f"difficulty {difficulty}")
+        gamerules.append(dialect.difficulty(difficulty))
 
     plan.setup = gamerules + setup_lines
     plan.workload = workload_lines
@@ -532,6 +624,8 @@ def compile_plan(
         "scenario.version": scenario.version,
         "scenario.content_hash": scenario.content_hash,
         "scenario.side": scenario.side.value,
+        "target.platform": target.platform.value,
+        "target.minecraft_version": target.minecraft_version,
         "warmup.min": str(warmup["min"]),
         "warmup.max_multiple": str(warmup.get("max_multiple", 3)),
         "warmup.steady_state_tolerance": str(warmup.get("steady_state_tolerance", 0.05)),
@@ -550,9 +644,12 @@ def write_plan(
     scenario: Scenario,
     directory: str | Path,
     *,
+    target: Target | None = None,
     preset: Preset = Preset.FULL,
     probe_output: str = "mcbench/probe.jsonl",
 ) -> tuple[Path, ProbePlan]:
     """Compile and write a plan. Returns the properties path and the plan."""
-    plan = compile_plan(scenario, preset=preset, probe_output=probe_output)
+    plan = compile_plan(
+        scenario, target=target, preset=preset, probe_output=probe_output
+    )
     return plan.write(directory), plan

@@ -27,7 +27,8 @@ from ..metrics import RunFlag, RunMetrics, reduce_client_run, reduce_server_run
 from ..planner import PlannedRun, RunPlan, plan_runs
 from ..providers import ModrinthClient, ModrinthError, ResolvedMod
 from ..scenario import Preset, Scenario, Side
-from .plan import write_plan
+from ..targets import Target, UnsupportedTarget
+from .plan import check_target, write_plan
 from .preflight import Check, Preflight, Severity, run_preflight
 from .protocol import ProbeError, ProbeStream, parse_probe_stream
 
@@ -207,20 +208,35 @@ class Harness:
             if s in self.scenarios
         )
 
-    def unsupported_scenarios(self) -> list[str]:
-        """Scenarios this suite's platform cannot run.
+    def target(self, variant: Variant | None = None) -> Target:
+        """The compile target for this suite, including the variant's mods.
 
-        Reported up front rather than discovered as an empty result: a client
-        scenario dispatched to a Paper server records no frames, and an empty
-        result is far more confusing than a clear refusal.
+        Mods matter because they grant capabilities: a tick-warp scenario is
+        runnable on an older Fabric target only when Carpet is in the variant's
+        mod list, and unrunnable in the baseline variant that has no mods.
         """
-        if not self.suite.loader.is_plugin_platform:
-            return []
-        return [
-            name
-            for name in self.suite.scenarios
-            if name in self.scenarios and self.scenarios[name].side is Side.CLIENT
-        ]
+        mods = {m.project.lower() for m in variant.mods} if variant else set()
+        return Target(
+            platform=self.suite.loader,
+            minecraft_version=self.suite.minecraft_version,
+            mods=frozenset(mods),
+        )
+
+    def unsupported_scenarios(self, variant: Variant | None = None) -> list[str]:
+        """Scenarios this suite's target cannot run, with reasons.
+
+        Reported up front rather than discovered as an empty result. A client
+        scenario dispatched to a Paper server records no frames; a tick-warp
+        scenario on a target with no warp command silently measures at 20 TPS
+        instead of exposing headroom. Both produce output that looks valid.
+        """
+        target = self.target(variant)
+        unsupported = []
+        for name in self.suite.scenarios:
+            scenario = self.scenarios.get(name)
+            if scenario is not None and check_target(scenario, target):
+                unsupported.append(name)
+        return unsupported
 
     def preflight(self, *, require_account: bool = True) -> Preflight:
         result = run_preflight(
@@ -319,9 +335,13 @@ class Harness:
         # scenario interpretation lives: the probe receives a flat properties file
         # and two command lists, and needs no parser, no dependency, and no
         # knowledge of the methodology it is enforcing.
+        variant = next(
+            (v for v in self.suite.variants if v.name == planned.cell.variant), None
+        )
         _, plan = write_plan(
             scenario,
             probe_dir,
+            target=self.target(variant),
             preset=self.suite.preset,
             probe_output="mcbench/probe.jsonl",
         )

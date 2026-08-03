@@ -12,6 +12,7 @@ confidence this project exists to correct.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -33,6 +34,8 @@ from .stats import (
 )
 
 __all__ = [
+    "ResultsError",
+    "parse_results_document",
     "CellResult",
     "MetricComparison",
     "SuiteResult",
@@ -41,6 +44,107 @@ __all__ = [
     "render_markdown",
     "render_json",
 ]
+
+class ResultsError(ValueError):
+    """A results document is malformed."""
+
+
+#: Runs per cell we will ingest. A corpus submission is untrusted input, and an
+#: unbounded list is a cheap way to exhaust memory in whatever ingests it.
+MAX_RUNS_PER_CELL = 10_000
+MAX_CELLS = 5_000
+
+
+def parse_results_document(raw: Any) -> tuple[str, str, dict[str, list[dict[str, Any]]]]:
+    """Validate a results document and return ``(suite, baseline, cells)``.
+
+    Result documents are untrusted input: they are meant to be exchanged, and a
+    public corpus would ingest them from strangers. Validating here rather than
+    letting the values flow into the statistics matters for one reason above the
+    rest — **a non-finite value silently poisons everything downstream**.
+
+    JSON has no infinity, but ``1e400`` parses to one, and it then travels
+    through the aggregation into a report whose JSON contains ``Infinity``: not
+    valid JSON, unreadable by strict consumers, and presented as though it were a
+    measurement. A string where a number belongs merely crashes, which is the
+    kinder failure.
+
+    Nothing is coerced or repaired. A malformed document is a malformed
+    document, and quietly fixing one produces a result that looks valid.
+    """
+    if not isinstance(raw, dict):
+        raise ResultsError("results must be a JSON object")
+
+    baseline = raw.get("baseline")
+    if not isinstance(baseline, str) or not baseline:
+        raise ResultsError("results must name a 'baseline' variant")
+
+    suite = raw.get("suite")
+    if not isinstance(suite, str) or not suite:
+        suite = "mcbench results"
+
+    cells_raw = raw.get("cells", raw)
+    if not isinstance(cells_raw, dict):
+        raise ResultsError("'cells' must be an object keyed by 'scenario/variant'")
+    if len(cells_raw) > MAX_CELLS:
+        raise ResultsError(
+            f"{len(cells_raw)} cells exceeds the {MAX_CELLS} limit"
+        )
+
+    cleaned: dict[str, list[dict[str, Any]]] = {}
+    for key, runs in cells_raw.items():
+        if not isinstance(key, str) or "/" not in key:
+            raise ResultsError(
+                f"malformed cell key {key!r}; expected 'scenario/variant'"
+            )
+        if not isinstance(runs, list):
+            raise ResultsError(f"{key}: runs must be a list")
+        if len(runs) > MAX_RUNS_PER_CELL:
+            raise ResultsError(
+                f"{key}: {len(runs)} runs exceeds the {MAX_RUNS_PER_CELL} limit"
+            )
+
+        checked_runs: list[dict[str, Any]] = []
+        for index, run in enumerate(runs):
+            where = f"{key}[{index}]"
+            if not isinstance(run, dict):
+                raise ResultsError(f"{where}: each run must be an object")
+            values = run.get("values", {})
+            if not isinstance(values, dict):
+                raise ResultsError(f"{where}: 'values' must be an object")
+
+            checked: dict[str, float] = {}
+            for metric, value in values.items():
+                if not isinstance(metric, str):
+                    raise ResultsError(f"{where}: metric names must be strings")
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ResultsError(
+                        f"{where}.{metric}: expected a number, got {value!r}"
+                    )
+                if not math.isfinite(value):
+                    raise ResultsError(
+                        f"{where}.{metric}: {value} is not a finite measurement. "
+                        f"JSON has no infinity, but 1e400 parses to one, and it "
+                        f"would travel into a report whose JSON is then invalid."
+                    )
+                checked[metric] = float(value)
+
+            flags = run.get("flags", [])
+            if not isinstance(flags, list) or not all(isinstance(f, str) for f in flags):
+                raise ResultsError(f"{where}: 'flags' must be a list of strings")
+
+            entry: dict[str, Any] = {"values": checked, "flags": flags}
+            position = run.get("position")
+            if position is not None:
+                if isinstance(position, bool) or not isinstance(position, int):
+                    raise ResultsError(f"{where}: 'position' must be an integer")
+                entry["position"] = position
+            checked_runs.append(entry)
+
+        cleaned[key] = checked_runs
+
+    return suite, baseline, cleaned
+
 
 VERDICT_MARK = {
     Verdict.IMPROVEMENT: "✅ improvement",

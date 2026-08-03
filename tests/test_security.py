@@ -21,6 +21,7 @@ from mcbench.inspect import (
     read_jar,
 )
 from mcbench.providers.modrinth import ModrinthClient, ModrinthError, ResolvedMod
+from mcbench.report import MAX_RUNS_PER_CELL, ResultsError, parse_results_document
 from mcbench.runner import compile_plan, write_plan
 from mcbench.runner.plan import MAX_COMMAND_LENGTH, PlanError
 from mcbench.scenario import parse_scenario
@@ -213,3 +214,85 @@ class TestDownloadHardening:
 
     def test_cache_filename_survives_an_empty_name(self):
         assert ModrinthClient._safe_cache_name(mod_at("https://cdn.modrinth.com/a", ""))
+
+
+class TestResultDocumentValidation:
+    """Result documents are exchanged, and a corpus would ingest them from strangers.
+
+    The dangerous case is not a crash but a *non-finite* value: JSON has no
+    infinity, yet ``1e400`` parses to one and would travel through aggregation
+    into a report whose own JSON contains ``Infinity`` — invalid per the spec,
+    unreadable by strict consumers, and presented as though it were a
+    measurement.
+    """
+
+    def _doc(self, **cells):
+        return {"suite": "s", "baseline": "base", "cells": cells}
+
+    def test_accepts_a_well_formed_document(self):
+        suite, baseline, cells = parse_results_document(self._doc(**{
+            "sc/base": [{"values": {"frametime_mean_ms": 16.7}, "flags": []}],
+        }))
+        assert baseline == "base"
+        assert cells["sc/base"][0]["values"]["frametime_mean_ms"] == 16.7
+
+    def test_refuses_a_non_finite_value(self):
+        with pytest.raises(ResultsError, match="not a finite measurement"):
+            parse_results_document(self._doc(**{
+                "sc/base": [{"values": {"frametime_mean_ms": float("inf")}}],
+            }))
+
+    def test_refuses_nan(self):
+        with pytest.raises(ResultsError, match="not a finite measurement"):
+            parse_results_document(self._doc(**{
+                "sc/base": [{"values": {"frametime_mean_ms": float("nan")}}],
+            }))
+
+    def test_a_non_finite_value_is_refused_even_when_outliers_would_hide_it(self):
+        """The MAD filter happened to absorb a single infinity, by accident.
+
+        Relying on that would be relying on a filter built for a different
+        purpose, and it left the reader seeing 'n=4' rather than 'your data
+        contained infinity'.
+        """
+        runs = [{"values": {"frametime_mean_ms": 16.7}} for _ in range(5)]
+        runs[0] = {"values": {"frametime_mean_ms": float("inf")}}
+        with pytest.raises(ResultsError, match="not a finite measurement"):
+            parse_results_document(self._doc(**{"sc/base": runs}))
+
+    def test_refuses_a_string_where_a_number_belongs(self):
+        with pytest.raises(ResultsError, match="expected a number"):
+            parse_results_document(self._doc(**{
+                "sc/base": [{"values": {"frametime_mean_ms": "fast"}}],
+            }))
+
+    def test_refuses_a_boolean_masquerading_as_a_number(self):
+        with pytest.raises(ResultsError, match="expected a number"):
+            parse_results_document(self._doc(**{
+                "sc/base": [{"values": {"frametime_mean_ms": True}}],
+            }))
+
+    def test_requires_a_baseline(self):
+        with pytest.raises(ResultsError, match="baseline"):
+            parse_results_document({"suite": "s", "cells": {}})
+
+    def test_refuses_a_malformed_cell_key(self):
+        with pytest.raises(ResultsError, match="malformed cell key"):
+            parse_results_document(self._doc(**{"no-slash-here": []}))
+
+    def test_bounds_the_number_of_runs(self):
+        # An unbounded list is a cheap way to exhaust memory in whatever ingests
+        # a submission.
+        runs = [{"values": {"frametime_mean_ms": 1.0}}] * (MAX_RUNS_PER_CELL + 1)
+        with pytest.raises(ResultsError, match="exceeds"):
+            parse_results_document(self._doc(**{"sc/base": runs}))
+
+    def test_refuses_a_non_object_document(self):
+        with pytest.raises(ResultsError, match="must be a JSON object"):
+            parse_results_document([1, 2, 3])
+
+    def test_refuses_malformed_flags(self):
+        with pytest.raises(ResultsError, match="flags"):
+            parse_results_document(self._doc(**{
+                "sc/base": [{"values": {}, "flags": [{"not": "a string"}]}],
+            }))

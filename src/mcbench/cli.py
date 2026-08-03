@@ -15,9 +15,11 @@ from .config import ConfigError, load_suite
 from .metrics import METRICS, RunFlag, RunMetrics
 from .planner import Cell, OrderStrategy, plan_runs
 from .report import (
+    ResultsError,
     SuiteResult,
     aggregate_cell,
     compare_to_baseline,
+    parse_results_document,
     render_json,
     render_markdown,
 )
@@ -219,27 +221,18 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     re-analysed — with a different ROPE, say — without re-running anything.
     """
     raw = json.loads(Path(args.results).read_text(encoding="utf-8"))
-    suite_name = raw.get("suite", "mcbench results")
-    baseline_name = raw.get("baseline")
-    cells_raw = raw.get("cells", raw)
-
-    if not baseline_name:
-        print("✗ results must name a 'baseline' variant", file=sys.stderr)
-        return 1
+    # Results are untrusted input — they are meant to be exchanged, and a corpus
+    # would ingest them from strangers. Validated before anything reaches the
+    # statistics, because a non-finite value poisons everything downstream.
+    suite_name, baseline_name, cells_raw = parse_results_document(raw)
 
     cells: dict[Cell, list[RunMetrics]] = {}
     for key, runs in cells_raw.items():
         scenario, _, variant = key.partition("/")
-        if not variant:
-            print(f"✗ malformed cell key {key!r}; expected 'scenario/variant'",
-                  file=sys.stderr)
-            return 1
         cells[Cell(scenario, variant)] = [
             RunMetrics(
-                values={k: float(v) for k, v in run.get("values", run).items()
-                        if k in METRICS},
-                flags=[RunFlag(f) for f in run.get("flags", [])]
-                if isinstance(run, dict) else [],
+                values={k: v for k, v in run["values"].items() if k in METRICS},
+                flags=[RunFlag(f) for f in run["flags"] if f in set(RunFlag)],
             )
             for run in runs
         ]
@@ -888,7 +881,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (ScenarioError, ConfigError) as exc:
+    except (ScenarioError, ConfigError, ResultsError) as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
     except FileNotFoundError as exc:

@@ -1,0 +1,28 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "Apache-2.0"
+issueTrackerURL = "https://github.com/mcbench/mcbench/issues"
+
+[[mods]]
+modId = "mcbench_probe"
+version = "${version}"
+displayName = "mcbench probe"
+authors = "The mcbench Authors"
+description = '''
+Timing probe for the mcbench Minecraft mod benchmark. Inert unless launched by
+the mcbench harness.
+'''
+
+[[dependencies.mcbench_probe]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.mcbench_probe]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1,)"
+ordering = "NONE"
+side = "BOTH"

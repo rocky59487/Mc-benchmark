@@ -287,6 +287,15 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
                     stream.server.heap_post_gc_mb.append(heap_mb)
                 if event.get("real_allocation"):
                     stream.real_allocation = True
+                    # Set on the samples too, not only on the stream. The
+                    # reducers read it from the samples to decide whether the
+                    # byte count is an allocation rate or a floor, and it used
+                    # to arrive there only by way of the harness. Anyone
+                    # parsing a stream and reducing it — which is two public
+                    # functions and the obvious thing to do — silently got a
+                    # metric fewer, with nothing to say why.
+                    stream.client.real_allocation = True
+                    stream.server.real_allocation = True
                 if (allocated := event.get("allocated_bytes")) is not None:
                     stream.client.alloc_bytes = int(allocated)
                     stream.server.alloc_bytes = int(allocated)
@@ -339,6 +348,8 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
                     )
             if event.get("real_allocation"):
                 stream.real_allocation = True
+                stream.client.real_allocation = True
+                stream.server.real_allocation = True
 
     if not saw_hello:
         raise ProbeError(

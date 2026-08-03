@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mcbench.metrics import RunFlag
+from mcbench.metrics import RunFlag, reduce_client_run
 from mcbench.runner import (
     PROTOCOL_VERSION,
     ProbeError,
@@ -638,3 +638,47 @@ class TestPluginPlatforms:
         assert Loader.SPIGOT.is_plugin_platform
         assert not Loader.FABRIC.is_plugin_platform
         assert not Loader.NEOFORGE.is_plugin_platform
+
+
+class TestParsingIsEnoughToReduce:
+    """parse_probe_stream and reduce_client_run are both public, and using them
+    together is the obvious thing to do.
+
+    real_allocation decides whether the byte count is an allocation rate or a
+    floor on one, and it used to reach the samples only by way of the harness.
+    So a caller who parsed and reduced got one metric fewer than the same
+    stream produced inside a run, with nothing anywhere to say why. It cost me
+    a wrong conclusion about a metric ten scenarios ask for.
+    """
+
+    def test_a_parsed_stream_carries_the_allocation_flag(self):
+        stream = parse_probe_stream("memory.jsonl", text=_stream(
+            {"type": "hello", "protocol": 1, "probe_version": "0.2.0"},
+            {"type": "phase", "phase": "measurement"},
+            {"type": "frame", "durations_ns": [16_000_000] * 1200},
+            {"type": "memory", "heap_mb": 500.0, "allocated_bytes": 1_000_000_000,
+             "heap_growth_bytes": 1_000_000, "real_allocation": True},
+            {"type": "bye", "measurement_duration_s": 60.0},
+        ))
+        assert stream.real_allocation
+        assert stream.client.real_allocation
+        assert stream.server.real_allocation
+
+        values = reduce_client_run(stream.client).values
+        assert "alloc_rate_mb_s" in values
+        assert values["alloc_rate_mb_s"] > 0
+
+    def test_without_the_flag_the_rate_is_not_published(self):
+        # The byte count is then a floor on allocation, not a measurement of
+        # it, and publishing it under the same name would say more than is
+        # known.
+        stream = parse_probe_stream("memory.jsonl", text=_stream(
+            {"type": "hello", "protocol": 1, "probe_version": "0.2.0"},
+            {"type": "phase", "phase": "measurement"},
+            {"type": "frame", "durations_ns": [16_000_000] * 1200},
+            {"type": "memory", "heap_mb": 500.0, "allocated_bytes": 1_000_000_000,
+             "heap_growth_bytes": 1_000_000},
+            {"type": "bye", "measurement_duration_s": 60.0},
+        ))
+        assert not stream.client.real_allocation
+        assert "alloc_rate_mb_s" not in reduce_client_run(stream.client).values

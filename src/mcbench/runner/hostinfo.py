@@ -26,7 +26,9 @@ __all__ = [
     "cpu_model",
     "cpu_scaling_profile",
     "display_description",
+    "display_refresh_hz",
     "graphics_adapters",
+    "graphics_driver_versions",
     "hypervisor",
     "power_source",
     "running_command_lines",
@@ -310,6 +312,128 @@ def graphics_adapters() -> tuple[str, ...]:
     except OSError:
         return ()
     return tuple(n for n in nodes if n.startswith(("render", "card")))
+
+
+class _DevModeW(ctypes.Structure):
+    """Only the head of DEVMODEW, up to the field being read.
+
+    The tail is padded to the real size so EnumDisplaySettingsW writes inside
+    the allocation. Declaring the whole structure would mean tracking a layout
+    that has grown across Windows versions, to read one field near its front.
+    """
+
+    _fields_ = [
+        ("dmDeviceName", ctypes.c_wchar * 32),
+        ("dmSpecVersion", ctypes.c_ushort),
+        ("dmDriverVersion", ctypes.c_ushort),
+        ("dmSize", ctypes.c_ushort),
+        ("dmDriverExtra", ctypes.c_ushort),
+        ("dmFields", ctypes.c_ulong),
+        ("_position", ctypes.c_byte * 16),
+        ("dmColor", ctypes.c_short),
+        ("dmDuplex", ctypes.c_short),
+        ("dmYResolution", ctypes.c_short),
+        ("dmTTOption", ctypes.c_short),
+        ("dmCollate", ctypes.c_short),
+        ("dmFormName", ctypes.c_wchar * 32),
+        ("dmLogPixels", ctypes.c_ushort),
+        ("dmBitsPerPel", ctypes.c_ulong),
+        ("dmPelsWidth", ctypes.c_ulong),
+        ("dmPelsHeight", ctypes.c_ulong),
+        ("dmDisplayFlags", ctypes.c_ulong),
+        ("dmDisplayFrequency", ctypes.c_ulong),
+        ("_tail", ctypes.c_byte * 64),
+    ]
+
+
+def _windows_refresh_hz() -> int | None:
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+    except (AttributeError, OSError):
+        return None
+    mode = _DevModeW()
+    mode.dmSize = ctypes.sizeof(_DevModeW)
+    # -1 is ENUM_CURRENT_SETTINGS: what the display is doing now, rather than a
+    # mode it merely supports.
+    if not user32.EnumDisplaySettingsW(None, -1, ctypes.byref(mode)):
+        return None
+    hz = int(mode.dmDisplayFrequency)
+    # 0 and 1 are documented as meaning "the hardware default", which is not a
+    # rate and must not be recorded as one.
+    return hz if hz > 1 else None
+
+
+@lru_cache(maxsize=1)
+def display_refresh_hz() -> int | None:
+    """Refresh rate of the primary display, or None when it cannot be read.
+
+    Recorded because METHODOLOGY section 7 promises it and because a frametime
+    distribution pinned to a refresh interval is measuring the display rather
+    than the mod. ``vsync_suspected`` infers a rate from the samples; having the
+    real one turns that inference into something checkable.
+    """
+    if WINDOWS:
+        return _windows_refresh_hz()
+    # X11 reports it through xrandr, which needs a display to talk to; anywhere
+    # headless there is nothing to report and None is the honest answer.
+    output = _run(["xrandr", "--current"]) if not MACOS else None
+    if not output:
+        return None
+    for line in output.splitlines():
+        if "*" not in line:
+            continue
+        for token in line.split():
+            if token.endswith(("*", "*+")):
+                try:
+                    return round(float(token.rstrip("*+")))
+                except ValueError:
+                    return None
+    return None
+
+
+#: Where Windows keeps one subkey per display adapter.
+_DISPLAY_CLASS = (
+    r"SYSTEM\CurrentControlSet\Control\Class"
+    r"\{4d36e968-e325-11ce-bfc1-08002be10318}"
+)
+
+
+@lru_cache(maxsize=1)
+def graphics_driver_versions() -> tuple[str, ...]:
+    """``adapter=driver`` for each display adapter, in registry order.
+
+    Recorded because METHODOLOGY section 7 promises it and because a driver
+    revision moves rendering numbers on its own; two results from the same GPU
+    and different drivers are not the same measurement.
+
+    Read from the registry rather than WMI to keep the module on the standard
+    library and off a subprocess.
+    """
+    if not WINDOWS:
+        return ()
+    import winreg
+
+    found: list[str] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _DISPLAY_CLASS) as parent:
+            for index in range(16):
+                try:
+                    name = winreg.EnumKey(parent, index)
+                except OSError:
+                    break
+                if not name.isdigit():
+                    continue
+                adapter = _registry_value(
+                    f"{_DISPLAY_CLASS}\\{name}", "DriverDesc"
+                )
+                version = _registry_value(
+                    f"{_DISPLAY_CLASS}\\{name}", "DriverVersion"
+                )
+                if adapter and version:
+                    found.append(f"{adapter}={version}")
+    except OSError:
+        return ()
+    return tuple(found)
 
 
 def software_renderer_reason() -> str | None:

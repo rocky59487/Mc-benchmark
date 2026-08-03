@@ -466,10 +466,15 @@ def describe_host() -> dict[str, str]:
     """Host facts recorded in every result's provenance."""
     host = {
         "os": f"{platform.system()} {platform.release()}",
+        # The build, which is what distinguishes two machines both calling
+        # themselves Windows 11 or Linux 6.
+        "os_build": platform.version(),
         "arch": platform.machine(),
         "python": platform.python_version(),
         "cpu_count": str(os.cpu_count() or 0),
     }
+    if (hz := hostinfo.display_refresh_hz()) is not None:
+        host["refresh_hz"] = str(hz)
 
     if model := hostinfo.cpu_model():
         host["cpu_model"] = model
@@ -478,6 +483,8 @@ def describe_host() -> dict[str, str]:
 
     adapters = hostinfo.graphics_adapters()
     host["gpu"] = ",".join(adapters) if adapters else "none"
+    if drivers := hostinfo.graphics_driver_versions():
+        host["gpu_driver"] = ",".join(drivers)
     return host
 
 

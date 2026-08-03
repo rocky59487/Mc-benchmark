@@ -65,8 +65,33 @@ class TestPreflight:
 
     def test_host_description_records_provenance_fields(self):
         host = describe_host()
-        for key in ("os", "arch", "cpu_count", "gpu"):
+        for key in ("os", "os_build", "arch", "cpu_count", "gpu"):
             assert key in host
+
+    def test_optional_host_fields_are_absent_rather_than_placeholders(self):
+        """METHODOLOGY section 7 promises refresh rate and GPU driver.
+
+        Neither can be read everywhere: there is no refresh rate without a
+        display, and driver versions come from a Windows registry key. Absent is
+        the honest answer, and it is distinguishable. A placeholder would be
+        recorded as a fact and pooled with real ones.
+        """
+        host = describe_host()
+        assert "" not in host.values()
+        assert "unknown" not in host.values()
+        if "refresh_hz" in host:
+            assert int(host["refresh_hz"]) > 1
+        if "gpu_driver" in host:
+            assert "=" in host["gpu_driver"]
+
+    def test_the_probes_behind_them_degrade_to_none(self):
+        from mcbench.runner import hostinfo
+
+        hz = hostinfo.display_refresh_hz()
+        assert hz is None or (isinstance(hz, int) and hz > 1)
+        drivers = hostinfo.graphics_driver_versions()
+        assert isinstance(drivers, tuple)
+        assert all("=" in entry for entry in drivers)
 
 
 class TestAccountDiscovery:

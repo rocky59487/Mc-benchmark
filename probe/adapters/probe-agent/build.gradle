@@ -1,0 +1,51 @@
+plugins {
+    id 'java'
+    id 'com.gradleup.shadow' version '8.3.5'
+}
+
+group = 'dev.mcbench'
+version = '0.1.0'
+
+repositories { mavenCentral() }
+
+dependencies {
+    implementation "org.ow2.asm:asm:${asm_version}"
+    implementation 'dev.mcbench:probe-core:0.1.0'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // The real LWJGL, so the transformer is verified against the actual class it
+    // will meet in the field rather than only against a stand-in.
+    testImplementation "org.lwjgl:lwjgl-glfw:${lwjgl_version}"
+    testImplementation "org.lwjgl:lwjgl:${lwjgl_version}"
+}
+
+java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+tasks.withType(JavaCompile).configureEach { options.release = 21 }
+tasks.withType(Test).configureEach { useJUnitPlatform() }
+
+shadowJar {
+    archiveClassifier = ''
+
+    // ASM must be relocated. Mixin ships its own copy and is present on every
+    // modded launch; two ASMs answering to org.objectweb.asm on the bootstrap
+    // classpath is a version conflict in the most awkward possible place.
+    // dev.mcbench.probe.agent.* is deliberately NOT relocated: injected bytecode
+    // names FrameHook literally, so its name is part of the agent's contract.
+    relocate 'org.objectweb.asm', 'dev.mcbench.probe.agent.shadow.asm'
+
+    manifest {
+        attributes(
+            'Premain-Class': 'dev.mcbench.probe.agent.McbenchAgent',
+            'Agent-Class': 'dev.mcbench.probe.agent.McbenchAgent',
+            'Can-Retransform-Classes': 'true',
+            'Can-Set-Native-Method-Prefix': 'false',
+            'Implementation-Title': 'mcbench probe agent',
+            'Implementation-Version': project.version,
+        )
+    }
+}
+// The integration test forks a JVM with -javaagent, so the shadow jar must exist
+// before `test` runs — otherwise the test silently skips and proves nothing.
+tasks.named('test') { dependsOn tasks.named('shadowJar') }
+build.dependsOn shadowJar

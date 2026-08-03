@@ -11,11 +11,13 @@ from .harness import (
 from .plan import PlanError, ProbePlan, compile_plan, write_plan
 from .preflight import Check, Preflight, Severity, describe_host, run_preflight
 from .protocol import (
+    AGENT_STREAM_NAME,
     PROTOCOL_VERSION,
     EventType,
     Phase,
     ProbeError,
     ProbeStream,
+    adopt_agent_frames,
     parse_probe_stream,
 )
 
@@ -25,5 +27,5 @@ __all__ = [
     "Check", "Preflight", "Severity", "describe_host", "run_preflight",
     "PlanError", "ProbePlan", "compile_plan", "write_plan",
     "PROTOCOL_VERSION", "EventType", "Phase", "ProbeError", "ProbeStream",
-    "parse_probe_stream",
+    "parse_probe_stream", "adopt_agent_frames", "AGENT_STREAM_NAME",
 ]

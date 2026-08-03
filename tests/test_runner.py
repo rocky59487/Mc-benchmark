@@ -10,7 +10,9 @@ from mcbench.metrics import RunFlag
 from mcbench.runner import (
     PROTOCOL_VERSION,
     ProbeError,
+    ProbeStream,
     Severity,
+    adopt_agent_frames,
     describe_host,
     parse_probe_stream,
     run_preflight,
@@ -190,6 +192,97 @@ class TestProbeProtocol:
     def test_missing_file_gives_a_clear_error(self):
         with pytest.raises(ProbeError, match="not found"):
             parse_probe_stream("/nonexistent/probe.jsonl")
+
+
+class TestAgentStreamAdoption:
+    """The JVM agent supplies frames where no adapter can.
+
+    It writes a second stream rather than sharing the adapter's, so the two
+    have to be combined somewhere. Every rule here exists because the obvious
+    combination — concatenate them — is wrong.
+    """
+
+    def _agent(self, *, frames: list[int], warmup: list[int] | None = None,
+               scenario_hash: str = "h1", flags: list[str] = ()) -> ProbeStream:
+        events = [
+            {"type": "hello", "protocol": PROTOCOL_VERSION, "probe_version": "0.1.0",
+             "metadata": {"platform": "jvm-agent", "scenario_hash": scenario_hash}},
+        ]
+        if warmup:
+            events += [{"type": "phase", "phase": "warmup"},
+                       {"type": "frame", "durations_ns": warmup}]
+        events += [{"type": "phase", "phase": "measurement"},
+                   {"type": "frame", "durations_ns": frames}]
+        events += [{"type": "flag", "flag": f} for f in flags]
+        events.append({"type": "bye", "measurement_duration_s": 2.0})
+        return parse_probe_stream("agent", text=_stream(*events))
+
+    def _adapter(self, *, frames: list[int] = (), scenario_hash: str = "h1"
+                 ) -> ProbeStream:
+        events = [
+            {"type": "hello", "protocol": PROTOCOL_VERSION, "probe_version": "0.1.0",
+             "metadata": {"platform": "fabric", "scenario_hash": scenario_hash}},
+            {"type": "phase", "phase": "measurement"},
+        ]
+        if frames:
+            events.append({"type": "frame", "durations_ns": list(frames)})
+        events.append({"type": "bye", "measurement_duration_s": 3.0})
+        return parse_probe_stream("adapter", text=_stream(*events))
+
+    def test_frames_are_adopted_when_the_adapter_had_none(self):
+        adapter = self._adapter()
+        result = adopt_agent_frames(adapter, self._agent(frames=[1_000, 2_000]))
+        assert adapter.client.frametimes_ns == [1_000, 2_000]
+        assert adapter.metadata["frame_source"] == "jvm-agent"
+        assert "adopted 2 frames" in result
+
+    def test_an_adapter_with_frames_wins_and_nothing_is_concatenated(self):
+        # Both time the *same* frames. Concatenating would double the sample
+        # count and shrink every confidence interval accordingly — precision
+        # that was never measured.
+        adapter = self._adapter(frames=[5_000, 6_000])
+        adopt_agent_frames(adapter, self._agent(frames=[1_000, 2_000]))
+        assert adapter.client.frametimes_ns == [5_000, 6_000]
+        assert "frame_source" not in adapter.metadata
+
+    def test_a_stream_from_another_scenario_is_refused(self):
+        # A stale file contributing frames from a different variant would
+        # destroy a comparison while looking perfectly healthy.
+        adapter = self._adapter(scenario_hash="h1")
+        result = adopt_agent_frames(adapter, self._agent(frames=[1], scenario_hash="h2"))
+        assert adapter.client.frametimes_ns == []
+        assert "different scenario" in result
+
+    def test_warmup_frames_travel_so_convergence_stays_checkable(self):
+        adapter = self._adapter()
+        adopt_agent_frames(adapter, self._agent(frames=[1_000], warmup=[9_000, 8_000]))
+        assert adapter.warmup_frames_ns == [9_000, 8_000]
+
+    def test_qualifying_flags_travel_with_the_frames_they_qualify(self):
+        adapter = self._adapter()
+        adopt_agent_frames(
+            adapter, self._agent(frames=[1_000], flags=["vsync_suspected"])
+        )
+        assert RunFlag.VSYNC_SUSPECTED in adapter.flags
+
+    def test_a_truncated_agent_stream_does_not_mark_the_run_crashed(self):
+        # The agent dying says nothing about the run the adapter completed.
+        agent = parse_probe_stream("agent", text=_stream(
+            {"type": "hello", "protocol": PROTOCOL_VERSION, "probe_version": "0.1.0"},
+            {"type": "phase", "phase": "measurement"},
+            {"type": "frame", "durations_ns": [1_000]},
+        ))
+        assert RunFlag.CRASHED in agent.flags
+        adapter = self._adapter()
+        adopt_agent_frames(adapter, agent)
+        assert adapter.client.frametimes_ns == [1_000]
+        assert RunFlag.CRASHED not in adapter.flags
+
+    def test_an_agent_that_recorded_nothing_changes_nothing(self):
+        adapter = self._adapter()
+        result = adopt_agent_frames(adapter, self._agent(frames=[]))
+        assert "frame_source" not in adapter.metadata
+        assert "no measurement frames" in result
 
 
 class TestHarnessPreflight:

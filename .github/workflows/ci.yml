@@ -75,6 +75,24 @@ jobs:
         working-directory: probe
         run: ./gradlew test --no-daemon
 
+  agent:
+    name: JVM agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Build and test
+        # Gateable in CI where the loader adapters are not: the agent compiles
+        # against ASM and probe-core only, so there is no Minecraft to download.
+        # `test` depends on `shadowJar`, and the integration test forks a real
+        # JVM with -javaagent — which is the only thing that can catch the
+        # classloader-split failure that unit tests all passed through.
+        working-directory: probe/adapters/probe-agent
+        run: ./gradlew test --no-daemon
+
   cross-implementation:
     name: Wire protocol conformance
     runs-on: ubuntu-latest

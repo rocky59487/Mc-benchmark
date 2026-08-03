@@ -233,3 +233,63 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
         stream.flags.append(RunFlag.CRASHED)
 
     return stream
+
+
+#: What the JVM agent writes, always separate from an adapter's own stream.
+#: Two writers appending to one file would interleave into an unparseable mess,
+#: and both can be active at once — an adapter driving the workload while the
+#: agent supplies frames.
+AGENT_STREAM_NAME = "probe-agent.jsonl"
+
+
+def adopt_agent_frames(primary: ProbeStream, agent: ProbeStream) -> str:
+    """Fill in frame timings from a JVM-agent stream, in place.
+
+    The agent (``probe/adapters/probe-agent``) times frames by instrumenting
+    LWJGL, so it works on versions and loaders that have no adapter. It is a
+    timing source and not a platform: it cannot run commands, so it never
+    replaces an adapter, only supplements one.
+
+    The rule is **never merge, only substitute**. When an adapter already
+    produced frames, both streams are timing the *same* frames by different
+    means; concatenating them would double the sample count and halve every
+    confidence interval, manufacturing precision that was never measured. So
+    the adapter wins and the agent's frames are discarded.
+
+    Substitution is also refused when the two streams disagree about which
+    scenario they measured. Instance directories are rebuilt per run, so this
+    should be impossible — but a stale file silently contributing frames from a
+    different variant is exactly the failure that would destroy a comparison
+    while looking perfectly healthy, so it is checked rather than assumed.
+
+    :returns: a short reason describing what was done, for the run event log.
+    """
+    expected = primary.metadata.get("scenario_hash")
+    found = agent.metadata.get("scenario_hash")
+    if expected and found and expected != found:
+        return "refused: agent stream is from a different scenario"
+
+    if primary.has_client_data:
+        return "ignored: the adapter already supplied frames"
+
+    if not agent.client.frametimes_ns:
+        return "ignored: the agent recorded no measurement frames"
+
+    primary.client.frametimes_ns.extend(agent.client.frametimes_ns)
+    primary.warmup_frames_ns.extend(agent.warmup_frames_ns)
+    # The agent runs its own phase controller off the same probe.properties, so
+    # its measurement window is the same length as the adapter's but does not
+    # start at the same instant — it begins at premain rather than at mod init.
+    # Its duration is therefore the honest one to report for these frames.
+    if agent.client.duration_s:
+        primary.client.duration_s = agent.client.duration_s
+    primary.metadata["frame_source"] = "jvm-agent"
+
+    for flag in agent.flags:
+        # CRASHED on the agent means its own stream was truncated, which says
+        # nothing about the run the adapter completed; the frames it did write
+        # are still real. Every other flag qualifies those frames and travels.
+        if flag is not RunFlag.CRASHED and flag not in primary.flags:
+            primary.flags.append(flag)
+
+    return f"adopted {len(agent.client.frametimes_ns)} frames from the JVM agent"

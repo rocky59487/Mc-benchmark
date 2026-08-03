@@ -31,7 +31,13 @@ from ..scenario import Scenario, Side
 from ..targets import Target
 from .plan import check_target, write_plan
 from .preflight import Check, Preflight, Severity, run_preflight
-from .protocol import ProbeError, ProbeStream, parse_probe_stream
+from .protocol import (
+    AGENT_STREAM_NAME,
+    ProbeError,
+    ProbeStream,
+    adopt_agent_frames,
+    parse_probe_stream,
+)
 
 __all__ = [
     "RunOutcome",
@@ -571,6 +577,7 @@ class Harness:
         instance = self._prepare_instance(planned, scenario, jars)
         log_path = instance / "mcbench" / "instance.log"
         probe_path = instance / "mcbench" / "probe.jsonl"
+        agent_path = instance / "mcbench" / AGENT_STREAM_NAME
 
         if timeout_s is None:
             # Generous headroom over the scenario's own budget: provisioning,
@@ -597,6 +604,11 @@ class Harness:
         environment = dict(os.environ)
         environment["MCBENCH_PROBE_CONFIG"] = str(instance / "mcbench" / "probe.properties")
         environment["MCBENCH_PROBE_OUTPUT"] = str(probe_path)
+        # Stated rather than derived. The agent would work this location out for
+        # itself, but making it an explicit part of the launch environment means
+        # the two sides cannot drift into writing and reading different files —
+        # which has happened once already on this seam.
+        environment["MCBENCH_AGENT_OUTPUT"] = str(agent_path)
 
         try:
             with log_path.open("w", encoding="utf-8") as log:
@@ -629,6 +641,8 @@ class Harness:
                 exit_code=exit_code, log_path=log_path, error=str(exc),
             )
 
+        self._adopt_agent_stream(stream, agent_path, planned)
+
         metrics = self._reduce(stream, scenario)
         self.on_event("run.done", {
             "cell": str(planned.cell),
@@ -642,6 +656,30 @@ class Harness:
             wall_clock_s=wall_clock, exit_code=exit_code, log_path=log_path,
             error=error,
         )
+
+    def _adopt_agent_stream(
+        self, stream: ProbeStream, agent_path: Path, planned: PlannedRun
+    ) -> None:
+        """Take frame timings from the JVM agent when the adapter had none.
+
+        Absence of the file is the normal case — the agent is only present when
+        an operator added ``-javaagent`` to the launch — so it is not an error.
+        A file that is present but unreadable is: it means the agent ran and
+        something went wrong, and silently proceeding would report an
+        adapter-only result as though nothing had been attempted.
+        """
+        if not agent_path.exists():
+            return
+        try:
+            agent = parse_probe_stream(agent_path)
+        except ProbeError as exc:
+            self.on_event("run.agent", {
+                "cell": str(planned.cell), "result": f"unreadable: {exc}",
+            })
+            return
+        self.on_event("run.agent", {
+            "cell": str(planned.cell), "result": adopt_agent_frames(stream, agent),
+        })
 
     @staticmethod
     def _reduce(stream: ProbeStream, scenario: Scenario) -> RunMetrics:

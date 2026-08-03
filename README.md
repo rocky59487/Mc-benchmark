@@ -257,20 +257,25 @@ executor, and a shutdown request. That is the entire version-coupled surface,
 which is what makes "every version, every platform" tractable: a new Minecraft
 version normally needs no code change, only a rebuild.
 
-Two adapters exist, and they are the evidence the SPI is the right size. Fabric
-(a mod loader with a client) and Paper (a server plugin platform with no client
-at all) are unrelated ecosystems, yet their adapters are nearly the same length
-and neither contains a single line of methodology. See
-[docs/PLATFORMS.md](docs/PLATFORMS.md), including the JVM-agent approach that
-can time frames on any version and any loader by instrumenting LWJGL — a
-third-party library whose names are never obfuscated — instead of the game.
+Three adapters exist, and they are the evidence the SPI is the right size.
+Fabric (a mod loader with a client) and Paper (a server plugin platform with no
+client at all) are unrelated ecosystems, yet their adapters are nearly the same
+length and neither contains a single line of methodology.
+
+Underneath them sits a **JVM agent** that needs no loader at all. It times
+frames on any version and any loader — including vanilla — by instrumenting
+`org.lwjgl.glfw.GLFW.glfwSwapBuffers`: LWJGL is a third-party library, so its
+names are never obfuscated and are byte-identical across every Minecraft
+version and mapping scheme. It is a timing source rather than a platform — it
+cannot run commands, which is precisely the price of referencing no game class.
+See [docs/PLATFORMS.md](docs/PLATFORMS.md).
 
 The hot path is treated as hot: `recordFrame` allocates nothing, never blocks on
 I/O, and hands off through a double-buffered `long[]`. A probe that perturbs the
 frame it is timing produces numbers about the probe.
 
 ```bash
-cd probe && ./gradlew test          # 39 tests, no Minecraft required
+cd probe && ./gradlew test          # 52 tests, no Minecraft required
 ./gradlew jar
 java -cp probe-core/build/libs/probe-core-0.1.0.jar \
     dev.mcbench.probe.core.SelfTest /tmp/out client 42
@@ -387,7 +392,7 @@ definitions; run planner with interleaved randomised ordering; suite manifests
 with publishability checks; Modrinth and local-jar resolution with hash
 verification; environment preflight gating; the headless run loop; the probe
 wire protocol; SVG charts, table export in four formats, and the self-contained
-HTML report. 182 tests.
+HTML report. 381 tests.
 
 Plus the probe's timing core: hot-path sample buffers, phase control with
 steady-state detection, JMX runtime monitoring, the protocol writer, and the
@@ -397,12 +402,13 @@ writer and the Python reader.
 Plus the scenario-to-command compiler that joins the harness to the probe, and
 adapters for Fabric and Paper.
 
-Adapters for Fabric, NeoForge and Paper, each built against a real toolchain.
-Security hardening with a threat model, and CI enforcing tests, lint, protocol
-conformance, security regressions and licence compliance.
+Adapters for Fabric, NeoForge and Paper, each built against a real toolchain,
+plus the JVM agent that times frames on any version and any loader — including
+vanilla — by instrumenting LWJGL instead of the game. Security hardening with a
+threat model, and CI enforcing tests, lint, protocol conformance, security
+regressions and licence compliance.
 
-**Next:** the Forge adapter, then the JVM agent that covers every remaining
-version and loader by instrumenting LWJGL instead of the game.
+**Next:** the Forge adapter — the last loader without one.
 
 **Then** — vsync detection in preflight (required before trusting agent-sourced
 frame timings); world fingerprinting; CurseForge provider (opt-in, no caching);

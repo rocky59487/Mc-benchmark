@@ -66,7 +66,7 @@ parser, no dependency, and no knowledge of the methodology it is enforcing.
 | NeoForge | `ClientTickEvent` / `ServerTickEvent` | **builds against 1.21.1** |
 | Forge | `TickEvent` | planned |
 | Quilt | Fabric adapter loads directly | expected to work as-is |
-| **Any version, any loader** | **JVM agent** | designed, see below |
+| **Any version, any loader** | **JVM agent**, `glfwSwapBuffers` | **builds, runs, frames only** — see below |
 
 ## The universal fallback: a JVM agent
 
@@ -88,9 +88,68 @@ Server ticks have no comparable third-party anchor, so servers keep using
 per-loader adapters — but those are the smaller problem, since server-side APIs
 have been far more stable than rendering internals.
 
-Agent tradeoffs, stated up front: it needs a bytecode library (relocated to
-avoid colliding with the game's own), and it measures presented frames, which on
-a machine with vsync enabled measures the display rather than the renderer. The
+This is built, in `probe/adapters/probe-agent`. It is verified against the
+**real** LWJGL artefact pulled from Maven, not against a stand-in shaped the way
+we imagined LWJGL to be, and an integration test forks a JVM with `-javaagent`
+and asserts a parseable stream comes out.
+
+```bash
+cd probe/adapters/probe-agent && ./gradlew shadowJar   # no Minecraft needed
+# then add to any launch, on any version, any loader, vanilla included:
+#   -javaagent:/path/to/mcbench-probe-agent-0.1.0.jar
+```
+
+It is inert unless `MCBENCH_PROBE_CONFIG` is set, so it is safe to leave on a
+launch command permanently — which is the only way anyone actually keeps it
+there.
+
+### What the agent is not
+
+It is a **timing source, not a platform**. It supplies frame timings and nothing
+else: it cannot execute commands, because it has no access to any game API —
+that is exactly the price of not coupling to one. So it either runs alongside a
+loader adapter that drives the workload, or measures a workload driven some
+other way. An agent-only run of a scenario that needs setup commands would
+produce clean frame timings for a world that was never built, which is worse
+than no measurement.
+
+It therefore writes to `probe-agent.jsonl`, deliberately separate from an
+adapter's `probe.jsonl`. Both can be active at once, and two writers appending
+to one file would interleave into an unparseable mess.
+
+The harness combines them by **substitution, never merging**
+(`adopt_agent_frames`). When an adapter already produced frames, both streams
+timed the *same* frames by different means; concatenating them would double the
+sample count and shrink every confidence interval to match — manufacturing
+precision that was never measured. So the adapter wins, and the agent's frames
+are used only when there are none to compete with. Adoption is also refused
+when the two streams disagree about which scenario they measured: instance
+directories are rebuilt per run so that should be impossible, but a stale file
+contributing frames from a different variant would wreck a comparison while
+looking perfectly healthy.
+
+### Two failure modes it is built around
+
+**Its own classes must not fork across classloaders.** The obvious way to make
+the hook visible everywhere is `appendToBootstrapClassLoaderSearch(agentJar)`.
+It does make it visible — and it also puts a *second* copy of the agent's own
+classes on another loader, whose halves cannot see each other's package-private
+state. The first version did this and died on launch with an
+`IllegalAccessError`, having passed every unit test. The bootstrap append is
+gone; `AgentIntegrationTest` keeps it gone.
+
+**It must refuse rather than half-work.** The injected instruction names
+`FrameHook` literally, so if the loader that owns LWJGL cannot resolve it, the
+call becomes a `NoClassDefFoundError` *inside the render loop* — a crash on the
+first frame. The transformer checks reachability per classloader (and that the
+class found is the same one the agent initialised, not a second never-started
+copy) and declines to instrument when the answer is no, printing why. Losing
+frame timing is recoverable; breaking the game we were asked to measure is not.
+
+Remaining tradeoffs, stated up front: it needs a bytecode library (ASM,
+relocated to `dev.mcbench.probe.agent.shadow.asm` because Mixin ships its own
+copy on every modded launch), and it measures *presented* frames, which on a
+machine with vsync enabled measures the display rather than the renderer. The
 harness must therefore verify vsync is off before trusting agent-sourced frame
 timings — a check that belongs in preflight alongside the GPU check.
 

@@ -1,0 +1,10 @@
+// Standalone build like every adapter. This one needs no Minecraft at all — it
+// compiles against ASM and probe-core only, which is the whole point: the agent
+// references no game class.
+rootProject.name = 'mcbench-probe-agent'
+
+includeBuild('../..') {
+    dependencySubstitution {
+        substitute module('dev.mcbench:probe-core') using project(':probe-core')
+    }
+}

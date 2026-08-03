@@ -224,6 +224,11 @@ class RunOutcome:
     #: harness recorded for this run. One entry per disagreement, naming the
     #: field, the recorded value and the reported one.
     configuration_mismatches: list[str] = field(default_factory=list)
+    #: Whether this run was handed a world or made one. The run that makes it
+    #: measures the least settled terrain of any run of its scenario and is the
+    #: one most likely to be refused for a fingerprint nothing else shares, so a
+    #: reader needs to be able to tell that apart from a mod altering worldgen.
+    world_restored: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -256,6 +261,7 @@ class RunOutcome:
             "flags": [f.value for f in self.metrics.flags] if self.metrics else [],
             "wall_clock_s": round(self.wall_clock_s, 3),
             "world": self.world_fingerprint,
+            "world_source": "restored" if self.world_restored else "generated",
         }
         if self.error:
             record["error"] = self.error
@@ -527,6 +533,9 @@ class Harness:
         #: mid-suite, and asking it sixty times means sixty process spawns to
         #: learn the same string.
         self._java_release: str | None = None
+        #: Whether the run being prepared was given a cached world or had to
+        #: generate one. Set per run in _prepare_instance.
+        self._world_restored = False
         #: Appended verbatim to every launch, for a launcher this does not know.
         self.extra_launch_args = list(extra_launch_args)
         #: Generate a world per run rather than sharing one per scenario.
@@ -1009,6 +1018,19 @@ class Harness:
                 "# licensed account; see docs/LICENSING.md.\neula=true\n",
                 encoding="utf-8",
             )
+            # A server got a seed and generated its own world every run, while
+            # only the client half was given the cache. _restore_cached_world
+            # says what that costs: worldgen is not reproducible block for
+            # block, so every pair of runs is a fingerprint mismatch and nothing
+            # is ever pooled. Eight of the eleven shipped scenarios are
+            # server-side, and that is the state they were in.
+            #
+            # Terrain only. The server writes its own level.dat from
+            # server.properties and then uses the region files it finds, which
+            # is what makes the seed and the saved chunks agree.
+            self._world_restored = self._restore_cached_world(
+                scenario, instance / SERVER_LEVEL_NAME
+            )
 
         if scenario.side in (Side.CLIENT, Side.BOTH):
             # Author the world quick-play enters; it must exist beforehand.
@@ -1019,7 +1041,13 @@ class Harness:
                 generator=str(scenario.world.get("generator", "default")),
                 spawn=_spawn_of(scenario),
             )
-            self._restore_cached_world(scenario, world)
+            # Remembered because it explains a fingerprint that stands alone.
+            # The run that generates a scenario's world is the one whose terrain
+            # is least settled: chunks at the edge of generation keep changing
+            # while their neighbours are made, so it can disagree with every run
+            # that restores its cache, and the majority rule then refuses it.
+            # That looks identical in the results to a mod altering worldgen.
+            self._world_restored = self._restore_cached_world(scenario, world)
 
             options = instance / "options.txt"
             # Vsync off: a vsync-locked client measures the display, not the
@@ -1439,6 +1467,18 @@ class Harness:
         if any(f in self.DISQUALIFYING_FIELDS for f, _, _ in disagreements):
             metrics.flags.append(RunFlag.CONFIGURATION_MISMATCH)
 
+        # Keep the first run's terrain so every later run of this scenario
+        # measures the same one, whatever the generator did this time.
+        #
+        # Unconditional, and before the fingerprint. This used to happen inside
+        # _fingerprint_world, which is skipped whenever the probe reported a
+        # fingerprint of its own — so on any platform whose probe does report
+        # one, no world was ever cached, none was ever shared, and every pair of
+        # runs was a fingerprint mismatch. It works today only because no
+        # shipped adapter implements it.
+        if (saved := self._world_dir(instance, scenario)) is not None:
+            self._cache_world(scenario, saved)
+
         # The probe may report its own fingerprint over the live world; the
         # harness's is computed from the save on disk and needs no game API, so
         # it works on every version and platform. Where both exist the probe's
@@ -1465,6 +1505,7 @@ class Harness:
             wall_clock_s=wall_clock, exit_code=exit_code, log_path=log_path,
             error=error, world_fingerprint=fingerprint,
             configuration_mismatches=mismatches,
+            world_restored=self._world_restored,
         )
 
     def _world_cache(self, scenario: Scenario) -> Path:
@@ -1599,10 +1640,6 @@ class Harness:
         strength of a check that never ran.
         """
         world_dir = self._world_dir(instance, scenario)
-        if world_dir is not None:
-            # Keep the first run's terrain so every later run of this scenario
-            # measures the same one, whatever the generator did this time.
-            self._cache_world(scenario, world_dir)
         if world_dir is None:
             self.on_event("run.world", {
                 "cell": str(planned.cell), "result": "no world directory found",
@@ -1885,6 +1922,19 @@ def flag_world_mismatches(outcomes: Sequence[RunOutcome]) -> dict[str, list[str]
     Runs with no fingerprint are left alone. Absence of evidence is not evidence
     of mismatch, and flagging every run on a platform where the world could not
     be read would make the flag meaningless.
+
+    **The run that generated the world is structurally likely to be the odd one
+    out**, and it is not the mod's doing. Terrain at the edge of generation
+    keeps changing while neighbouring chunks are made, so the run that stopped
+    first saves a different answer from every run that restores its cache and
+    lets generation finish. Measured here: on ``visual-biome-flyby`` the
+    generating run disagreed with the restoring ones on 5 chunks of 1089, all
+    in the outermost three rings of the region.
+
+    It is still flagged, because a run that measured different terrain did
+    measure different terrain. But it is flagged with ``world_source`` on the
+    record saying which it was, so a reader is not left to conclude that a mod
+    altered worldgen. ``Scenario.fingerprint_margin_gap`` is what prevents it.
 
     :returns: scenario id to the differing fingerprints found, for reporting.
     """

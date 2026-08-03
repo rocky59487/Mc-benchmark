@@ -432,6 +432,37 @@ class TestWhatTheGameSaysItWas:
         assert outcome.configuration_mismatches == []
 
 
+class TestWhoMadeTheWorld:
+    """A refused fingerprint reads as a mod altering worldgen. Often it is not.
+
+    The run that generates a scenario's world measures the least settled
+    terrain of any run of that scenario, because chunks at the edge of
+    generation keep changing while their neighbours are made. It can therefore
+    disagree with every run that restores its cache, and the majority rule
+    refuses it. On this repository's own flyby that is 5 chunks of 1089, all in
+    the outermost three rings, and the run it costs is whichever variant the
+    shuffle happened to put first.
+    """
+
+    def test_the_first_run_of_a_scenario_says_it_generated(self, tmp_path):
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        record = harness.execute_run(planned).to_record()
+        assert record["world_source"] == "generated"
+
+    def test_a_later_run_says_it_was_handed_one(self, tmp_path):
+        harness, plan_first, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness.execute_run(plan_first)
+        later = harness.build_plan().runs[1]
+        record = harness.execute_run(later).to_record()
+
+        assert record["world_source"] == "restored"
+        assert later.cell != plan_first.cell or later.replicate != plan_first.replicate
+
+
 class TestTheShapeOfTheDistribution:
     def test_a_client_run_records_its_frametime_sketch(self, tmp_path):
         """Without it the CDF chart the README promises has no data source.

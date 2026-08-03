@@ -172,6 +172,11 @@ def parse_results_document(raw: Any) -> tuple[str, str, dict[str, list[dict[str,
                 # The distribution's shape, for the CDF chart and for a reader
                 # who wants to redraw it rather than trust the percentiles.
                 "frametime_sketch_ms",
+                # Whether this run made its world or was handed one. A run
+                # refused for a fingerprint nothing else shares reads as a mod
+                # altering worldgen; if it is the run that generated the world,
+                # it is usually generation finishing after it saved.
+                "world_source",
             ):
                 if optional in run:
                     entry[optional] = run[optional]

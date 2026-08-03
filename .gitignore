@@ -10,12 +10,17 @@ dist/
 .ruff_cache/
 .mypy_cache/
 
-# mcbench working state — provisioned game files and mod jars must never be
+# mcbench working state. Provisioned game files and mod jars must never be
 # committed (see docs/LICENSING.md: no redistribution of Minecraft or mods).
 /work/
+/work-*/
 /instances/
 /cache/
 /results/
+*-results.json
+# HeadlessMC keeps its own state, including the logged-in session, beside
+# whatever directory it was run from.
+/HeadlessMC/
 *.jar
 # Gradle wrapper jars are our own build tooling, not redistributed mods, and
 # committing them is what lets adopters build the probe without installing

@@ -71,6 +71,19 @@ VANILLA_FILL_MODES = {"replace", "destroy", "hollow", "keep", "outline"}
 #: command than the scenario declared.
 MAX_COMMAND_LENGTH = 32500
 
+#: How a scenario names the player it is driving.
+#:
+#: Not ``@s``. The probe dispatches through the platform's command dispatcher,
+#: whose source is the server rather than an entity, so ``@s`` selects nothing
+#: and the game rejects the command with "No entity was found". A camera path
+#: written that way emits one rejected teleport per frame and the client never
+#: moves: the run completes, reports frametimes, and measures a stationary
+#: camera at spawn instead of the flyby the scenario describes.
+#:
+#: A benchmark instance has exactly one player, so nearest-player is that player
+#: from any source.
+PLAYER = "@p"
+
 
 #: Characters that must never appear inside an emitted command.
 #:
@@ -307,7 +320,7 @@ def _compile_action(
 
     elif op == "teleport":
         x, y, z = _point(action.get("to") or action, f"{where}.teleport")
-        target = action.get("target", "@s")
+        target = action.get("target", PLAYER)
         yaw, pitch = action.get("yaw"), action.get("pitch")
         facing = f" {_num(yaw)} {_num(pitch)}" if yaw is not None and pitch is not None else ""
         lines.append(f"tp {target} {_num(x)} {_num(y)} {_num(z)}{facing}")
@@ -315,13 +328,19 @@ def _compile_action(
     elif op == "look":
         yaw = action.get("yaw", 0.0)
         pitch = action.get("pitch", 0.0)
-        lines.append(f"tp @s ~ ~ ~ {_num(yaw)} {_num(pitch)}")
+        # Wrapped in `execute at`, because `~ ~ ~` is relative to the command
+        # source. Dispatched from the server that is the world origin, so a bare
+        # tp would turn the player's head by moving them there.
+        lines.append(
+            f"execute at {PLAYER} run tp {PLAYER} ~ ~ ~ "
+            f"{_num(yaw)} {_num(pitch)}"
+        )
 
     elif op == "give":
         item = action.get("item")
         if not item:
             raise PlanError(f"{where}: 'give' needs 'item'")
-        lines.append(f"give @s {item} {int(action.get('count', 1))}")
+        lines.append(f"give {PLAYER} {item} {int(action.get('count', 1))}")
 
     elif op == "camera_path":
         lines.extend(_compile_camera_path(action, where))
@@ -490,7 +509,7 @@ def _compile_camera_path(action: dict[str, Any], where: str) -> list[str]:
         # overshoot outside the declared points and put the camera inside terrain,
         # which changes the workload in a way the scenario author did not intend.
         x, y, z, yaw, pitch = (a[i] + (b[i] - a[i]) * t for i in range(5))
-        lines.append(f"tp @s {x:.2f} {y:.2f} {z:.2f} {yaw:.1f} {pitch:.1f}")
+        lines.append(f"tp {PLAYER} {x:.2f} {y:.2f} {z:.2f} {yaw:.1f} {pitch:.1f}")
         lines.append("@wait 1")
     return lines
 

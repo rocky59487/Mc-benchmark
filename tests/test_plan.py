@@ -259,6 +259,51 @@ class TestCameraPath:
             compile_one({"op": "camera_path", "points": [{"x": 0, "y": 0, "z": 0}]})
 
 
+class TestCommandsNameSomethingThatExists:
+    """Every emitted command has to resolve from the source that runs it.
+
+    The probe dispatches through the platform's command dispatcher, whose
+    source is the server rather than an entity. `@s` therefore matches nothing.
+    A real run of visual-biome-flyby emitted 1200 rejected teleports, one per
+    path step, and reported a full set of frametimes for a camera that never
+    moved.
+    """
+
+    @pytest.mark.parametrize("action", [
+        {"op": "camera_path", "duration_s": 1,
+         "points": [{"x": 0, "y": 80, "z": 0}, {"x": 10, "y": 80, "z": 0}]},
+        {"op": "teleport", "to": {"x": 1, "y": 2, "z": 3}},
+        {"op": "look", "yaw": 90, "pitch": 0},
+        {"op": "give", "item": "minecraft:stone"},
+    ])
+    def test_no_action_targets_the_command_source(self, action):
+        for line in compile_one(action):
+            assert "@s" not in line, line
+
+    def test_looking_does_not_move_the_player(self):
+        """`~ ~ ~` is relative to the source, which is the world origin.
+
+        A bare `tp <player> ~ ~ ~ <yaw> <pitch>` from the server therefore
+        turns the player's head by teleporting them to 0,0,0.
+        """
+        line = compile_one({"op": "look", "yaw": 90, "pitch": 10})[0]
+        assert line.startswith("execute at ")
+        assert "run tp " in line
+
+    def test_a_scenario_may_still_name_its_own_target(self):
+        line = compile_one({
+            "op": "teleport", "target": "@e[type=cow,limit=1]",
+            "to": {"x": 1, "y": 2, "z": 3},
+        })[0]
+        assert "@e[type=cow,limit=1]" in line
+
+    def test_every_shipped_scenario_avoids_it(self):
+        for scenario in load_scenarios(REPO / "scenarios"):
+            plan = compile_plan(scenario)
+            for line in [*plan.setup, *plan.workload]:
+                assert "@s" not in line, f"{scenario.id}: {line}"
+
+
 class TestStructures:
     def test_expands_a_known_template(self):
         lines = compile_one({

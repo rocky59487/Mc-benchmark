@@ -370,6 +370,11 @@ the matrix tells you immediately where it runs and why not elsewhere. See
 
 - **[docs/METHODOLOGY.md](docs/METHODOLOGY.md)** — the specification. Start here.
 - **[docs/RESEARCH.md](docs/RESEARCH.md)** — prior-art survey and the gap.
+- **[docs/SECURITY.md](docs/SECURITY.md)** — threat model. mcbench downloads
+  code and executes it; that is the function, not a flaw. Read before handling
+  any external input.
+- **[docs/PLATFORMS.md](docs/PLATFORMS.md)** — how one scenario runs on every
+  platform and version.
 - **[docs/LICENSING.md](docs/LICENSING.md)** — legal constraints that shaped the
   architecture. Read before adding a dependency or a data file.
 

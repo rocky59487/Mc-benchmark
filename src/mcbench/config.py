@@ -12,13 +12,14 @@ from __future__ import annotations
 import json
 import tomllib
 from dataclasses import dataclass, field
+from difflib import get_close_matches
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from .planner import DEFAULT_RUNS_PER_CELL, MIN_RUNS_PER_CELL, OrderStrategy
 from .scenario import Preset
-from .stats import DEFAULT_ROPE
+from .stats import DEFAULT_ROPE, MIN_ADMISSIBLE_RUNS
 
 __all__ = [
     "Loader",
@@ -173,6 +174,31 @@ class SuiteConfig:
             and all(mod.third_party_obtainable for mod in mods)
         )
 
+    def design_advisories(self) -> list[str]:
+        """Ways this suite will run correctly and answer less than it could.
+
+        Not publishability. Each of these produces results that are honest
+        about themselves; they just leave the suite with less than it paid
+        several hours for, and both are one line in the manifest to avoid.
+        """
+        advisories = []
+        if self.runs_per_cell == MIN_ADMISSIBLE_RUNS:
+            advisories.append(
+                f"runs_per_cell is {self.runs_per_cell}, which is the "
+                f"admissibility floor, so a cell that loses one run to outlier "
+                f"rejection falls below it and reports no verdict. The same "
+                f"methodology requires that rejection, so the design has no "
+                f"margin for it. {MIN_ADMISSIBLE_RUNS + 1} leaves one."
+            )
+        if self.order is OrderStrategy.INTERLEAVED and self.runs_per_cell % 2:
+            advisories.append(
+                f"runs_per_cell is odd, so one round is unpaired and variants "
+                f"differ in mean position within a round by up to "
+                f"{(len(self.variants) - 1) / self.runs_per_cell:.2f} slots. "
+                f"An even count balances exactly (planner.plan_runs)."
+            )
+        return advisories
+
     def unpublishable_reasons(self) -> list[str]:
         """Why :attr:`publishable` is False, for actionable reporting."""
         reasons = []
@@ -211,6 +237,39 @@ class SuiteConfig:
         return reasons
 
 
+#: Every key each level of a manifest may carry. Anything else is refused.
+SUITE_KEYS = frozenset({
+    "name", "minecraft_version", "loader", "loader_version", "variants",
+    "baseline", "scenarios", "runs_per_cell", "preset", "order", "rope",
+    "seed", "heap_mb", "interactions", "jvm_args", "game_settings",
+})
+VARIANT_KEYS = frozenset({"name", "mods", "jvm_args", "game_settings"})
+MOD_KEYS = frozenset({"project", "version", "platform", "loader"})
+
+
+def _reject_unknown_keys(data: dict[str, Any], known: frozenset[str], where: str) -> None:
+    """Refuse a manifest key this parser does not read.
+
+    Every setting here is read with a default, so an unrecognised key changes
+    nothing and says nothing. A suite that asks for ``replicates = 10`` and
+    runs seven, or writes ``run_per_cell``, describes an experiment it did not
+    perform — and the results document, built from the parsed configuration,
+    agrees with the run rather than with the file the operator wrote. There is
+    no later point at which that surfaces.
+    """
+    unknown = sorted(set(data) - known)
+    if not unknown:
+        return
+    parts = []
+    for key in unknown:
+        near = get_close_matches(key, sorted(known), n=1, cutoff=0.7)
+        parts.append(f"{key!r} (did you mean {near[0]!r}?)" if near else repr(key))
+    raise ConfigError(
+        f"{where}: unknown key(s) {', '.join(parts)}. "
+        f"Known keys: {', '.join(sorted(known))}"
+    )
+
+
 def _parse_mod(entry: Any, where: str) -> ModRef:
     """Accept either ``"modrinth:sodium@mc1.21-0.6.0"`` or a table."""
     if isinstance(entry, str):
@@ -232,6 +291,7 @@ def _parse_mod(entry: Any, where: str) -> ModRef:
     if isinstance(entry, dict):
         if "project" not in entry:
             raise ConfigError(f"{where}: mod entry is missing 'project'")
+        _reject_unknown_keys(entry, MOD_KEYS, f"{where}: mod {entry['project']!r}")
         try:
             platform = Platform(entry.get("platform", "modrinth"))
         except ValueError:
@@ -255,6 +315,8 @@ def parse_suite(data: dict[str, Any], *, source: Path | None = None) -> SuiteCon
         if required not in data:
             raise ConfigError(f"{where}: missing required field {required!r}")
 
+    _reject_unknown_keys(data, SUITE_KEYS, where)
+
     try:
         loader = Loader(data["loader"])
     except ValueError:
@@ -272,6 +334,7 @@ def parse_suite(data: dict[str, Any], *, source: Path | None = None) -> SuiteCon
     for index, raw in enumerate(raw_variants):
         if not isinstance(raw, dict) or "name" not in raw:
             raise ConfigError(f"{where}: variants[{index}] needs a 'name'")
+        _reject_unknown_keys(raw, VARIANT_KEYS, f"{where}: variants[{index}]")
         name = raw["name"]
         if name in seen:
             raise ConfigError(f"{where}: duplicate variant name {name!r}")

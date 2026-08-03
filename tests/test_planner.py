@@ -116,6 +116,81 @@ class TestInterleaving:
             plan = plan_runs(["s1"], list("abcdef"), runs_per_cell=6, seed=seed)
             assert _slot_spread(plan) == 0.0
 
+    def test_a_suite_at_the_floor_is_told_it_has_no_margin(self):
+        # runs_per_cell 5 is the documented floor and also the admissibility
+        # floor, so one rejected run takes a cell below it — and the same
+        # methodology requires that rejection. The suite still runs; it just
+        # spends hours to answer less than it could have.
+        from mcbench.config import parse_suite
+
+        base = {
+            "name": "s", "minecraft_version": "1.21.1", "loader": "fabric",
+            "scenarios": ["x"], "baseline": "a",
+            "variants": [{"name": "a", "mods": []}, {"name": "b", "mods": []}],
+        }
+        advisories = parse_suite({**base, "runs_per_cell": 5}).design_advisories()
+        assert any("admissibility floor" in a for a in advisories)
+        assert any("odd" in a for a in advisories)
+
+        assert parse_suite({**base, "runs_per_cell": 6}).design_advisories() == []
+
+    def test_a_key_the_parser_does_not_read_is_refused(self):
+        """The suite that ran must be the suite that was written.
+
+        Everything optional is read with a default, so an unrecognised key
+        changes nothing and reports nothing, and the results document is built
+        from the parsed configuration rather than the file. A manifest asking
+        for 'replicates = 10' would run seven and say seven, and the only
+        record of the disagreement would be the file nobody re-reads.
+
+        This project's own end-to-end test had that key. It was ignored for as
+        long as it had been there.
+        """
+        from mcbench.config import ConfigError, parse_suite
+
+        base = {
+            "name": "s", "minecraft_version": "1.21.1", "loader": "fabric",
+            "scenarios": ["x"], "baseline": "a",
+            "variants": [{"name": "a", "mods": []}],
+        }
+        with pytest.raises(ConfigError, match="replicates"):
+            parse_suite({**base, "replicates": 10})
+
+        # Close enough to a real key that naming it saves the reader a trip to
+        # the documentation.
+        with pytest.raises(ConfigError, match="did you mean 'runs_per_cell'"):
+            parse_suite({**base, "run_per_cell": 10})
+
+        with pytest.raises(ConfigError, match="variants\\[0\\]"):
+            parse_suite({**base, "variants": [{"name": "a", "jvmargs": []}]})
+
+        with pytest.raises(ConfigError, match="did you mean 'version'"):
+            parse_suite({
+                **base,
+                "variants": [{
+                    "name": "a",
+                    "mods": [{"project": "sodium", "versions": "1.0"}],
+                }],
+            })
+
+    def test_every_suite_in_the_repository_still_parses(self):
+        """The guard an allowlist needs.
+
+        A key list that is missing an entry refuses manifests that were always
+        valid, which is a worse failure than the one it prevents. The shipped
+        suites exercise the settings this project actually uses, so they are
+        what keeps the list honest — an omission here fails the build rather
+        than someone's run. Two keys were missing when it was first written.
+        """
+        from pathlib import Path
+
+        from mcbench.config import load_suite
+
+        suites = sorted(Path(__file__).resolve().parents[1].glob("suites/*.toml"))
+        assert suites, "no suites to check"
+        for path in suites:
+            load_suite(path)
+
     def test_balance_holds_within_each_scenario(self):
         # Scenarios run end to end, so each is its own stretch of wall clock
         # and needs balancing on its own. A schedule balanced only over the

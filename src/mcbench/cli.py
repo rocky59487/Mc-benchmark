@@ -122,6 +122,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
         print("⚠ not publishable:", file=sys.stderr)
         for reason in suite.unpublishable_reasons():
             print(f"    - {reason}", file=sys.stderr)
+    for advisory in suite.design_advisories():
+        print(f"⚠ {advisory}", file=sys.stderr)
     return 0
 
 
@@ -159,6 +161,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             "Results are not publishable.\n",
             file=sys.stderr,
         )
+    for advisory in suite.design_advisories():
+        print(f"⚠ {advisory}\n", file=sys.stderr)
 
     current: str | None = None
     for run in plan:
@@ -780,6 +784,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if missing:
         print(f"✗ unknown scenario(s): {', '.join(missing)}", file=sys.stderr)
         return 2
+
+    # Before the hours, not after them.
+    for advisory in suite.design_advisories():
+        print(f"⚠ {advisory}\n", file=sys.stderr)
 
     def emit(event: str, payload: dict) -> None:
         if args.json_events:

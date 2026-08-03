@@ -159,7 +159,11 @@ def build(tmp_path, scenario_id: str, fixture: str, **suite_overrides):
         "scenarios": [scenario_id],
         "variants": [{"name": "base", "mods": []}],
         "baseline": "base",
-        "replicates": 1,
+        # The minimum a plan may declare. Only runs[0] is executed; this was
+        # 'replicates: 1' until parse_suite started refusing keys it does not
+        # read, at which point the key it should have been hit the floor
+        # plan_runs enforces.
+        "runs_per_cell": 5,
         **suite_overrides,
     })
     harness = Harness(

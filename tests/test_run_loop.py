@@ -19,8 +19,14 @@ from pathlib import Path
 import pytest
 
 from mcbench.config import parse_suite
+from mcbench.metrics import RunFlag
 from mcbench.runner import Harness
-from mcbench.runner.harness import ResolvedVariant, run_counts
+from mcbench.runner.harness import (
+    ResolvedVariant,
+    flag_world_mismatches,
+    outcomes_to_cells,
+    run_counts,
+)
 from mcbench.scenario import Side, load_scenarios
 
 REPO = Path(__file__).resolve().parents[1]
@@ -101,9 +107,12 @@ if "--server" in argv:
     )
     if os.environ.get("MCBENCH_STANDIN_EMPTY_WORLD") != "1":
         # The terrain a server generates on first start, which is what the
-        # harness fingerprints.
+        # harness fingerprints. A variant named in MCBENCH_STANDIN_ROGUE
+        # generates different terrain — a mod that alters worldgen.
+        rogue = os.environ.get("MCBENCH_STANDIN_ROGUE", "")
+        block = "minecraft:andesite" if rogue and rogue in gamedir.name else "minecraft:stone"
         (world / "region").mkdir(parents=True, exist_ok=True)
-        _write_region(world / "region" / "r.0.0.mca", {{(0, 0): _chunk()}})
+        _write_region(world / "region" / "r.0.0.mca", {{(0, 0): _chunk(block)}})
 
 stream = Path({stream!r}).read_text(encoding="utf-8").splitlines()
 lines = []
@@ -142,7 +151,7 @@ def probe_jar(path: Path) -> Path:
     return path
 
 
-def build(tmp_path, scenario_id: str, fixture: str):
+def build(tmp_path, scenario_id: str, fixture: str, **suite_overrides):
     scenarios = {s.id: s for s in load_scenarios(REPO / "scenarios")}
     suite = parse_suite({
         "name": "e2e", "minecraft_version": "1.21.1", "loader": "fabric",
@@ -151,13 +160,15 @@ def build(tmp_path, scenario_id: str, fixture: str):
         "variants": [{"name": "base", "mods": []}],
         "baseline": "base",
         "replicates": 1,
+        **suite_overrides,
     })
     harness = Harness(
         suite, scenarios, work_dir=tmp_path / "work",
         headlessmc=stand_in(tmp_path / "stand-in", FIXTURES / fixture),
         probe_jar=probe_jar(tmp_path / "mcbench-probe.jar"),
     )
-    harness._resolved["base"] = ResolvedVariant(variant=suite.variants[0])
+    for variant in suite.variants:
+        harness._resolved[variant.name] = ResolvedVariant(variant=variant)
     return harness, harness.build_plan().runs[0], scenarios[scenario_id]
 
 
@@ -294,3 +305,63 @@ class TestARunThatFails:
         counts = run_counts([outcome])
         assert counts["entity-mobcap-saturation/base"]["attempted"] == 1
         assert counts["entity-mobcap-saturation/base"]["failed"] == 1
+
+
+class TestAWholeSuite:
+    """Several runs in the plan's order, then the document an analysis reads."""
+
+    def suite(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MCBENCH_STANDIN_DROP_WORLD", "1")
+        harness, _, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl",
+            variants=[{"name": "base", "mods": []}, {"name": "candidate", "mods": []}],
+            runs_per_cell=5,
+        )
+        return harness
+
+    def test_a_clean_suite(self, tmp_path, monkeypatch):
+        # Two variants over one scenario, ten runs. Asserted together because
+        # executing the suite is the expensive part, not the checking.
+        harness = self.suite(tmp_path, monkeypatch)
+        outcomes = harness.run_suite()
+
+        assert len(outcomes) == 10
+        assert [o.planned.position for o in outcomes] == list(range(10))
+        assert all(o.succeeded for o in outcomes)
+
+        counts = run_counts(outcomes)
+        assert counts["entity-mobcap-saturation/base"]["admissible"] == 5
+        assert counts["entity-mobcap-saturation/candidate"]["admissible"] == 5
+
+        cells = outcomes_to_cells(outcomes)
+        assert sorted(cells) == [
+            "entity-mobcap-saturation/base", "entity-mobcap-saturation/candidate",
+        ]
+        assert all(len(runs) == 5 for runs in cells.values())
+
+        # Same terrain in every instance, so nothing is held out.
+        assert flag_world_mismatches(outcomes) == {}
+
+    def test_a_variant_that_alters_worldgen_is_not_pooled(
+        self, tmp_path, monkeypatch
+    ):
+        # The pooling rule, enforced rather than promised: the candidate's
+        # terrain differs, so its runs carry the mismatch flag and the numbers —
+        # which look entirely ordinary — never enter a comparison.
+        monkeypatch.setenv("MCBENCH_STANDIN_ROGUE", "candidate")
+        harness = self.suite(tmp_path, monkeypatch)
+        outcomes = harness.run_suite()
+
+        mismatches = flag_world_mismatches(outcomes)
+        assert mismatches["entity-mobcap-saturation"]
+
+        flagged = {
+            o.planned.cell.variant for o in outcomes
+            if o.metrics and RunFlag.WORLD_FINGERPRINT_MISMATCH in o.metrics.flags
+        }
+        assert flagged == {"candidate"}
+        assert not any(
+            o.metrics.admissible for o in outcomes
+            if o.planned.cell.variant == "candidate"
+        )
+

@@ -713,10 +713,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from .runner import Severity, run_preflight
 
     needs_gpu = args.side != "server"
+    launcher = Path(args.headlessmc) if getattr(args, "headlessmc", None) else None
     result = run_preflight(
         needs_gpu=needs_gpu,
         heap_mb=args.heap_mb,
         require_account=not args.no_account_check,
+        launcher=launcher,
     )
 
     if args.json:
@@ -1188,6 +1190,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--side", choices=["client", "server", "both"], default="both",
                    help="server-side runs do not need a GPU")
     p.add_argument("--heap-mb", type=int, default=4096)
+    p.add_argument("--headlessmc",
+                   help="path to the HeadlessMC jar or binary; its directory is "
+                        "where HeadlessMC keeps the account it logged in with")
     p.add_argument("--no-account-check", action="store_true",
                    help="skip the Minecraft account check")
     p.add_argument("--json", action="store_true")

@@ -520,6 +520,7 @@ class Harness:
             heap_mb=self.suite.heap_mb,
             require_account=require_account,
             work_dir=str(self.work_dir.parent if self.work_dir.parent.exists() else "."),
+            launcher=self.headlessmc,
         )
         # Checked here rather than in preflight.py because it depends on how the
         # harness was constructed. Detecting it up front matters: without it a

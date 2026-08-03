@@ -384,27 +384,60 @@ def _check_disk(*, path: str = ".", required_gb: int = 12) -> Check:
     return Check("disk", Severity.OK, f"{free_gb} GB free")
 
 
-def _check_account() -> Check:
+def _account_stores(launcher: Path | None) -> list[Path]:
+    """Everywhere a logged-in session is known to be recorded.
+
+    HeadlessMC keeps its accounts beside the jar it was launched from, under
+    ``HeadlessMC/auth/.accounts.json``, and only falls back to the home
+    directory when HMC_DIR says so. Checking the home directory alone reported
+    "no account" on a machine that had just logged in successfully.
+    """
+    stores: list[Path] = []
+    if launcher is not None:
+        base = launcher.parent if launcher.is_file() else launcher
+        stores.append(base / "HeadlessMC" / "auth" / ".accounts.json")
+    if configured := os.environ.get("HMC_DIR"):
+        stores.append(Path(configured) / "auth" / ".accounts.json")
+
+    home = Path.home()
+    stores += [
+        home / "HeadlessMC" / "auth" / ".accounts.json",
+        home / ".headlessmc" / "auth" / ".accounts.json",
+        home / ".headlessmc" / "accounts.json",
+    ]
+    # The vanilla launcher, whose Microsoft Store build uses its own filename.
+    minecraft = Path(os.environ.get("APPDATA", home)) / ".minecraft"
+    stores += [
+        minecraft / "launcher_accounts.json",
+        minecraft / "launcher_accounts_microsoft_store.json",
+        home / ".minecraft" / "launcher_accounts.json",
+    ]
+    return stores
+
+
+def _check_account(launcher: Path | None = None) -> Check:
     """A licensed account is required; the EULA has no exception for benchmarks.
 
     mcbench never handles credentials itself. HeadlessMC owns authentication and
     validates ownership, so this only reports whether it has a usable session.
     """
-    candidates = [
-        Path.home() / ".headlessmc" / "accounts.json",
-        Path.home() / ".minecraft" / "launcher_accounts.json",
-    ]
-    for candidate in candidates:
-        if candidate.exists() and candidate.stat().st_size > 2:
-            return Check("account", Severity.OK, f"credentials present ({candidate})")
+    for candidate in _account_stores(launcher):
+        try:
+            if candidate.stat().st_size > 2:
+                return Check(
+                    "account", Severity.OK, f"credentials present ({candidate})"
+                )
+        except OSError:
+            continue
 
     return Check(
         "account", Severity.BLOCK,
         "no Minecraft account configured",
         remedy=(
-            "Authenticate with HeadlessMC ('hmc login'). mcbench never stores or "
-            "handles credentials itself. A licensed account is required by the "
-            "Minecraft EULA; there is no benchmarking exemption."
+            "Authenticate with HeadlessMC ('hmc login', or "
+            "'java -jar headlessmc-launcher.jar --command login'). mcbench never "
+            "stores or handles credentials itself. A licensed account is required "
+            "by the Minecraft EULA; there is no benchmarking exemption."
         ),
     )
 
@@ -439,6 +472,7 @@ def run_preflight(
     heap_mb: int = 4096,
     require_account: bool = True,
     work_dir: str = ".",
+    launcher: Path | None = None,
 ) -> Preflight:
     """Run every environment check.
 
@@ -448,6 +482,8 @@ def run_preflight(
         heap_mb: Configured JVM heap, used to size the memory requirement.
         require_account: Set False to validate the environment without demanding
             credentials, for inspecting a machine before setting it up.
+        launcher: The configured HeadlessMC path. Its directory is where
+            HeadlessMC keeps the account it logged in with.
     """
     checks = [
         _check_gpu(needs_gpu=needs_gpu),
@@ -463,6 +499,6 @@ def run_preflight(
         _check_virtualisation(),
     ]
     if require_account:
-        checks.append(_check_account())
+        checks.append(_check_account(launcher))
 
     return Preflight(checks=checks, host=describe_host())

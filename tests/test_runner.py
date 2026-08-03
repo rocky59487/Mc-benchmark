@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +18,7 @@ from mcbench.runner import (
     parse_probe_stream,
     run_preflight,
 )
+from mcbench.runner.preflight import _check_account
 
 
 def _stream(*events: dict) -> str:
@@ -65,6 +67,70 @@ class TestPreflight:
         host = describe_host()
         for key in ("os", "arch", "cpu_count", "gpu"):
             assert key in host
+
+
+class TestAccountDiscovery:
+    """Where a logged-in session actually lives.
+
+    HeadlessMC writes its accounts beside the jar it was launched from, not
+    under the home directory. Looking only at home reported "no account" on a
+    machine that had just logged in, which blocked the run it was gating.
+    """
+
+    @pytest.fixture
+    def isolated(self, tmp_path, monkeypatch):
+        """A machine with no account anywhere the check knows to look.
+
+        Without this the assertions depend on whether whoever runs the tests
+        happens to be logged into Minecraft.
+        """
+        empty = tmp_path / "elsewhere"
+        empty.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: empty))
+        monkeypatch.setenv("APPDATA", str(empty))
+        monkeypatch.delenv("HMC_DIR", raising=False)
+        return tmp_path / "launcher"
+
+    def _store(self, launcher_dir, content='[{"name":"someone"}]'):
+        store = launcher_dir / "HeadlessMC" / "auth" / ".accounts.json"
+        store.parent.mkdir(parents=True)
+        store.write_text(content, encoding="utf-8")
+        return store
+
+    def test_finds_the_session_beside_the_launcher_jar(self, isolated):
+        isolated.mkdir()
+        jar = isolated / "headlessmc-launcher.jar"
+        jar.write_bytes(b"not really a jar")
+        self._store(isolated)
+
+        check = _check_account(jar)
+        assert check.severity is Severity.OK
+        assert "HeadlessMC" in check.detail
+
+    def test_accepts_a_directory_as_well_as_a_jar(self, isolated):
+        isolated.mkdir()
+        self._store(isolated)
+        assert _check_account(isolated).severity is Severity.OK
+
+    def test_an_empty_store_is_not_a_session(self, isolated):
+        isolated.mkdir()
+        jar = isolated / "headlessmc-launcher.jar"
+        jar.write_bytes(b"not really a jar")
+        self._store(isolated, content="")
+
+        check = _check_account(jar)
+        assert check.severity is Severity.BLOCK
+        assert check.remedy
+
+    def test_no_launcher_and_no_session_blocks(self, isolated):
+        assert _check_account(None).severity is Severity.BLOCK
+
+    def test_the_microsoft_store_launcher_filename_is_known(self):
+        from mcbench.runner.preflight import _account_stores
+
+        names = {p.name for p in _account_stores(None)}
+        assert "launcher_accounts_microsoft_store.json" in names
+        assert ".accounts.json" in names
 
 
 class TestProbeProtocol:

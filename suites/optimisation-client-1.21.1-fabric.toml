@@ -1,0 +1,62 @@
+# Do the client-side optimisation mods people actually install help, and do the
+# two most commonly paired ones interact?
+#
+# Mods are named by coordinate. mcbench resolves and hash-verifies them on your
+# machine at run time; jars are never redistributed (docs/LICENSING.md).
+#
+# Versions are the current releases for 1.21.1 Fabric as of 2026-08-03. Every
+# one is pinned, because an unpinned suite describes different software over
+# time and its results cannot be pooled.
+
+name = "Client optimisation mods, 1.21.1 Fabric"
+minecraft_version = "1.21.1"
+loader = "fabric"
+loader_version = "0.16.5"
+
+# Both client scenarios that stress a renderer, plus the normalisation baseline
+# that makes this machine's numbers comparable to anyone else's.
+scenarios = [
+    "reference-hardware-baseline",
+    "visual-biome-flyby",
+]
+
+baseline = "vanilla"
+runs_per_cell = 5
+preset = "full"
+order = "interleaved"
+rope = 0.02
+seed = 20260803
+heap_mb = 6144
+
+# Sodium and EntityCulling are the pair most modpacks ship together, and they
+# touch overlapping work: Sodium rewrites chunk rendering, EntityCulling skips
+# entity draws behind geometry. Measuring A, B and A+B is what makes the
+# interaction term computable.
+interactions = [["sodium", "entityculling", "sodium+entityculling"]]
+
+[[variants]]
+name = "vanilla"
+mods = []
+
+[[variants]]
+name = "sodium"
+mods = ["modrinth:sodium@mc1.21.1-0.8.12-fabric"]
+
+[[variants]]
+name = "entityculling"
+mods = ["modrinth:entityculling@1.10.5"]
+
+[[variants]]
+name = "sodium+entityculling"
+mods = [
+    "modrinth:sodium@mc1.21.1-0.8.12-fabric",
+    "modrinth:entityculling@1.10.5",
+]
+
+[[variants]]
+name = "immediatelyfast"
+mods = ["modrinth:immediatelyfast@1.6.11+1.21.1-fabric"]
+
+[[variants]]
+name = "ferritecore"
+mods = ["modrinth:ferrite-core@7.0.3-fabric"]

@@ -325,6 +325,89 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_inspect(args: argparse.Namespace) -> int:
+    """Static health check of a mod set: conflicts, gaps, and mixin contention.
+
+    Runs on jars alone — no game, no account, no GPU. That is the point: the
+    fastest useful answer about a modpack is the one you get before spending two
+    hours benchmarking a pack that was never going to load.
+    """
+    from .inspect import Severity as InspectSeverity
+    from .inspect import inspect_mods, read_jars
+
+    paths: list[Path] = []
+    for entry in args.paths:
+        path = Path(entry)
+        if path.is_dir():
+            paths.extend(sorted(path.glob("*.jar")))
+        else:
+            paths.append(path)
+
+    if not paths:
+        print("✗ no jars found", file=sys.stderr)
+        return 2
+
+    mods = read_jars(paths, scan_mixins=not args.no_mixins)
+    result = inspect_mods(mods, overlap_threshold=args.overlap_threshold)
+
+    if args.json:
+        print(json.dumps({
+            "mods": [
+                {
+                    "id": m.mod_id, "version": m.version, "loader": m.loader,
+                    "environment": m.environment, "license": m.license,
+                    "file": m.path.name,
+                    "depends": m.depends, "breaks": m.breaks,
+                    "mixin_targets": sorted(m.mixin_targets),
+                    "errors": list(m.errors),
+                }
+                for m in result.mods
+            ],
+            "findings": [
+                {
+                    "severity": f.severity.value, "code": f.code,
+                    "summary": f.summary, "detail": f.detail, "mods": list(f.mods),
+                }
+                for f in result.findings
+            ],
+            "overlaps": {k: list(v) for k, v in result.overlaps.items()},
+        }, indent=2))
+        return 0 if result.ok else 1
+
+    width = max(len(m.mod_id) for m in result.mods)
+    print(f"{len(result.mods)} mod(s):")
+    for mod in result.mods:
+        env = "" if mod.environment == "*" else f" [{mod.environment}]"
+        mixins = f"  {len(mod.mixin_targets)} mixin targets" if mod.mixin_targets else ""
+        print(f"  {mod.mod_id:<{width}}  {mod.version:<22} {mod.loader}{env}{mixins}")
+
+    mark = {
+        InspectSeverity.ERROR: "✗", InspectSeverity.WARNING: "⚠",
+        InspectSeverity.INFO: "·",
+    }
+    if result.findings:
+        print()
+        for finding in result.findings:
+            print(f"{mark[finding.severity]} {finding.summary}")
+            if finding.detail:
+                for line in _wrap(finding.detail, 2):
+                    print(line)
+
+    hotspots = result.hotspots(limit=args.top)
+    if hotspots:
+        print(f"\nMost contended classes (where a conflict would show up first):")
+        for target, owners in hotspots:
+            print(f"  {len(owners)}x  {target}")
+            print(f"        {', '.join(owners)}")
+
+    print()
+    if result.ok:
+        print("✓ no blocking problems found")
+    else:
+        print(f"✗ {len(result.errors)} blocking problem(s)")
+    return 0 if result.ok else 1
+
+
 def cmd_targets(args: argparse.Namespace) -> int:
     """Show which scenarios compile for which targets.
 
@@ -601,6 +684,17 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["csv", "tsv", "md", "html"],
                    help="table formats for --export-dir (repeatable, default csv)")
     p.set_defaults(func=cmd_analyse)
+
+    p = sub.add_parser("inspect", help="static health check of a mod set")
+    p.add_argument("paths", nargs="+", help="jar files or directories of jars")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--no-mixins", action="store_true",
+                   help="skip bytecode scanning (faster, loses contention data)")
+    p.add_argument("--overlap-threshold", type=int, default=2,
+                   help="report classes touched by at least this many mods")
+    p.add_argument("--top", type=int, default=15,
+                   help="how many contended classes to list")
+    p.set_defaults(func=cmd_inspect)
 
     p = sub.add_parser("targets", help="which scenarios run on which platforms")
     p.add_argument("--scenario-root")

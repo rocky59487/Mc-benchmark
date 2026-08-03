@@ -548,6 +548,14 @@ class Harness:
         #: the fingerprint can only report a difference the run was allowed to
         #: produce. Use it to answer "does this mod change the world", not to
         #: compare frametimes.
+        #:
+        #: It answers that question weakly, and the weakness is the same fact:
+        #: two vanilla runs of one seed also differ, by 109 chunks of 289 when
+        #: measured here. So a mod's world differing from the baseline's is not
+        #: evidence the mod did it, and a difference has to be read against how
+        #: much vanilla differs from itself. Every run also comes back flagged,
+        #: because no fingerprint holds a majority, so the fingerprints have to
+        #: be read out of the results document rather than off a verdict.
         self.fresh_world = fresh_world
         self._capabilities: LauncherCapabilities | None = None
 

@@ -21,7 +21,13 @@ from mcbench.inspect import (
     read_jar,
     read_jars,
 )
-from mcbench.versions import Dialect, Satisfaction, satisfies
+from mcbench.versions import (
+    Dialect,
+    Satisfaction,
+    compare_versions,
+    parse_version,
+    satisfies,
+)
 
 
 def codes(result) -> set[str]:
@@ -416,3 +422,56 @@ class TestNestedJars:
             node = node.nested[0]
         assert depth <= 3
         assert any("nesting deeper" in e for e in node.errors)
+
+
+class TestAbsentComponentsAreZero:
+    """`1.21` and `1.21.0` are one release, and both spellings are in the wild.
+
+    Minecraft ships the first. Mods declare ranges in the second. Reading the
+    shorter as older made `>=1.21.0` refuse 1.21 — a version conflict reported
+    against a pair every loader accepts, by the command whose argument is that
+    it answers before hours are spent on a benchmark.
+    """
+
+    @pytest.mark.parametrize(
+        ("installed", "spec"),
+        [
+            ("1.21", ">=1.21.0"),
+            ("1.21", ">=1.21.0 <1.22"),
+            ("3.4", ">=3.4.0"),
+            ("1.21.0", ">=1.21"),
+            ("2", ">=2.0.0"),
+        ],
+    )
+    def test_a_missing_component_does_not_make_it_older(self, installed, spec):
+        assert satisfies(installed, spec, dialect=Dialect.FABRIC) is (
+            Satisfaction.SATISFIED
+        )
+
+    def test_it_is_still_older_when_the_component_is_not_zero(self):
+        assert satisfies("1.21", ">=1.21.1", dialect=Dialect.FABRIC) is (
+            Satisfaction.VIOLATED
+        )
+
+    def test_compare_says_they_are_equal(self):
+        assert compare_versions(parse_version("1.21"), parse_version("1.21.0")) == 0
+        assert compare_versions(parse_version("1.21.0.0"), parse_version("1.21")) == 0
+
+    def test_a_pre_release_keeps_the_opposite_rule(self):
+        # Padding is for release numbers. Among pre-release identifiers a
+        # shorter list really is lower precedence (semver 11.4.4), and a
+        # pre-release still precedes the release it leads to.
+        assert compare_versions(
+            parse_version("1.0.0-alpha"), parse_version("1.0.0-alpha.1")
+        ) < 0
+        assert compare_versions(
+            parse_version("1.21-rc1"), parse_version("1.21")
+        ) < 0
+
+    def test_the_real_release_line_still_orders(self):
+        line = ["1.8", "1.8.9", "1.12.2", "1.16.5", "1.18", "1.20.3",
+                "1.21", "1.21.1", "1.21.9", "1.21.10"]
+        for older, newer in zip(line, line[1:], strict=False):
+            assert compare_versions(
+                parse_version(older), parse_version(newer)
+            ) < 0, f"{older} !< {newer}"

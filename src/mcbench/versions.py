@@ -142,9 +142,31 @@ def _compare_segments(
     return -1 if len(left) < len(right) else 1
 
 
+def _compare_release(
+    left: tuple[int | str, ...], right: tuple[int | str, ...]
+) -> int:
+    """Compare release numbers, treating an absent component as zero.
+
+    ``1.21`` and ``1.21.0`` are one release. Minecraft ships the first spelling
+    and mods declare ranges in the second, so reading the shorter as older made
+    ``>=1.21.0`` refuse 1.21: a version conflict reported against a pair every
+    loader accepts, by the command whose argument is that it answers before
+    hours are spent.
+
+    Pre-release identifiers keep the opposite rule, where a shorter list really
+    is lower precedence — ``1.0.0-alpha`` before ``1.0.0-alpha.1``, semver
+    11.4.4 — and so still go through :func:`_compare_segments` unpadded.
+    """
+    width = max(len(left), len(right))
+    return _compare_segments(
+        left + (0,) * (width - len(left)),
+        right + (0,) * (width - len(right)),
+    )
+
+
 def compare_versions(left: Version, right: Version) -> int:
     """Three-way comparison. Negative when ``left`` is older."""
-    order = _compare_segments(left.release, right.release)
+    order = _compare_release(left.release, right.release)
     if order != 0:
         return order
     # A pre-release is older than the release it leads to: 1.0-rc1 < 1.0.

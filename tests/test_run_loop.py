@@ -11,12 +11,10 @@ about where anything is.
 from __future__ import annotations
 
 import json
-import os
-import stat
 import zipfile
 from pathlib import Path
 
-import pytest
+from executable import executable_python
 
 from mcbench.config import parse_suite
 from mcbench.metrics import RunFlag
@@ -32,11 +30,7 @@ from mcbench.scenario import Side, load_scenarios
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = REPO / "tests" / "fixtures"
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="executable script stand-in")
-
-
-STAND_IN = '''#!/usr/bin/env python3
-"""Stands in for HeadlessMC and the game it launches."""
+STAND_IN = '''"""Stands in for HeadlessMC and the game it launches."""
 import json
 import os
 import sys
@@ -136,13 +130,12 @@ print("stand-in: wrote " + str(len(lines)) + " events")
 
 
 def stand_in(path: Path, stream: Path) -> Path:
-    path.write_text(
+    return executable_python(
+        path,
         STAND_IN.format(
             src=str(REPO / "src"), tests=str(REPO / "tests"), stream=str(stream)
-        ), encoding="utf-8"
+        ),
     )
-    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return path
 
 
 def probe_jar(path: Path) -> Path:

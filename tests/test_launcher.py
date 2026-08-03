@@ -7,11 +7,9 @@ of a launch that fails minutes in, once per planned run.
 
 from __future__ import annotations
 
-import os
-import stat
 from pathlib import Path
 
-import pytest
+from executable import printing_stand_in
 
 from mcbench.config import parse_suite
 from mcbench.runner import Harness, Severity
@@ -22,9 +20,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def fake_launcher(path: Path, help_text: str) -> Path:
-    path.write_text(f"#!/bin/sh\ncat <<'EOF'\n{help_text}\nEOF\n", encoding="utf-8")
-    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return path
+    return printing_stand_in(path, help_text)
 
 
 FULL_HELP = """
@@ -165,7 +161,6 @@ class TestPreflight:
         )
         assert check.severity is Severity.OK
 
-    @pytest.mark.skipif(os.name == "nt", reason="shell-script launcher stub")
     def test_the_probe_runs_once_per_harness(self, tmp_path):
         launcher = fake_launcher(tmp_path / "hmc", FULL_HELP)
         h, _ = harness(tmp_path / "w", launcher)

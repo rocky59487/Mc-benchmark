@@ -2,14 +2,14 @@
 
 Two dialects, because the ecosystem has two:
 
-* **Fabric** — npm-style semver ranges: ``*``, ``1.2.3``, ``>=1.2``, ``~1.2.3``,
+* **Fabric**: npm-style semver ranges, ``*``, ``1.2.3``, ``>=1.2``, ``~1.2.3``,
   ``^1.2.3``, ``1.2.x``, space-separated conjunctions, ``||`` alternatives.
-* **Forge/NeoForge** — Maven ranges: ``[1.0,2.0)``, ``[1.0,]``, and a bare
+* **Forge/NeoForge**: Maven ranges, ``[1.0,2.0)``, ``[1.0,]``, and a bare
   ``1.0`` meaning "1.0 or later" rather than "exactly 1.0". Reading that as
   equality inverts most dependency declarations in the ecosystem.
 
 Comparison is looser than either specification. Real mod versions are not clean
-semver — ``mc1.20.1-2.3``, ``0.90.0+1.20.4``, ``4.0.0+1.21`` — and a strict
+semver (``mc1.20.1-2.3``, ``0.90.0+1.20.4``, ``4.0.0+1.21``), and a strict
 parser would decline to answer for a large fraction of real packs. Versions are
 compared segment by segment, numerics numerically and the rest lexically.
 """

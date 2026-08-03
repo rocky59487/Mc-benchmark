@@ -1,13 +1,11 @@
 """Statistical core of mcbench.
 
-Implements docs/METHODOLOGY.md sections 4 and 5. Pure standard library, by
-design: a measurement standard people are meant to adopt should not require a
-scientific Python stack to verify.
+Implements docs/METHODOLOGY.md sections 4 and 5, in the standard library only.
 
-The guiding rule throughout is that the statistic must survive the data we
-actually have. Frametime and MSPT distributions are heavily right-skewed, run
-counts are small, and several quantities of interest (percentiles, 1% lows) have
-no closed-form standard error. That rules out normal-theory intervals and
+Every estimator here is chosen for the data this project actually has. Frametime
+and MSPT distributions are heavily right-skewed, run counts are small, and
+several quantities of interest (percentiles, 1% lows) have no closed-form
+standard error. That rules out normal-theory intervals and
 standard-deviation-based outlier rules, and rules in bootstrap intervals and
 robust estimators.
 """
@@ -63,12 +61,11 @@ MIN_ADMISSIBLE_RUNS = 5
 class Verdict(str, Enum):
     """Outcome of a baseline-vs-variant comparison (METHODOLOGY.md section 5).
 
-    ``INCONCLUSIVE`` is a first-class result, not a failure. A benchmark that
-    never declines to answer is guessing.
+    ``INCONCLUSIVE`` is a first-class result rather than a failure.
 
-    ``INSUFFICIENT_DATA`` is distinct: inconclusive means the runs were made
-    and disagreed, insufficient means they were never obtained. Conflating them
-    lets a failed suite read as a measured null.
+    ``INSUFFICIENT_DATA`` is distinct from it: inconclusive means the runs were
+    made and disagreed, insufficient means they were never obtained. Conflating
+    them lets a failed suite read as a measured null.
     """
 
     IMPROVEMENT = "improvement"
@@ -260,7 +257,7 @@ def mean_of_worst_fraction(values: Sequence[float], fraction: float) -> float:
 
 
 def coefficient_of_variation(values: Sequence[float]) -> float:
-    """Standard deviation over mean — smoothness, independent of speed.
+    """Standard deviation over mean: smoothness, independent of speed.
 
     Separates "is it smooth" from "is it fast". A mod that raises average FPS
     while widening the frametime distribution has made the game feel worse, and
@@ -306,8 +303,7 @@ def _finite_sample_factor(n: int) -> float:
     That failure mode is worse than it looks. The runs it discards are the ones
     in the tails, so removing them makes the sample look more precise than it
     is, narrowing the confidence interval and inflating confidence in the
-    result — the opposite of what a rigorous benchmark should do when data is
-    scarce. Measured on clean Gaussian samples, the uncorrected rule dropped a
+    result. Measured on clean Gaussian samples, the uncorrected rule dropped a
     run in roughly a fifth of seven-run cells.
     """
     if n < 2:
@@ -327,7 +323,7 @@ def reject_outlying_runs(
     This operates on *per-run summaries*, never on individual frames. Within a
     run nothing is ever removed: a long frame is the phenomenon under study, and
     a GC pause is a real cost that must reach the tail metrics. What this
-    targets is a whole run spoiled by something outside the experiment — an OS
+    targets is a whole run spoiled by something outside the experiment: an OS
     update, a stray process, a thermal event.
 
     The default threshold of 8 MAD is far more permissive than the ~3 commonly
@@ -338,10 +334,10 @@ def reject_outlying_runs(
     falsely flagging around 13% of seven-run cells, against roughly 1.6% at 8.
 
     The two errors are not symmetric, which settles the choice. Falsely
-    excluding a run removes a tail observation, narrows the confidence interval,
-    and makes mcbench *more* confident than the data warrants — the exact
-    failure this project exists to prevent. Failing to exclude a mildly odd run
-    merely widens the interval and pushes the verdict toward ``inconclusive``,
+    excluding a run removes a tail observation, narrows the confidence interval
+    and makes mcbench more confident than the data warrants. Failing to exclude
+    a mildly odd run widens the interval and pushes the verdict toward
+    ``inconclusive``,
     which is honest. So the threshold is set where gross contamination is still
     caught essentially always, and marginal runs are left in the data to widen
     the interval as they should.
@@ -397,8 +393,7 @@ def bootstrap_ci(
 
     Assumes nothing about the shape of the distribution, which is required here:
     frametimes are not normal, and percentile statistics have no closed-form
-    standard error. ``seed`` is always explicit so intervals are reproducible —
-    a result nobody else can recompute is not evidence.
+    standard error. ``seed`` is always explicit so intervals are reproducible.
     """
     if not values:
         raise ValueError("bootstrap_ci() requires at least one value")
@@ -446,11 +441,11 @@ def cliffs_delta(baseline: Sequence[float], variant: Sequence[float]) -> float:
     """Cliff's delta: a non-parametric ordinal effect size in [-1, 1].
 
     P(variant > baseline) - P(variant < baseline). Robust to skew, meaningful at
-    the sample sizes benchmarks actually have, and it answers the question
-    people are really asking — how often does one configuration beat the other.
+    the sample sizes benchmarks actually have, and it answers how often one
+    configuration beats the other.
 
     Sign convention is in raw metric units: positive means the variant tends to
-    produce *larger* values. Whether larger is better is the caller's business.
+    produce larger values. Whether larger is better is the caller's business.
     """
     if not baseline or not variant:
         raise ValueError("cliffs_delta() requires non-empty samples")
@@ -561,7 +556,7 @@ def _bootstrap_p_value(replicates: Sequence[float]) -> float:
     """Two-sided bootstrap p-value for a delta of zero.
 
     Percentile-bootstrap inversion: the smaller tail mass either side of zero,
-    doubled. The +1 correction keeps it above zero — a level below the
+    doubled. The +1 correction keeps it above zero, because a level below the
     resampling's resolution is not evidence of an infinitely small one.
     """
     n = len(replicates)
@@ -594,8 +589,8 @@ def runs_needed_for_resolution(
     which the interval would clear the nearer ROPE boundary.
 
     Returns None when the verdict is already resolved, or when the projection
-    exceeds ``max_runs`` and the honest answer is that more runs will not settle
-    it — the effect is too close to the boundary to distinguish.
+    exceeds ``max_runs``, where more runs will not settle it because the effect
+    is too close to the boundary to distinguish.
 
     ``insufficient_data`` returns the floor without projecting: extrapolating
     an interval width from one or two values is arithmetic on noise.
@@ -650,12 +645,12 @@ def interaction_term(
                       - ([cost(A) - cost(none)] + [cost(B) - cost(none)])
 
     Zero means the two mods' costs simply add. Positive means the pair is more
-    expensive together than their individual costs predict — they are fighting,
-    typically over a shared lock, a cache one invalidates for the other, or a
+    expensive together than their individual costs predict, typically because
+    they contend over a shared lock, a cache one invalidates for the other, or a
     fast path one forces the other off.
 
-    This is the axis every existing Minecraft benchmark ignores, and it is the
-    usual explanation for a modpack that runs far worse than its parts suggest.
+    This is the axis every existing Minecraft benchmark ignores, and the usual
+    explanation for a modpack that runs far worse than its parts suggest.
     """
     for name, sample in (("none", none), ("a", a), ("b", b), ("ab", ab)):
         if not sample:

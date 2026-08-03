@@ -14,7 +14,7 @@ The problem it solves is that the command surface is stable but not *uniform*:
 - Paper has no client, so a rendering scenario cannot run there in any spelling.
 
 Compiling one scenario against every target with a single hard-coded dialect
-would therefore emit commands that fail — or worse, quietly do nothing — on some
+would therefore emit commands that fail, or worse quietly do nothing, on some
 of them. The governing rule here is the same one that governs the whole project:
 **a target that cannot express a scenario must refuse it loudly**, because a
 scenario that half-executes still produces numbers, and those numbers look
@@ -42,7 +42,7 @@ __all__ = [
 
 #: The 1.13 "flattening" renamed essentially every block and item. Scenarios are
 #: written with modern identifiers, so compiling one for an older target would
-#: place the wrong blocks rather than fail — the worst possible outcome. Older
+#: place the wrong blocks rather than fail, the worst possible outcome. Older
 #: targets are refused until an identifier mapping exists.
 FLATTENING_VERSION = "1.13"
 
@@ -59,7 +59,7 @@ class Version:
     Handles both numbering schemes in one ordering. Classic releases are
     ``1.MAJOR.MINOR`` while releases from 2026 onward are year-based
     (``26.1.2``), and because 26 > 1 a plain tuple comparison already orders them
-    correctly — the new scheme sorts after every ``1.x`` without a special case.
+    correctly: the new scheme sorts after every ``1.x`` without a special case.
 
     Snapshots (``24w14a``) are not orderable against releases in any meaningful
     way and are treated as unknown rather than guessed at.
@@ -133,7 +133,7 @@ class Capability(str, Enum):
     CLIENT = "client"
     """Has a client, so rendering scenarios are possible at all."""
     FORCELOAD = "forceload"
-    """``/forceload`` — chunk loading without a player. Since 1.13.1."""
+    """``/forceload``: chunk loading without a player. Since 1.13.1."""
     TICK_WARP = "tick_warp"
     """Running ticks as fast as the CPU allows. Vanilla 1.20.3+, or Carpet."""
     ITEM_REPLACE_BLOCK = "item_replace_block"
@@ -258,7 +258,7 @@ class Dialect:
                 f"Minecraft {version} predates the 1.13 flattening, which renamed "
                 f"essentially every block and item. Scenarios use modern "
                 f"identifiers, so compiling for this target would place the wrong "
-                f"blocks rather than fail — an identifier mapping is needed first"
+                f"blocks rather than fail; an identifier mapping is needed first"
             )
         if capability is Capability.FORCELOAD:
             return f"/forceload was added in 1.13.1; this target is {version}"
@@ -270,11 +270,11 @@ class Dialect:
         if capability is Capability.TICK_WARP:
             if platform.is_plugin_platform:
                 return (
-                    f"tick warp needs vanilla /tick (1.20.3+) — this target is "
+                    f"tick warp needs vanilla /tick (1.20.3+); this target is "
                     f"{version}, and Carpet has no build for {platform.value}"
                 )
             return (
-                f"tick warp needs vanilla /tick (1.20.3+) or Carpet — this target "
+                f"tick warp needs vanilla /tick (1.20.3+) or Carpet; this target "
                 f"is {version} and Carpet is not in the variant's mod list"
             )
         return f"{capability.value} is unavailable on {self.target}"

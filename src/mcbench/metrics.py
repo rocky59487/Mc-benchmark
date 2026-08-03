@@ -56,8 +56,8 @@ class MetricDef:
     """Declares a metric's meaning, units, and polarity.
 
     The polarity is data rather than something each call site decides, because
-    getting it backwards silently inverts a verdict — a regression reported as
-    an improvement is the worst failure mode this project has.
+    getting it backwards silently inverts a verdict, reporting a regression as
+    an improvement.
     """
 
     key: str
@@ -183,8 +183,8 @@ class RunFlag(str, Enum):
     PROBE_ERROR = "probe_error"
     """The probe reported an error during the run."""
     TICK_PERIOD_ONLY = "tick_period_only"
-    """Tick figures are periods, not execution time. Admissible — the metrics
-    are named accordingly — but this run carries no MSPT."""
+    """Tick figures are periods, not execution time. Admissible, with the
+    metrics named accordingly, but this run carries no MSPT."""
 
 
 @dataclass
@@ -199,7 +199,7 @@ class ClientSamples:
     frametimes_ns: list[int] = field(default_factory=list)
     gc_pauses_ms: list[float] = field(default_factory=list)
     """Individual stop-the-world pause durations. Empty when the JVM could only
-    report totals — see ``gc_total_pause_ms``."""
+    report totals; see ``gc_total_pause_ms``."""
     gc_total_pause_ms: float = 0.0
     """Aggregate collection time, when individual events were unavailable. Kept
     apart from the pause list so no percentile is ever computed from sums."""
@@ -446,8 +446,8 @@ def vsync_suspected(
 
     That is fatal to a rendering comparison and invisible in the summary: every
     variant reports the same average FPS, the intervals are tight, and the
-    benchmark confidently concludes the mods are equivalent — when what it
-    measured was the monitor.
+    benchmark concludes the mods are equivalent when what it measured was the
+    monitor.
 
     Returns the suspected refresh rate, or None. Deliberately conservative: a
     genuinely CPU-bound scene can sit near a round frametime by coincidence, and
@@ -482,7 +482,7 @@ def frame_cap_suspected(
     between mods it never compared.
 
     A bare majority rather than vsync's 80%, because a limiter is a floor rather
-    than a lock — slower frames pass through untouched, so a run can be badly
+    than a lock: slower frames pass through untouched, so a run can be badly
     cap-bound with a large minority above it.
 
     A flag, never a block.
@@ -508,7 +508,7 @@ def find_steady_state(
     Implements the frametime half of the warmup rule in METHODOLOGY.md section
     2. Steady state is declared at the first index where the rolling median over
     the preceding window is within ``tolerance`` of the median over the window
-    before that — the series has stopped trending.
+    before that, meaning the series has stopped trending.
 
     Returning None is meaningful: the caller must flag the run
     ``warmup_not_converged`` rather than accept it silently, because an

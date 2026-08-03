@@ -8,7 +8,7 @@ Three adaptations, and they are why this is not just a binary search:
 
 **The oracle is statistical.** A subset is slower by some amount with some
 confidence, and the same subset measured twice can disagree. So probes return
-four answers — regression, clean, *inconclusive*, *invalid* — and only the first
+four answers (regression, clean, inconclusive, invalid) and only the first
 two are evidence.
 
 **Subsets must be loadable.** An arbitrary half of a modpack usually is not.
@@ -21,7 +21,7 @@ declared dependencies, and the support that pulls in is reported separately.
 together. A plain bisection splits them, sees neither half regress, and
 concludes nothing is wrong; ddmin's complement phase is what handles it.
 
-Every probe costs a full benchmark cell — several fresh game launches — so the
+Every probe costs a full benchmark cell, several fresh game launches, so the
 search is budgeted and reports what it spent.
 """
 
@@ -106,7 +106,7 @@ class Probe:
     outcome: Outcome
     detail: str = ""
     tested: tuple[str, ...] = ()
-    """What was actually installed — the dependency closure of ``subset``."""
+    """What was actually installed: the dependency closure of ``subset``."""
     support: tuple[str, ...] = ()
     """Mods present only to satisfy a dependency."""
 
@@ -155,7 +155,7 @@ class IsolationResult:
 
     @property
     def is_interaction(self) -> bool:
-        """True when no single mod reproduces it — the pair or group is at fault.
+        """True when no single mod reproduces it: the pair or group is at fault.
 
         Claimed only once minimality is confirmed: without that, a pair could
         be one culprit and one passenger the search never tested apart.
@@ -197,7 +197,7 @@ def isolate(
 
     Implements ddmin over *dependency-closed* subsets. Returns a subset that is
     *1-minimal*: removing any single member stops it reproducing. That is a
-    weaker guarantee than globally minimal, and deliberately so — global
+    weaker guarantee than globally minimal, and deliberately so, because global
     minimality costs exponentially more probes, and each probe here is several
     full game launches.
 
@@ -288,7 +288,7 @@ def isolate(
                 # would be measured against an effect we never established.
                 result.converged = False
                 result.note = (
-                    "the full mod set's regression could not be confirmed — the "
+                    "the full mod set's regression could not be confirmed; the "
                     "measurement was inconclusive, not clean. Raise runs per cell "
                     "or pick a scenario with a larger effect, then isolate again"
                 )
@@ -331,8 +331,8 @@ def _confirm(
     Testing each removal is what 1-minimality means.
 
     An unresolved removal is fatal to the minimality claim but not to the
-    result. Members that cannot be removed at all — another member depends on
-    them — are separated out as support rather than counted against it.
+    result. Members that cannot be removed at all, because another member
+    depends on them, are separated out as support rather than counted against it.
     """
     installed = list(close(culprits).members)
     if not installed:

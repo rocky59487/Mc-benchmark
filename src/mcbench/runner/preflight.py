@@ -39,7 +39,7 @@ class Severity(str, Enum):
     WARN = "warn"
     """Measurement proceeds; the result is flagged and excluded from the corpus."""
     BLOCK = "block"
-    """Measurement must not proceed — any number produced would be misleading."""
+    """Measurement must not proceed; any number produced would mislead."""
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ class Preflight:
     def to_dict(self) -> dict:
         """The whole preflight state, for the results bundle.
 
-        Every check with its severity, what was actually read, and the remedy —
+        Every check with its severity, what was actually read and the remedy,
         not just the publishable verdict. Collapsing this to one boolean threw
         away the readings a reader needs to judge whether two results are
         comparable: two runs on machines differing in CPU scaling governor,
@@ -186,8 +186,8 @@ def _check_vsync(*, needs_gpu: bool) -> Check:
     variant scores the same number and the benchmark measures the monitor
     instead of the renderer.
 
-    This cannot be detected reliably before the run — the honest check is on the
-    *data*, where a frametime distribution pinned to a refresh interval is
+    This cannot be detected reliably before the run. The honest check is on the
+    data, where a frametime distribution pinned to a refresh interval is
     unmistakable (see ``vsync_suspected`` in metrics). What preflight can do is
     flag the environment variables that are known to force it.
     """
@@ -447,7 +447,7 @@ def run_preflight(
             scenarios do no rendering, so the GPU checks relax to informational.
         heap_mb: Configured JVM heap, used to size the memory requirement.
         require_account: Set False to validate the environment without demanding
-            credentials — useful for inspecting a machine before setting it up.
+            credentials, for inspecting a machine before setting it up.
     """
     checks = [
         _check_gpu(needs_gpu=needs_gpu),

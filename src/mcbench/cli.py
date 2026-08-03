@@ -222,10 +222,10 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     Input is a JSON document mapping ``"scenario/variant"`` to a list of runs,
     each run a mapping of metric key to value. This is the format the execution
     backend emits, and keeping analysis separate means results can be
-    re-analysed — with a different ROPE, say — without re-running anything.
+    re-analysed, with a different ROPE for instance, without re-running anything.
     """
     raw = json.loads(Path(args.results).read_text(encoding="utf-8"))
-    # Results are untrusted input — they are meant to be exchanged, and a corpus
+    # Results are untrusted input. They are meant to be exchanged, and a corpus
     # would ingest them from strangers. Validated before anything reaches the
     # statistics, because a non-finite value poisons everything downstream.
     suite_name, baseline_name, cells_raw = parse_results_document(raw)
@@ -364,7 +364,7 @@ def _interaction_groups(
 
     Taken from the results document when the run recorded them, and from a suite
     manifest when the operator points at one. Re-analysis is a first-class
-    operation here — the whole reason analysis is a separate command — so the
+    operation here, which is the whole reason analysis is a separate command, so the
     declaration has to survive in the results document rather than living only
     in a manifest that may not be to hand.
     """
@@ -430,7 +430,7 @@ def cmd_world(args: argparse.Namespace) -> int:
 
     The check METHODOLOGY §7 relies on, exposed so it can be run by hand. Two
     worlds that were supposed to be identical and are not is a finding on its
-    own — usually a mod that alters worldgen, occasionally a scenario whose
+    own, usually a mod that alters worldgen, occasionally a scenario whose
     setup is not as deterministic as it looks.
     """
     from .world import WorldError, fingerprint_world
@@ -496,7 +496,7 @@ def cmd_world(args: argparse.Namespace) -> int:
 def cmd_inspect(args: argparse.Namespace) -> int:
     """Static health check of a mod set: conflicts, gaps, and mixin contention.
 
-    Runs on jars alone — no game, no account, no GPU. That is the point: the
+    Runs on jars alone: no game, no account, no GPU. That is the point, since the
     fastest useful answer about a modpack is the one you get before spending two
     hours benchmarking a pack that was never going to load.
     """
@@ -605,7 +605,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     if hotspots:
         source = (
             "declared @Mixin targets" if verified
-            else "mixin constant-pool references — weaker evidence"
+            else "mixin constant-pool references (weaker evidence)"
         )
         print(f"\nMost contended classes, from {source}:")
         for contended, owners in hotspots:
@@ -947,7 +947,7 @@ def cmd_bisect(args: argparse.Namespace) -> int:
 
     # Read the jars so the search knows which mods need which. Without this a
     # subset is launched exactly as asked, and a culprit that needs a library
-    # fails to launch on its own while the library alone fails to reproduce —
+    # fails to launch on its own while the library alone fails to reproduce,
     # from which the search concludes the two interact, and two mod authors get
     # a bug report about a conflict that does not exist.
     graph = _dependency_graph(jars_by_id, candidates)
@@ -994,7 +994,7 @@ def cmd_bisect(args: argparse.Namespace) -> int:
     )
 
     print()
-    # Probes that were never launched — an unsatisfiable subset — have no oracle
+    # Probes that were never launched, an unsatisfiable subset, have no oracle
     # record, so the two lists are matched by walking the records in order
     # rather than zipped positionally.
     records = iter(oracle.records)
@@ -1031,7 +1031,7 @@ def cmd_bisect(args: argparse.Namespace) -> int:
         )
     elif len(result.culprits) > 1:
         print(
-            "\nMore than one mod is left, but minimality is unconfirmed — this "
+            "\nMore than one mod is left, but minimality is unconfirmed; this "
             "is not yet an\ninteraction claim. See the note below."
         )
     if result.note:
@@ -1172,7 +1172,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--provisioned", action="append",
                    help="mod id the provisioning layer guarantees at a "
                         "compatible version (repeatable). Nothing is assumed "
-                        "ambient without this — Fabric API included")
+                        "ambient without this, Fabric API included")
     p.set_defaults(func=cmd_inspect)
 
     p = sub.add_parser("targets", help="which scenarios run on which platforms")

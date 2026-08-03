@@ -1,7 +1,7 @@
 """Tabular export: CSV, TSV, Markdown, and HTML.
 
 One table model rendered four ways, so the numbers in a spreadsheet always match
-the numbers in the report. Every export carries its uncertainty columns — a CSV
+the numbers in the report. Every export carries its uncertainty columns: a CSV
 of bare point estimates would let the interval get lost the moment someone
 pastes it somewhere else, which is precisely how over-confident benchmark claims
 propagate.

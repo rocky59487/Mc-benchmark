@@ -1,4 +1,4 @@
-"""Chart rendering — hand-built SVG, no plotting dependency.
+"""Chart rendering: hand-built SVG, no plotting dependency.
 
 Charts are emitted as standalone SVG so a report is a single file that opens
 anywhere, survives being emailed, and renders identically in ten years. A
@@ -167,7 +167,7 @@ def interval_bar_chart(
     """Horizontal bars with confidence-interval whiskers.
 
     The workhorse for "how do the variants compare on this metric". Bars are
-    zero-based by default because a truncated axis exaggerates differences —
+    zero-based by default because a truncated axis exaggerates differences,
     the most common way a benchmark chart misleads without stating anything
     false.
     """
@@ -266,7 +266,7 @@ def forest_plot(
     verdict rule directly: the shaded band is the region of practical
     equivalence, and an interval that touches it has not established anything.
     Readers can see at a glance which differences are real, which are real but
-    too small to matter, and which are simply unresolved — a distinction that a
+    too small to matter, and which are simply unresolved, a distinction that a
     table of percentages makes far too easy to skip past.
     """
     if not series:
@@ -452,7 +452,7 @@ def order_effect_scatter(
     width: int = 720,
     height: int = 300,
 ) -> str:
-    """Metric against execution position — the audit chart for drift.
+    """Metric against execution position: the audit chart for drift.
 
     Interleaving is what prevents thermal drift from being attributed to a mod,
     but nothing guarantees it worked on a given machine. This plots each run

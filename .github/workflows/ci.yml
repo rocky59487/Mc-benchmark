@@ -14,14 +14,23 @@ concurrency:
 
 jobs:
   python:
-    name: Python (${{ matrix.python }})
-    runs-on: ubuntu-latest
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         # 3.11 is the floor: tomllib is stdlib from there, which is what lets the
         # project stay dependency-free.
+        os: [ubuntu-latest]
         python: ["3.11", "3.12", "3.13"]
+        include:
+          # Host probing and the executable test stand-ins are per-platform
+          # (runner/hostinfo.py, tests/executable.py). Without a Windows job
+          # they regress silently, which is how they broke before.
+          - os: windows-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,9 +54,8 @@ jobs:
       - name: Install without dev extras
         run: pip install -e .
       - name: Import and run on a bare interpreter
-        # The claim that a stock interpreter can verify this project is load
-        # bearing — it is why anyone can check a published result. A dependency
-        # sneaking into an import would break that silently, so it is enforced.
+        # A dependency sneaking into an import would break the stock-interpreter
+        # claim silently, so it is enforced rather than documented.
         run: |
           pip list --format=freeze | grep -v "^mcbench" | grep -v "^pip" \
             | grep -v "^setuptools" | grep -v "^wheel" > /tmp/extra.txt || true
@@ -70,8 +78,7 @@ jobs:
           java-version: "21"
       - name: Test
         # No Minecraft, no network beyond Maven Central. probe-core has zero game
-        # imports precisely so this stays fast and offline-ish; adapters are
-        # separate builds and are not gated here.
+        # imports so this stays fast; adapters are separate builds, not gated here.
         working-directory: probe
         run: ./gradlew test --no-daemon
 
@@ -85,11 +92,11 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Build and test
-        # Gateable in CI where the loader adapters are not: the agent compiles
-        # against ASM and probe-core only, so there is no Minecraft to download.
-        # `test` depends on `shadowJar`, and the integration test forks a real
-        # JVM with -javaagent — which is the only thing that can catch the
-        # classloader-split failure that unit tests all passed through.
+        # Gateable where the loader adapters are not: the agent compiles against
+        # ASM and probe-core only, so there is no Minecraft to download. `test`
+        # depends on `shadowJar`, and the integration test forks a real JVM with
+        # -javaagent, which is the only thing that catches the classloader-split
+        # failure that unit tests all passed through.
         working-directory: probe/adapters/probe-agent
         run: ./gradlew test --no-daemon
 
@@ -119,7 +126,7 @@ jobs:
       - name: Parse them with the Python reader
         # The protocol has two independent implementations and will drift unless
         # something checks. Regenerating rather than reusing the committed
-        # fixtures is the point: it tests today's Java against today's Python.
+        # fixtures tests today's Java against today's Python.
         run: |
           pip install -e ".[dev]"
           pytest tests/test_conformance.py -q

@@ -2,8 +2,8 @@
 
 A suite manifest lists mods by identifier only. It never references a jar file.
 That is a licensing constraint (docs/LICENSING.md: mod jars may not be
-redistributed) which happens to produce the right artefact anyway — a small
-text file that can be committed, diffed, reviewed, and reproduced by anyone,
+redistributed) which happens to produce the right artefact anyway: a small text
+file that can be committed, diffed, reviewed and reproduced by anyone,
 while the binaries stay on the operator's own machine.
 """
 
@@ -93,9 +93,9 @@ class ModRef:
         """Whether someone else could fetch this exact file.
 
         A local jar is reproducible only on the machine that holds it. That is
-        entirely legitimate for development — benchmarking a build before it is
-        published is a primary use case — but a result depending on it cannot be
-        verified by anyone else and so must never be marked publishable.
+        entirely legitimate for development, since benchmarking a build before
+        it is published is a primary use case, but a result depending on it
+        cannot be verified by anyone else and so is never publishable.
         """
         return self.platform is not Platform.LOCAL
 
@@ -107,7 +107,7 @@ class ModRef:
 
 @dataclass(frozen=True)
 class Variant:
-    """One configuration under test — a named set of mods.
+    """One configuration under test: a named set of mods.
 
     The empty mod set is the baseline. Every suite has exactly one baseline, and
     comparisons are always made against it.
@@ -162,8 +162,8 @@ class SuiteConfig:
 
         Four conditions: interleaved ordering, sufficient repetition, fully
         pinned mod versions, and every mod obtainable by a third party. A suite
-        that fails any of these can still be run — it is useful for local
-        iteration — but its numbers are not comparable to anyone else's.
+        that fails any of these still runs, which is useful for local
+        iteration, but its numbers are not comparable to anyone else's.
         """
         mods = [mod for v in self.variants for mod in v.mods]
         return (

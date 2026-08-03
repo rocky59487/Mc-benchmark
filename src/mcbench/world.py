@@ -1,26 +1,25 @@
 """World fingerprinting: proving two runs measured the same world.
 
-[METHODOLOGY.md](../../docs/METHODOLOGY.md) §7 makes a normative claim — that
-runs whose worlds differ are never pooled — and this is what makes it true. A
-scenario ships a seed and a setup script rather than a world save, so the world
-is generated on the operator's machine; that keeps mcbench clear of
-redistributing anything, but it also means the world is an *output* of the run,
-not a fixed input. Two variants can therefore silently measure different
-terrain, and averaging across that is not a comparison at all.
+[METHODOLOGY.md](../../docs/METHODOLOGY.md) §7 claims that runs whose worlds
+differ are never pooled, and this is what makes the claim true. A scenario ships
+a seed and a setup script rather than a world save, so the world is generated on
+the operator's machine. That keeps mcbench clear of redistributing anything, but
+it also means the world is an output of the run rather than a fixed input. Two
+variants can therefore measure different terrain, and averaging across that is
+not a comparison.
 
 **What is hashed, and what deliberately is not.** Only block content: the block
-state palette, the packed block indices, and biomes. Everything else in a chunk
-— entities, block-entity contents, tick lists, lighting, structure references,
-inhabited time — is excluded, because those vary between two runs of the *same*
-variant. Random ticks fire differently, mobs spawn in different places, and
-lighting is recomputed. Hashing them would flag every run as mismatched, and a
-check that always fires is a check nobody reads.
+state palette, the packed block indices, and biomes. Entities, block-entity
+contents, tick lists, lighting, structure references and inhabited time are all
+excluded, because they vary between two runs of the same variant. Random ticks
+fire differently, mobs spawn in different places, and lighting is recomputed.
+Hashing them would flag every run as mismatched.
 
 **Why the harness computes this rather than the probe.** Reading the saved
-region files needs no game API at all, so it costs the adapter SPI nothing and
-works identically on every version and platform — including the ones with no
-adapter. It also runs after the game has exited, so it cannot perturb the
-measurement it exists to qualify.
+region files needs no game API, so it costs the adapter SPI nothing and works
+identically on every version and platform, including the ones with no adapter.
+It also runs after the game has exited, so it cannot perturb the measurement it
+exists to qualify.
 """
 
 from __future__ import annotations
@@ -86,7 +85,7 @@ class WorldFingerprint:
     def usable(self) -> bool:
         """Whether this hash identifies a world well enough to pool runs on it.
 
-        Zero chunks hashes to the digest of nothing — the same constant for
+        Zero chunks hashes to the digest of nothing, the same constant for
         every empty world. Two runs that generated no terrain would agree on it
         and be pooled on the strength of a comparison that read nothing.
         """
@@ -102,7 +101,7 @@ class WorldFingerprint:
 def iter_region_chunks(path: Path) -> Iterator[tuple[ChunkRef, dict[str, Any]]]:
     """Yield ``(ChunkRef, root_compound)`` for every chunk present in a region.
 
-    Absent chunks — the common case near a world's edge — are skipped silently.
+    Absent chunks, the common case near a world's edge, are skipped silently.
     A chunk that is present but unreadable raises, so the caller can record it
     rather than quietly fingerprint a partial world.
     """
@@ -166,9 +165,9 @@ def _canonical_block_content(root: dict[str, Any]) -> list[Any]:
 
     Handles both chunk layouts anyone still runs:
 
-    * 1.18 and later — ``sections`` at the root, each with ``block_states``
+    * 1.18 and later: ``sections`` at the root, each with ``block_states``
       (``palette`` + ``data``) and ``biomes``.
-    * 1.13 to 1.17 — ``Level.Sections``, each with ``Palette`` + ``BlockStates``.
+    * 1.13 to 1.17: ``Level.Sections``, each with ``Palette`` + ``BlockStates``.
 
     Before 1.13 blocks were numeric ids in a byte array with no palette. That is
     below the flattening floor the target layer already refuses
@@ -263,13 +262,13 @@ def fingerprint_world(
     """Hash the block content of a saved world.
 
     Args:
-        world_dir: The world save directory — the one containing ``level.dat``.
+        world_dir: The world save directory, the one containing ``level.dat``.
         dimension: Which region directory to read. ``"region"`` is the
             overworld; the Nether and End live under ``DIM-1`` and ``DIM1``.
 
     Chunk digests are combined by sorting rather than by file order, so the
     result does not depend on the order the operating system returned the region
-    files in — which is not stable across filesystems and would otherwise make
+    files in, which is not stable across filesystems and would otherwise make
     two identical worlds hash differently on two machines.
     """
     root = Path(world_dir)
@@ -316,12 +315,12 @@ def fingerprint_world(
 # already exists. Letting the client create it instead is not an option: the
 # seed, the generator and the game mode would then be whatever the client chose
 # at that moment, which is exactly the "two variants measured different terrain"
-# failure the fingerprint above exists to catch — introduced deliberately, once
+# failure the fingerprint above exists to catch, introduced deliberately once
 # per run.
 #
 # So the save is authored here from the scenario's own seed. Only `level.dat` is
-# written; the terrain is generated by the game from that seed, which is the
-# point — mcbench never redistributes world data (docs/LICENSING.md).
+# written; the terrain is generated by the game from that seed, because mcbench
+# never redistributes world data (docs/LICENSING.md).
 
 #: The vanilla dimension set, written explicitly so the world does not depend on
 #: whatever the running version happens to default to. These identifiers have
@@ -516,7 +515,7 @@ def create_world(
 ) -> Path:
     """Create the save directory a client run will be launched into.
 
-    Returns the world directory. Only ``level.dat`` is written — the terrain is
+    Returns the world directory. Only ``level.dat`` is written; the terrain is
     the game's to generate from the seed, and generating it here would mean
     shipping world data mcbench has no right to redistribute.
     """

@@ -7,7 +7,7 @@ operator's own machine.
 Modrinth is the default provider because its terms suit automated use: read-only
 queries need no authentication, the rate limit is documented and generous, and
 downloads are permitted. The one hard requirement is a uniquely identifying
-User-Agent — generic library agents risk being blocked, and sending one would be
+User-Agent, because generic library agents risk being blocked and sending one is
 both rude and fragile.
 
 Standard library only, so that resolving mods needs no dependency stack.
@@ -38,8 +38,8 @@ PROJECT_URL = "https://github.com/mcbench/mcbench"
 #:
 #: The sha512 check already guarantees we benchmark the bytes we expected, but
 #: it runs *after* the request. A compromised or spoofed API response could
-#: point the URL at an internal address, and the request itself — issued from
-#: inside whatever network the harness runs on — is the attack. Pinning the host
+#: point the URL at an internal address, and the request itself, issued from
+#: inside whatever network the harness runs on, is the attack. Pinning the host
 #: closes that before anything is fetched.
 ALLOWED_DOWNLOAD_HOSTS = frozenset({
     "cdn.modrinth.com",
@@ -88,7 +88,7 @@ class ModrinthClient:
         contact: Optional contact string appended to the User-Agent. Modrinth
             recommends it so they can reach operators generating unusual load.
         cache_dir: Where downloaded jars are stored. Always outside version
-            control — jars must never be committed.
+            control; jars must never be committed.
     """
 
     def __init__(
@@ -168,7 +168,7 @@ class ModrinthClient:
 
         ``version`` may be a Modrinth version id or a version number. When it is
         omitted the newest compatible release is chosen and the caller is
-        expected to pin the result — an unpinned suite is not reproducible and
+        expected to pin the result, because an unpinned suite is not reproducible and
         is refused entry to the public corpus.
         """
         versions = self._get(

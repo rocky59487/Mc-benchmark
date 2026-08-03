@@ -6,7 +6,7 @@ silently: an unrecognised flag surfaces as a failed launch minutes in, repeated
 once per planned run, with an error that names nothing useful.
 
 So the launcher is asked what it supports before the suite starts. Flags it does
-not recognise are either dropped — when the run can proceed without them — or
+not recognise are dropped when the run can proceed without them, and otherwise
 reported as a preflight blocker naming the flag. A capability that cannot be
 probed is assumed present rather than absent: refusing to run because ``--help``
 was unparseable would be a worse failure than trying.

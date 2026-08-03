@@ -6,7 +6,7 @@ so a developer can get a verdict from one command and a CI job can consume the
 result without parsing prose.
 
 Instance provisioning is delegated to HeadlessMC as an external process. That
-boundary is deliberate — HeadlessMC owns Mojang authentication and game
+boundary is deliberate: HeadlessMC owns Mojang authentication and game
 provisioning, so mcbench never touches credentials and never redistributes game
 files (docs/LICENSING.md).
 """
@@ -123,7 +123,7 @@ SERVER_LEVEL_NAME = "mcbench"
 CLIENT_LEVEL_NAME = "mcbench"
 
 #: Frame cap written into options.txt. 260 is the top of vanilla's slider,
-#: where the limiter is disabled — but it is still a number in a file, and mods
+#: where the limiter is disabled, but it is still a number in a file and mods
 #: are free to honour it literally. Recorded in provenance, and
 #: :func:`~mcbench.metrics.frame_cap_suspected` checks for runs that hit it.
 CLIENT_FPS_CAP = 260
@@ -142,7 +142,7 @@ class RunOutcome:
     log_path: Path | None = None
     error: str = ""
     #: Hash over the block content of the world this run measured. Empty when the
-    #: world could not be read — never a placeholder, because a fingerprint that
+    #: world could not be read, never a placeholder, because a fingerprint that
     #: two runs share only because both failed to compute one would silently
     #: certify exactly what it exists to check.
     world_fingerprint: str = ""
@@ -155,7 +155,7 @@ class RunOutcome:
     def status(self) -> str:
         """How this attempt ended, in one word.
 
-        ``failed`` means no metrics at all — the launch died, timed out, or the
+        ``failed`` means no metrics at all: the launch died, timed out, or the
         probe never wrote a stream. ``inadmissible`` means it produced numbers
         the methodology refuses to pool.
         """
@@ -277,13 +277,13 @@ def _resolve_local_jar(
 ) -> Path:
     """Resolve a ``local:`` mod path, confined to ``local_root``.
 
-    Suite manifests are untrusted input — a public corpus or a CI job would
-    benchmark suites submitted by other people — and this path is taken straight
+    Suite manifests are untrusted input, since a public corpus or a CI job would
+    benchmark suites submitted by other people, and this path is taken straight
     from one. Without confinement, ``../../../../etc/passwd`` reads an arbitrary
     host file and copies it into the instance.
 
     Absolute paths and traversal are both refused rather than normalised. The
-    legitimate case — a developer benchmarking ``build/libs/mymod.jar`` — is a
+    legitimate case, a developer benchmarking ``build/libs/mymod.jar``, is a
     relative path inside the root, and anyone who genuinely needs a file
     elsewhere can point ``--local-root`` at it deliberately, which makes the
     decision the operator's rather than the manifest's.
@@ -326,7 +326,7 @@ def resolve_variant_mods(
     """Resolve a variant's mods to files, recording provenance for each.
 
     Local jars are supported so a developer can benchmark a build that is not
-    published yet — the common case during development. They are recorded with a
+    published yet, the common case during development. They are recorded with a
     file hash but marked ``platform="local"``, because a result depending on a
     jar nobody else can obtain is reproducible only on that machine and must not
     claim otherwise.
@@ -473,7 +473,7 @@ class Harness:
         """True when any selected scenario renders.
 
         Plugin platforms have no client at all, so a suite on Paper never needs a
-        GPU regardless of what its scenarios declare — and demanding one would
+        GPU regardless of what its scenarios declare, and demanding one would
         block a perfectly valid server benchmark.
         """
         if self.suite.loader.is_plugin_platform:
@@ -632,10 +632,10 @@ class Harness:
         return Check("launcher flags", Severity.OK, capabilities.detail)
 
     def resolve_probe(self) -> ProbeArtifacts:
-        """Make sure the probe — and what the probe needs — is on disk.
+        """Make sure the probe, and what the probe needs, is on disk.
 
         Fabric API is fetched from Modrinth when not supplied, and recorded in
-        provenance like any other artefact — it is installed in every instance
+        provenance like any other artefact: it is installed in every instance
         including the baseline, so it is part of what was measured.
         """
         if not self.probe.needs_fabric_api or self.probe.api_jar is not None:
@@ -753,7 +753,7 @@ class Harness:
         Every run gets a *fresh* directory. Reusing one would carry over JIT
         profile data, the world, logs, and the OS page cache state, all of which
         make repeated runs correlated and cause the variance estimate to be too
-        small — which is worse than no variance estimate, because it looks
+        small, which is worse than no variance estimate because it looks
         rigorous.
         """
         instance = self._instance_dir(planned)
@@ -888,8 +888,8 @@ class Harness:
             options = instance / "options.txt"
             # Vsync off: a vsync-locked client measures the display, not the
             # renderer. maxFps is the top of vanilla's slider, which disables
-            # the limiter — written from a named constant and recorded, not
-            # described as "uncapped".
+            # the limiter. Written from a named constant and recorded, rather
+            # than described as "uncapped".
             values: dict[str, Any] = {
                 "maxFps": CLIENT_FPS_CAP,
                 "enableVsync": "false",
@@ -1007,7 +1007,7 @@ class Harness:
         the suite's variant table.
 
         Returns None when the run fails, which the oracle drops rather than
-        substitutes — inventing a value would be fabricating a measurement.
+        substitutes, because inventing a value would fabricate a measurement.
         """
         scenario = self.scenarios.get(scenario_id)
         if scenario is None:
@@ -1096,7 +1096,7 @@ class Harness:
         environment["MCBENCH_PROBE_OUTPUT"] = str(probe_path)
         # Stated rather than derived. The agent would work this location out for
         # itself, but making it an explicit part of the launch environment means
-        # the two sides cannot drift into writing and reading different files —
+        # the two sides cannot drift into writing and reading different files,
         # which has happened once already on this seam.
         environment["MCBENCH_AGENT_OUTPUT"] = str(agent_path)
 
@@ -1225,7 +1225,7 @@ class Harness:
         """Hash the world this run measured, for the pooling check.
 
         METHODOLOGY §7: runs whose worlds differ are never pooled. This is what
-        makes that enforceable — without it the claim is a promise the code does
+        makes that enforceable; without it the claim is a promise the code does
         not keep.
 
         Failure to compute one is reported and returns empty. Substituting a
@@ -1244,7 +1244,7 @@ class Harness:
             if mismatch:
                 # The client did not enter the world the harness authored. It
                 # created its own, or regenerated ours from a level.dat it
-                # refused — either way the seed and generator are the game's
+                # refused. Either way the seed and generator are the game's
                 # choice and this is not the scenario that was requested.
                 self.on_event("run.world", {
                     "cell": str(planned.cell), "result": mismatch,
@@ -1275,8 +1275,9 @@ class Harness:
     ) -> None:
         """Take frame timings from the JVM agent when the adapter had none.
 
-        Absence of the file is the normal case — the agent is only present when
-        an operator added ``-javaagent`` to the launch — so it is not an error.
+        Absence of the file is the normal case, since the agent is only present
+        when an operator added ``-javaagent`` to the launch, so it is not an
+        error.
         A file that is present but unreadable is: it means the agent ran and
         something went wrong, and silently proceeding would report an
         adapter-only result as though nothing had been attempted.
@@ -1358,8 +1359,9 @@ class Harness:
     ) -> list[RunOutcome]:
         """Execute the whole plan in its scheduled order.
 
-        The order is the plan's order and is never re-sorted for convenience —
-        it is the fairness guarantee (planner.py). Runs that fail are recorded
+        The order is the plan's order and is never re-sorted for convenience,
+        because it is the fairness guarantee (planner.py). Runs that fail are
+        recorded
         and the suite continues by default, because one bad run should not
         discard the hours already spent on the rest.
         """
@@ -1389,8 +1391,8 @@ def flag_world_mismatches(outcomes: Sequence[RunOutcome]) -> dict[str, list[str]
     METHODOLOGY §7 promises that runs whose fingerprints differ are never pooled.
     Enforcing it is what turns that from a claim into a property.
 
-    The comparison is **per scenario, across variants** — not per cell. A cell
-    disagreeing with itself is a broken generator; a *variant* disagreeing with
+    The comparison is **per scenario, across variants**, not per cell. A cell
+    disagreeing with itself is a broken generator; a variant disagreeing with
     the rest is the case that actually matters, because it means a mod changed
     worldgen and the frametimes being compared came from different terrain. Both
     are caught by comparing every run of a scenario against the fingerprint most
@@ -1419,7 +1421,7 @@ def flag_world_mismatches(outcomes: Sequence[RunOutcome]) -> dict[str, list[str]
 
         # The majority world is the reference. Ties break on the fingerprint
         # string so the choice is deterministic rather than dependent on run
-        # order — an arbitrary but *stable* reference beats a shifting one.
+        # order: an arbitrary but stable reference beats a shifting one.
         reference = max(sorted(counts), key=lambda digest: counts[digest])
         for outcome in runs:
             if outcome.world_fingerprint != reference:

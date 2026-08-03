@@ -75,7 +75,7 @@ MAX_COMMAND_LENGTH = 32500
 #: Characters that must never appear inside an emitted command.
 #:
 #: The plan is a newline-delimited file, so a command containing a newline
-#: becomes *several* commands when written — one scenario action silently
+#: becomes several commands when written, one scenario action silently
 #: turning into three. Scenarios are meant to be shared and committed, which
 #: makes them untrusted input, so this is a real injection vector rather than a
 #: theoretical one. Carriage returns and NULs are rejected for the same reason.
@@ -118,8 +118,8 @@ class ProbePlan:
     properties: dict[str, str] = field(default_factory=dict)
     setup: list[str] = field(default_factory=list)
     workload: list[str] = field(default_factory=list)
-    #: Settings that are not commands — render distance, simulation distance —
-    #: which the harness applies to the instance's config files instead.
+    #: Settings that are not commands, such as render distance and simulation
+    #: distance, which the harness applies to the instance's config files.
     instance_settings: dict[str, Any] = field(default_factory=dict)
 
     def write(self, directory: str | Path) -> Path:
@@ -464,7 +464,7 @@ def _compile_camera_path(action: dict[str, Any], where: str) -> list[str]:
 
     Paced in ticks rather than frames on purpose. One step per rendered frame
     would make a fast machine fly the path faster, so the two configurations
-    being compared would traverse different amounts of world — the workload
+    being compared would traverse different amounts of world. The workload
     itself would differ, which is the one thing a benchmark must not allow.
     """
     points = action.get("points") or []
@@ -641,7 +641,7 @@ def compile_plan(
     )
 
     # World-level gamerules run before anything else so setup never races the
-    # rules that are meant to hold it steady — mob spawning in particular.
+    # rules that are meant to hold it steady, mob spawning in particular.
     gamerules = [
         f"gamerule {name} {_bool_or_num(value)}"
         for name, value in sorted((scenario.world.get("gamerules") or {}).items())

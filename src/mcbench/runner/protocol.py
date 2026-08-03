@@ -1,4 +1,4 @@
-"""The probe protocol — the contract between the in-game mod and the harness.
+"""The probe protocol: the contract between the in-game mod and the harness.
 
 The probe is a small mod loaded into the instance under test. It drives the
 scenario, samples timing, and writes newline-delimited JSON to a file. This
@@ -83,7 +83,7 @@ class TickSource(str, Enum):
 
     The distinction is load-bearing. ``PERIOD`` is the interval between
     end-of-tick callbacks, which on an unsaturated 20 TPS server sits at 50 ms
-    whether the tick cost 5 ms or 30 ms — so it cannot be published as MSPT, and
+    whether the tick cost 5 ms or 30 ms, so it cannot be published as MSPT and
     the harness gives it its own metric names instead.
     """
 
@@ -118,7 +118,7 @@ class ProbeStream:
 
     tick_source: TickSource = TickSource.BRACKET
     """What the tick durations measure. Defaults to the honest reading for a
-    stream that does not say — an old probe, or one whose ticks never arrived."""
+    stream that does not say: an old probe, or one whose ticks never arrived."""
     #: What the run reported about how it reached measurement, from ``bye``.
     summary: dict[str, Any] = field(default_factory=dict)
     #: Individual collections, when the JVM could report them.
@@ -149,7 +149,7 @@ def _read_gc(stream: ProbeStream, event: dict[str, Any]) -> None:
     ``events`` is the good case: individual collections, each with its own
     duration and its own before/after heap, from which a pause percentile is a
     percentile over pauses. ``aggregate`` is the fallback on a JVM with no
-    notification support, and is retained as a total only — computing a
+    notification support, and is retained as a total only, because computing a
     percentile from per-interval sums would describe the sampling cadence rather
     than the collector. ``pauses_ms`` is the old shape, kept so streams recorded
     before this distinction existed still parse.
@@ -266,7 +266,7 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
                     raise ProbeError(
                         f"{source}:{number}: unknown tick source {declared!r}. "
                         f"Refusing to guess whether these are tick durations or "
-                        f"tick periods — the two are different measurements."
+                        f"tick periods; the two are different measurements."
                     ) from None
             if phase is Phase.MEASUREMENT:
                 stream.server.tick_durations_ns.extend(durations)
@@ -342,7 +342,7 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
 
     if not saw_hello:
         raise ProbeError(
-            f"{source}: no 'hello' event — the probe never started. The instance "
+            f"{source}: no 'hello' event; the probe never started. The instance "
             f"most likely failed before the mod loaded; check the instance log."
         )
 
@@ -354,7 +354,7 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
 
 #: What the JVM agent writes, always separate from an adapter's own stream.
 #: Two writers appending to one file would interleave into an unparseable mess,
-#: and both can be active at once — an adapter driving the workload while the
+#: and both can be active at once: an adapter driving the workload while the
 #: agent supplies frames.
 AGENT_STREAM_NAME = "probe-agent.jsonl"
 
@@ -375,7 +375,7 @@ def adopt_agent_frames(primary: ProbeStream, agent: ProbeStream) -> str:
 
     Substitution is also refused when the two streams disagree about which
     scenario they measured. Instance directories are rebuilt per run, so this
-    should be impossible — but a stale file silently contributing frames from a
+    should be impossible, but a stale file silently contributing frames from a
     different variant is exactly the failure that would destroy a comparison
     while looking perfectly healthy, so it is checked rather than assumed.
 
@@ -396,7 +396,7 @@ def adopt_agent_frames(primary: ProbeStream, agent: ProbeStream) -> str:
     primary.warmup_frames_ns.extend(agent.warmup_frames_ns)
     # The agent runs its own phase controller off the same probe.properties, so
     # its measurement window is the same length as the adapter's but does not
-    # start at the same instant — it begins at premain rather than at mod init.
+    # start at the same instant: it begins at premain rather than at mod init.
     # Its duration is therefore the honest one to report for these frames.
     if agent.client.duration_s:
         primary.client.duration_s = agent.client.duration_s

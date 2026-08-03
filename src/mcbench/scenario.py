@@ -58,7 +58,7 @@ class Side(str, Enum):
         """Whether a run of this scenario has frames to time at all.
 
         The same question ``ProbeConfig.measuresFrames()`` answers in Java, and
-        it must answer it the same way — the probe and the harness disagreeing
+        it must answer it the same way. The probe and the harness disagreeing
         about whether a run has a client is the kind of seam that produces an
         empty result file and no explanation.
         """
@@ -163,7 +163,7 @@ def _require(condition: bool, message: str) -> None:
 
 def _validate_world(world: Any, where: str) -> None:
     _require(isinstance(world, dict), f"{where}: 'world' must be an object")
-    _require("seed" in world, f"{where}: world.seed is required — an unfixed seed "
+    _require("seed" in world, f"{where}: world.seed is required; an unfixed seed "
                               f"makes the comparison meaningless")
     _require(isinstance(world["seed"], int) and not isinstance(world["seed"], bool),
              f"{where}: world.seed must be an integer")
@@ -194,7 +194,7 @@ def _validate_measurement(measurement: Any, where: str) -> None:
     _require(
         isinstance(warmup["min"], (int, float)) and not isinstance(warmup["min"], bool)
         and warmup["min"] > 0,
-        f"{where}: measurement.warmup.min must be a positive number — the JVM's "
+        f"{where}: measurement.warmup.min must be a positive number; the JVM's "
         f"warmup is the largest confound in Minecraft benchmarking",
     )
 

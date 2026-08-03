@@ -19,10 +19,9 @@ classifiers = [
     "Topic :: System :: Benchmark",
 ]
 
-# Intentionally no runtime dependencies. A measurement standard that people are
-# asked to trust should be verifiable by anyone with a stock interpreter, and
-# the statistics involved (bootstrap, MAD, Cliff's delta) are a few dozen lines
-# each. tomllib is stdlib on 3.11+.
+# No runtime dependencies, so anyone can verify a published result with a stock
+# interpreter. The statistics involved (bootstrap, MAD, Cliff's delta) are a few
+# dozen lines each, and tomllib is stdlib on 3.11+. CI enforces this.
 dependencies = []
 
 [project.optional-dependencies]
@@ -39,19 +38,16 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.ruff]
-# 100 rather than the stricter 88/90 conventions: a fair number of lines here
-# are single CSS rules, coordinate-formatting ternaries, or dict literals in
-# tests, all of which read worse folded than they do slightly long.
+# 100 rather than 88: many lines here are single CSS rules, coordinate-format
+# ternaries, or dict literals in tests, which read worse folded.
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = [
-    # `class X(str, Enum)` rather than `StrEnum`. Deliberate: these enums are
-    # serialised into JSON results and read back by third parties, and str-Enum
-    # members compare equal to their plain-string form on every Python we
-    # support. StrEnum would also change what str() returns, which would alter
-    # already-published report text.
+    # `class X(str, Enum)` rather than `StrEnum`. These enums are serialised
+    # into JSON results and read back by third parties; StrEnum changes what
+    # str() returns, which would alter already-published report text.
     "UP042",
 ]

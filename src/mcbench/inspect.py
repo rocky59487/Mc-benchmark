@@ -1,6 +1,6 @@
 """Static inspection of a mod set: metadata, conflicts, and mixin overlap.
 
-Everything here works on jar files alone — no game, no account, no GPU, no run.
+Everything here works on jar files alone: no game, no account, no GPU, no run.
 That matters for a modpack health check, because the fastest useful answer is the
 one you get before spending two hours benchmarking a pack that was never going to
 load.
@@ -9,7 +9,7 @@ Three classes of finding:
 
 **Declared incompatibilities.** Mod authors already record what they break. A
 Fabric mod's ``breaks`` block, a NeoForge ``incompatible`` dependency, a Bukkit
-``depend`` list — all of it is machine-readable and routinely ignored. Reading it
+``depend`` list, all of it machine-readable and routinely ignored. Reading it
 catches the conflicts someone already knew about.
 
 **Structural problems.** Missing dependencies, duplicate mod ids, and two jars
@@ -18,7 +18,7 @@ failures.
 
 **Mixin target overlap.** The interesting one, and the reason this module parses
 bytecode. Two mods that transform the same Minecraft class are not necessarily
-broken, but that is where conflicts actually come from — competing rewrites of
+broken, but that is where conflicts actually come from: competing rewrites of
 one method, injection points that shift under each other, or a fast path one mod
 adds and another removes. Overlap is a *signal for where to look*, never a
 verdict, and this module is careful to say so.
@@ -72,7 +72,7 @@ __all__ = [
 # The classic attack is a zip bomb: a 200 KB jar whose entries expand to
 # hundreds of megabytes, exhausting memory in a tool that reads every class.
 # ZipInfo carries the declared uncompressed size, so the cost of an entry is
-# knowable before reading it — these limits are checked against that, and the
+# knowable before reading it. These limits are checked against that, and the
 # read is capped again afterwards in case the declared size lied.
 
 #: Largest single entry we will read into memory.
@@ -89,7 +89,7 @@ MAX_ENTRIES = 20_000
 MAX_COMPRESSION_RATIO = 300
 
 #: How deep nested jars are followed. Fabric mods bundle their dependencies in
-#: ``META-INF/jars/``, and those jars may bundle their own — but only to a
+#: ``META-INF/jars/``, and those jars may bundle their own, but only to a
 #: shallow depth in practice, while a hostile archive can nest indefinitely and
 #: turn inspection into an unbounded recursion over a few kilobytes.
 MAX_NESTING_DEPTH = 3
@@ -306,7 +306,7 @@ def _constant_pool_strings(data: bytes) -> list[str]:
     appear there as descriptors, and walking the pool needs only the entry size
     table above.
 
-    The tradeoff is honest over-approximation — a class merely *referenced* by a
+    The tradeoff is honest over-approximation: a class merely referenced by a
     mixin shows up alongside the one it targets. Since overlap is a signal for
     where to look rather than a verdict, over-approximating is the safe
     direction.
@@ -366,7 +366,7 @@ def annotated_mixin_targets(data: bytes) -> set[str] | None:
     in a mixin package is told apart from a mixin.
 
     Both forms are read: ``@Mixin(Foo.class)`` stores class constants, and
-    ``@Mixin(targets = "a.b.Foo")`` stores dotted names as strings — the latter
+    ``@Mixin(targets = "a.b.Foo")`` stores dotted names as strings, and the latter
     for inner and package-private classes, which are disproportionately the
     interesting targets.
 
@@ -629,7 +629,7 @@ def _read_bukkit(
     """Minimal plugin.yml reader.
 
     Deliberately not a YAML parser. plugin.yml uses a tiny, well-established
-    subset — scalars and simple lists — and adding a YAML dependency to read six
+    subset, scalars and simple lists, and adding a YAML dependency to read six
     keys would cost more than it returns. Anything it cannot parse is reported as
     an error on the mod rather than guessed at.
     """
@@ -917,7 +917,7 @@ class InspectionTarget:
 
     Ranges cannot be evaluated without one: ``depends = {"minecraft": ">=1.21"}``
     is the commonest declaration in the ecosystem and cannot be judged from the
-    jars alone. The dialect follows the loader — ``[1.0,2.0)`` and
+    jars alone. The dialect follows the loader: ``[1.0,2.0)`` and
     ``>=1.0 <2.0`` are the same constraint in two syntaxes.
     """
 
@@ -971,7 +971,7 @@ class Inspection:
     def hotspots(
         self, limit: int = 15, *, verified_only: bool = False
     ) -> list[tuple[str, tuple[str, ...]]]:
-        """Most-contended classes first — where to point a bisect."""
+        """Most-contended classes first: where to point a bisect."""
         source = self.verified_overlaps if verified_only else self.overlaps
         return sorted(source.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:limit]
 
@@ -1006,7 +1006,7 @@ def flatten_mods(mods: Iterable[ModMetadata]) -> list[ModMetadata]:
     """Every mod that will be present, including ones bundled inside others.
 
     A nested jar is installed exactly as if it had been dropped in alongside its
-    host, so anything reasoning about what is present has to see it — inspection
+    host, so anything reasoning about what is present has to see it. Inspection
     for dependency satisfaction, and the bisect's dependency graph alike.
     """
     out: list[ModMetadata] = []
@@ -1083,7 +1083,7 @@ def _check_conflicts(
     versions: dict[str, str],
     dialect: VersionDialect,
 ) -> None:
-    """Declared incompatibilities — the author already told us."""
+    """Declared incompatibilities: the author already told us."""
     for broken, spec in mod.breaks.items():
         if broken not in present:
             continue
@@ -1237,8 +1237,8 @@ def _check_mixin_overlap(
             f"class)",
             detail=(
                 "Declared targets read from the bytecode, not classes that merely "
-                "appear near a mixin. Not proof of a conflict — mods coexist on "
-                "the same class routinely — but where to point a bisect first."
+                "appear near a mixin. Not proof of a conflict, since mods "
+                "coexist on the same class routinely, but where to look first."
             ),
         ))
     elif result.overlaps:

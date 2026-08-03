@@ -2,7 +2,7 @@
 
 This is where per-run metrics become the statements mcbench is willing to make:
 a cell summary with confidence intervals, a comparison against the baseline with
-a ROPE verdict, and — where the suite declares one — an interaction term.
+a ROPE verdict, and an interaction term where the suite declares one.
 
 The rendering deliberately shows uncertainty everywhere and never presents a
 bare point estimate. A number without an interval invites exactly the false
@@ -68,7 +68,7 @@ def parse_results_document(raw: Any) -> tuple[str, str, dict[str, list[dict[str,
     Result documents are untrusted input: they are meant to be exchanged, and a
     public corpus would ingest them from strangers. Validating here rather than
     letting the values flow into the statistics matters for one reason above the
-    rest — **a non-finite value silently poisons everything downstream**.
+    rest: **a non-finite value silently poisons everything downstream**.
 
     JSON has no infinity, but ``1e400`` parses to one, and it then travels
     through the aggregation into a report whose JSON contains ``Infinity``: not
@@ -315,8 +315,8 @@ def aggregate_cell(
     Inadmissible runs (crashed, too few samples, fingerprint mismatch) are
     dropped before anything else, and their flags are carried onto the result so
     a reader can see the cell was affected. Whole-run outlier rejection then
-    operates per metric, because a run can be contaminated in one dimension —
-    a stray GC storm inflating pause metrics — while remaining valid in others.
+    operates per metric, because a run can be contaminated in one dimension,
+    such as a stray GC storm inflating pause metrics, while valid in others.
 
     ``attempted`` and ``failed`` cover runs that produced no metrics and so
     never reached here, so five values out of five and five out of twelve do not
@@ -368,8 +368,8 @@ def compare_to_baseline(
 ) -> list[MetricComparison]:
     """Compare every shared metric between a baseline cell and a variant cell.
 
-    A decisive verdict needs both cells to support one. Where they cannot — too
-    few surviving runs, or too many excluded as outliers — it is downgraded to
+    A decisive verdict needs both cells to support one. Where they cannot, from
+    too few surviving runs or too many excluded as outliers, it is downgraded to
     ``insufficient_data`` with the reason recorded. Suppression rather than
     annotation, because a caveat beside a red badge is read as a regression.
     """
@@ -511,7 +511,7 @@ def family_of(comparison: MetricComparison) -> str:
     """Which hypothesis family a comparison belongs to.
 
     One family is one (scenario, metric): the tests sharing a baseline cell and
-    a metric. Metrics are not pooled across the suite — ``frametime_mean_ms``
+    a metric. Metrics are not pooled across the suite: ``frametime_mean_ms``
     and ``fps_avg`` are the same measurement twice, and correcting across
     strongly dependent tests is punitive rather than principled.
     """
@@ -527,7 +527,7 @@ def apply_fdr(
     decisive verdict that does not survive is demoted to ``inconclusive``.
     Nothing is promoted: correction only removes discoveries.
 
-    :returns: a summary for the report's method section — a correction nobody
+    :returns: a summary for the report's method section, since a correction nobody
         can see applied is indistinguishable from one that never ran.
     """
     families: dict[str, list[MetricComparison]] = {}
@@ -600,7 +600,7 @@ def reference_ratios(
     the corpus is defined in ratios to a fixed mod-free scenario measured in the
     same session.
 
-    Empty when the suite did not run the reference scenario — there is nothing
+    Empty when the suite did not run the reference scenario, because there is nothing
     to normalise against, and a made-up denominator would look comparable.
     """
     reference = cells.get(Cell(reference_scenario, baseline))
@@ -648,7 +648,7 @@ def render_markdown(result: SuiteResult) -> str:
 
     Every figure carries its interval, every verdict names the ROPE it was
     judged against, and inconclusive results are shown as prominently as
-    decisive ones — a benchmark that only reports wins teaches people to trust
+    decisive ones, because a benchmark that only reports wins teaches people to trust
     it when it should not be trusted.
     """
     lines: list[str] = []
@@ -715,7 +715,7 @@ def render_markdown(result: SuiteResult) -> str:
             for warning in warnings:
                 add(f"> - {warning}")
             for name in unstable:
-                add(f"> - `{name}`: unstable — more than 20% of runs excluded as outliers")
+                add(f"> - `{name}`: unstable, over 20% of runs excluded as outliers")
             add("")
 
         comparisons = result.comparisons_for(scenario)
@@ -783,7 +783,7 @@ def render_markdown(result: SuiteResult) -> str:
             "Non-additivity between mod pairs. The term is in raw metric units, "
             "so its sign is read against the metric's direction: on a cost "
             "metric a positive term means the pair costs more together than "
-            "their individual costs predict — usually contention over a shared "
+            "their individual costs predict, usually contention over a shared "
             "lock, a cache one invalidates for the other, or a fast path one "
             "forces the other off. The verdict column states the reading."
         )
@@ -839,7 +839,7 @@ def render_markdown(result: SuiteResult) -> str:
 
 
 def render_json(result: SuiteResult) -> str:
-    """Machine-readable report — the corpus ingestion format."""
+    """Machine-readable report: the corpus ingestion format."""
     payload: dict[str, Any] = {
         "schema": "mcbench.result/1",
         "suite": result.suite_name,

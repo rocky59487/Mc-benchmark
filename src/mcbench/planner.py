@@ -44,7 +44,7 @@ class OrderStrategy(str, Enum):
 
 @dataclass(frozen=True)
 class Cell:
-    """One (scenario, variant) pair — the unit that gets repeated."""
+    """One (scenario, variant) pair: the unit that gets repeated."""
 
     scenario: str
     variant: str
@@ -117,9 +117,9 @@ def plan_runs(
     benchmark uses. Blocked execution confounds variant with wall-clock time,
     and time carries thermal throttling, page-cache warming, background load,
     and ambient temperature drift. On a machine that throttles after ten
-    minutes, blocked ordering hands a clean, repeatable, entirely fake win to
-    whichever variant ran first — and it will reproduce, which is what makes it
-    so dangerous. Interleaving converts that systematic bias into noise the
+    minutes, blocked ordering hands a clean and repeatable win to whichever
+    variant ran first, and it reproduces, which is what makes it hard to spot.
+    Interleaving converts that systematic bias into noise the
     statistics can see and price in.
 
     Scenarios are held together within a round rather than interleaved with each

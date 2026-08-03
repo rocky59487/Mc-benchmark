@@ -2,7 +2,7 @@
 
 :mod:`mcbench.diagnose` knows how to search a mod set; this is what answers
 "does this subset reproduce the regression". Each answer costs a full benchmark
-cell, and the answer is a verdict under the project's usual rules — bootstrap
+cell, and the answer is a verdict under the project's usual rules: bootstrap
 interval, region of practical equivalence, and ``inconclusive`` when the data
 does not support either call.
 
@@ -99,8 +99,8 @@ class BenchmarkOracle:
             the floor cannot reach a verdict even if nothing fails.
         interleave_baseline: Keep True for anything you intend to act on.
         rope: Region of practical equivalence. A subset must be worse by more
-            than this before it is called a culprit — otherwise the search would
-            chase differences too small to matter and never converge.
+            than this before it is called a culprit, or the search would chase
+            differences too small to matter and never converge.
         allow_underpowered: For tests and dry runs. Probes issued under it can
             only return ``INCONCLUSIVE``.
     """
@@ -160,7 +160,7 @@ class BenchmarkOracle:
         """Measure baseline and subset, interleaved.
 
         One replicate of each arm per round, with the order shuffled, so neither
-        arm systematically occupies the earlier — cooler, quieter — half of the
+        arm systematically occupies the earlier, cooler, quieter half of the
         probe.
         """
         rng = random.Random(self.seed + len(self.records) * 7919)
@@ -176,7 +176,7 @@ class BenchmarkOracle:
                 else:
                     record.subset_attempts += 1
                 if value is None:
-                    # Dropped, never substituted — but still counted: it cost a
+                    # Dropped, never substituted, but still counted: it cost a
                     # launch, and it is evidence about whether this runs at all.
                     continue
                 if name == "baseline":
@@ -277,8 +277,8 @@ class BenchmarkOracle:
         """Map a ROPE verdict onto what the search needs to know.
 
         ``equivalent`` becomes CLEAN because the search asks "does this subset
-        reproduce the regression", and a difference inside the ROPE does not —
-        it is a real but irrelevant difference. Collapsing it into REGRESSION
+        reproduce the regression", and a difference inside the ROPE does not:
+        it is real but irrelevant. Collapsing it into REGRESSION
         would make the search chase noise-sized effects forever.
 
         ``improvement`` is also CLEAN: a subset that is *faster* plainly is not

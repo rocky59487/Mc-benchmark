@@ -2,14 +2,14 @@
 
 The reader covers what a world fingerprint needs: enough of the format to walk a
 chunk's block data and nothing else. Tags are decoded lazily where skipping is
-cheaper than materialising — a region file holds up to 1024 chunks and a
-benchmark run touches several region files per instance.
+cheaper than materialising: a region file holds up to 1024 chunks and a benchmark
+run touches several region files per instance.
 
 The writer exists for one job: a client run has to be launched *into* a world,
 and quick-play will only enter a world that already exists on disk. Rather than
-letting the game create one — whose seed and settings would then be whatever the
-client felt like, differing between variants — the harness authors the save
-itself, from the scenario's seed. Tag types are explicit rather than inferred,
+letting the game create one, whose seed and settings would be whatever the client
+felt like and would differ between variants, the harness authors the save itself
+from the scenario's seed. Tag types are explicit rather than inferred,
 because Python's ``int`` covers four different NBT tags and guessing wrong
 produces a file the game rejects with no useful message.
 
@@ -63,7 +63,7 @@ class TagType:
 
 
 #: Ceiling on a single decompressed chunk. Region files are untrusted input in
-#: the same sense mod jars are (see docs/SECURITY.md) — a benchmark may run a
+#: the same sense mod jars are (see docs/SECURITY.md): a benchmark may run a
 #: world produced by someone else's worldgen mod, and a chunk that inflates to
 #: gigabytes would take the harness down between runs. Real chunks are well
 #: under a megabyte; this is two orders of magnitude of headroom.
@@ -219,7 +219,7 @@ def decompress_chunk(compression: int, payload: bytes) -> bytes:
 # Tag types are carried by wrapper classes rather than inferred from Python
 # types. A Python ``int`` is a candidate for BYTE, SHORT, INT and LONG, and the
 # game reads a mistyped field as garbage or refuses the file outright with a
-# message that names neither the field nor the type — so the ambiguity has to be
+# message that names neither the field nor the type, so the ambiguity has to be
 # resolved by the caller, once, where the meaning is known.
 
 

@@ -354,6 +354,29 @@ it spent — probes *and* game launches. Isolating one bad mod out of 64 takes w
 under 40 probes instead of 2^64 subsets. Every probe's numbers are kept, so
 `diagnosis.json` lets someone check the conclusion rather than trust it.
 
+### World fingerprinting
+
+```bash
+mcbench world work/instances/*/mcbench     # do these runs share a world?
+```
+
+Scenarios ship a seed and a setup script rather than a world save, so the world
+is an *output* of a run, not a fixed input. Two variants can therefore quietly
+measure different terrain, and averaging across that is not a comparison at all.
+
+Every run is fingerprinted from its saved region files, and runs whose worlds
+differ are flagged inadmissible — enforcing [METHODOLOGY.md](docs/METHODOLOGY.md)
+§7 rather than merely asserting it. The hash covers block palettes, packed block
+indices, biomes and chunk coordinates, and deliberately **excludes** entities,
+tick lists and lighting: those differ between two runs of the same variant, so
+including them would flag everything and the check would stop being read.
+
+Reading the save needs no game API, so it works on every version and platform
+including those with no adapter, and it runs after the process exits so it
+cannot perturb what it qualifies. The NBT and Anvil readers are ~500 lines of
+standard library, which keeps the promise that a stock interpreter can verify a
+published result.
+
 ## One scenario, every platform
 
 Scenarios are platform-neutral. Compilation takes a target, and the dialect layer
@@ -392,7 +415,7 @@ definitions; run planner with interleaved randomised ordering; suite manifests
 with publishability checks; Modrinth and local-jar resolution with hash
 verification; environment preflight gating; the headless run loop; the probe
 wire protocol; SVG charts, table export in four formats, and the self-contained
-HTML report. 381 tests.
+HTML report. 410 tests.
 
 Plus the probe's timing core: hot-path sample buffers, phase control with
 steady-state detection, JMX runtime monitoring, the protocol writer, and the
@@ -406,10 +429,12 @@ version and any loader, including vanilla, by instrumenting LWJGL instead of the
 game. Security hardening with a threat model, and CI enforcing tests, lint,
 protocol conformance, security regressions and licence compliance.
 
-**Next** — vsync detection in preflight (required before trusting agent-sourced
-frame timings); world fingerprinting; CurseForge provider (opt-in, no caching);
-cross-loader and cross-version comparison; bot-driven player load; the public
-results corpus.
+Plus world fingerprinting, which makes METHODOLOGY §7 enforceable rather than
+aspirational: runs whose worlds differ are flagged inadmissible and never
+pooled.
+
+**Next** — CurseForge provider (opt-in, no caching); cross-loader and
+cross-version comparison; bot-driven player load; the public results corpus.
 
 ## Contributing
 

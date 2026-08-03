@@ -318,6 +318,61 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_world(args: argparse.Namespace) -> int:
+    """Fingerprint one or more saved worlds, and say whether they agree.
+
+    The check METHODOLOGY §7 relies on, exposed so it can be run by hand. Two
+    worlds that were supposed to be identical and are not is a finding on its
+    own — usually a mod that alters worldgen, occasionally a scenario whose
+    setup is not as deterministic as it looks.
+    """
+    from .world import WorldError, fingerprint_world
+
+    results = []
+    for path in args.world:
+        try:
+            result = fingerprint_world(path, dimension=args.dimension)
+        except (WorldError, OSError) as exc:
+            print(f"✗ {path}: {exc}", file=sys.stderr)
+            return 2
+        results.append((path, result))
+
+    if args.json:
+        print(json.dumps([
+            {
+                "world": path, "sha256": r.sha256, "chunks": r.chunks,
+                "regions": r.regions, "complete": r.complete,
+                "unreadable": r.unreadable,
+            }
+            for path, r in results
+        ], indent=2))
+        return 0
+
+    width = max(len(path) for path, _ in results)
+    for path, result in results:
+        mark = "✓" if result.complete else "⚠"
+        print(f"{mark} {path:<{width}}  {result.sha256}")
+        print(f"  {' ' * width}  {result.chunks} chunks, {result.regions} regions")
+        for problem in result.unreadable:
+            print(f"  {' ' * width}  ! {problem}", file=sys.stderr)
+
+    distinct = {r.sha256 for _, r in results if r.complete}
+    if len(results) > 1:
+        print()
+        if len(distinct) <= 1:
+            print("✓ all worlds identical; runs over them may be pooled")
+        else:
+            print(
+                f"✗ {len(distinct)} distinct worlds; runs over them must not be "
+                f"pooled (METHODOLOGY §7)",
+                file=sys.stderr,
+            )
+            return 1
+    # An incomplete read is not a pass: it is a fingerprint over whatever
+    # happened to be readable, which two broken worlds could easily share.
+    return 0 if all(r.complete for _, r in results) else 1
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     """Static health check of a mod set: conflicts, gaps, and mixin contention.
 
@@ -804,6 +859,15 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["csv", "tsv", "md", "html"],
                    help="table formats for --export-dir (repeatable, default csv)")
     p.set_defaults(func=cmd_analyse)
+
+    p = sub.add_parser("world",
+                       help="fingerprint saved worlds and check they agree")
+    p.add_argument("world", nargs="+",
+                   help="world save directories (the ones holding level.dat)")
+    p.add_argument("--dimension", default="region",
+                   help="region directory: 'region' (overworld), DIM-1, DIM1")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_world)
 
     p = sub.add_parser("inspect", help="static health check of a mod set")
     p.add_argument("paths", nargs="+", help="jar files or directories of jars")

@@ -5,6 +5,7 @@ from .harness import (
     HarnessError,
     ResolvedVariant,
     RunOutcome,
+    flag_world_mismatches,
     outcomes_to_cells,
     resolve_variant_mods,
 )
@@ -23,7 +24,7 @@ from .protocol import (
 
 __all__ = [
     "Harness", "HarnessError", "ResolvedVariant", "RunOutcome",
-    "outcomes_to_cells", "resolve_variant_mods",
+    "outcomes_to_cells", "resolve_variant_mods", "flag_world_mismatches",
     "Check", "Preflight", "Severity", "describe_host", "run_preflight",
     "PlanError", "ProbePlan", "compile_plan", "write_plan",
     "PROTOCOL_VERSION", "EventType", "Phase", "ProbeError", "ProbeStream",

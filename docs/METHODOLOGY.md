@@ -277,10 +277,33 @@ of whoever made it, and mods that alter worldgen would be measured against a
 world their own generator never produced.
 
 Because worldgen output itself varies between game versions and between
-worldgen-altering mods, mcbench records a **world fingerprint** — a hash over the
-generated block data in the measurement region — with every run. Runs whose
-fingerprints differ are never pooled. Where a mod under test legitimately changes
-worldgen, that is surfaced as a finding, not averaged away.
+worldgen-altering mods, mcbench records a **world fingerprint** with every run.
+Runs whose fingerprints differ are never pooled. Where a mod under test
+legitimately changes worldgen, that is surfaced as a finding, not averaged away.
+
+The fingerprint is a hash over **block content only**: the block state palette,
+the packed block indices, and biomes, taken from the saved region files after the
+run. Chunk coordinates are included, so the same terrain generated in a different
+place is correctly a different world.
+
+Deliberately **excluded**: entities, block-entity contents, tick lists, lighting,
+structure references, and inhabited time. Every one of those differs between two
+runs of the *same* variant — random ticks fire differently, mobs spawn in
+different places, lighting is recomputed. Hashing them would flag every run as a
+mismatch, and a check that always fires is a check nobody reads.
+
+Two consequences follow from reading the save rather than asking the game:
+
+- It needs no game API, so it works identically on every version and platform,
+  including those with no probe adapter, and it runs after the process exits so
+  it cannot perturb the measurement it qualifies.
+- A world that **could not be read** produces no fingerprint at all rather than a
+  placeholder. Two runs that both failed to compute one must never be pooled on
+  the strength of agreeing about nothing.
+
+The reference world for a scenario is the fingerprint the **majority** of its
+runs share, not the first observed. Run order must not decide which world counts
+as correct, or one bad early run would condemn every good one after it.
 
 ### Everything that could change a number is recorded
 

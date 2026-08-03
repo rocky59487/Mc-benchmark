@@ -24,11 +24,12 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Platform, SuiteConfig, Variant
-from ..metrics import RunMetrics, reduce_client_run, reduce_server_run
+from ..metrics import RunFlag, RunMetrics, reduce_client_run, reduce_server_run
 from ..planner import Cell, PlannedRun, RunPlan, plan_runs
 from ..providers import ModrinthClient, ModrinthError, ResolvedMod
 from ..scenario import Scenario, Side
 from ..targets import Target
+from ..world import WorldError, fingerprint_world
 from .plan import check_target, write_plan
 from .preflight import Check, Preflight, Severity, run_preflight
 from .protocol import (
@@ -51,6 +52,12 @@ class HarnessError(RuntimeError):
     """The harness could not execute a run or a suite."""
 
 
+#: The world name written into server.properties. Stated rather than left to the
+#: server's default so the fingerprinter has a path it knows rather than one it
+#: guesses.
+SERVER_LEVEL_NAME = "mcbench"
+
+
 @dataclass
 class RunOutcome:
     """What one executed run produced."""
@@ -62,6 +69,11 @@ class RunOutcome:
     exit_code: int | None = None
     log_path: Path | None = None
     error: str = ""
+    #: Hash over the block content of the world this run measured. Empty when the
+    #: world could not be read — never a placeholder, because a fingerprint that
+    #: two runs share only because both failed to compute one would silently
+    #: certify exactly what it exists to check.
+    world_fingerprint: str = ""
 
     @property
     def succeeded(self) -> bool:
@@ -438,6 +450,9 @@ class Harness:
             view = settings.get("render_distance")
             lines = [
                 f"level-seed={scenario.seed}",
+                # Stated rather than defaulted, so the fingerprinter knows where
+                # to look without inferring it from the server's conventions.
+                f"level-name={SERVER_LEVEL_NAME}",
                 "online-mode=false",
                 "sync-chunk-writes=true",
             ]
@@ -665,6 +680,14 @@ class Harness:
         self._adopt_agent_stream(stream, agent_path, planned)
 
         metrics = self._reduce(stream, scenario)
+        # The probe may report its own fingerprint over the live world; the
+        # harness's is computed from the save on disk and needs no game API, so
+        # it works on every version and platform. Where both exist the probe's
+        # is preferred, being taken while the measurement region was loaded.
+        fingerprint = (
+            stream.world_fingerprint
+            or self._fingerprint_world(instance, scenario, planned)
+        )
         self.on_event("run.done", {
             "cell": str(planned.cell),
             "wall_clock_s": round(wall_clock, 1),
@@ -675,8 +698,67 @@ class Harness:
         return RunOutcome(
             planned=planned, metrics=metrics, stream=stream,
             wall_clock_s=wall_clock, exit_code=exit_code, log_path=log_path,
-            error=error,
+            error=error, world_fingerprint=fingerprint,
         )
+
+    def _world_dir(self, instance: Path, scenario: Scenario) -> Path | None:
+        """Where this run's world was saved, or None if it cannot be located.
+
+        A dedicated server writes to the ``level-name`` directory the harness
+        set. A client writes under ``saves/``, where the world's name comes from
+        the scenario rather than from us — so the directory is discovered rather
+        than assumed, and ambiguity is reported as "cannot locate" instead of
+        being resolved by picking one.
+        """
+        if scenario.side is Side.SERVER:
+            candidate = instance / SERVER_LEVEL_NAME
+            return candidate if candidate.is_dir() else None
+
+        saves = instance / "saves"
+        if not saves.is_dir():
+            return None
+        worlds = [d for d in sorted(saves.iterdir()) if (d / "region").is_dir()]
+        if len(worlds) == 1:
+            return worlds[0]
+        named = [d for d in worlds if d.name == scenario.world]
+        return named[0] if len(named) == 1 else None
+
+    def _fingerprint_world(
+        self, instance: Path, scenario: Scenario, planned: PlannedRun
+    ) -> str:
+        """Hash the world this run measured, for the pooling check.
+
+        METHODOLOGY §7: runs whose worlds differ are never pooled. This is what
+        makes that enforceable — without it the claim is a promise the code does
+        not keep.
+
+        Failure to compute one is reported and returns empty. Substituting a
+        placeholder would let two failed runs "agree" and be pooled on the
+        strength of a check that never ran.
+        """
+        world_dir = self._world_dir(instance, scenario)
+        if world_dir is None:
+            self.on_event("run.world", {
+                "cell": str(planned.cell), "result": "no world directory found",
+            })
+            return ""
+        try:
+            result = fingerprint_world(world_dir)
+        except (WorldError, OSError) as exc:
+            self.on_event("run.world", {
+                "cell": str(planned.cell), "result": f"unreadable: {exc}",
+            })
+            return ""
+
+        self.on_event("run.world", {
+            "cell": str(planned.cell),
+            "result": str(result),
+            "sha256": result.sha256,
+            "complete": result.complete,
+        })
+        # An incomplete read is not a fingerprint. Two worlds that both failed on
+        # the same region would hash identically over what was left.
+        return result.sha256 if result.complete else ""
 
     def _adopt_agent_stream(
         self, stream: ProbeStream, agent_path: Path, planned: PlannedRun
@@ -757,6 +839,54 @@ class Harness:
         return outcomes
 
 
+def flag_world_mismatches(outcomes: Sequence[RunOutcome]) -> dict[str, list[str]]:
+    """Flag runs of a scenario whose world differed from the scenario's majority.
+
+    METHODOLOGY §7 promises that runs whose fingerprints differ are never pooled.
+    Enforcing it is what turns that from a claim into a property.
+
+    The comparison is **per scenario, across variants** — not per cell. A cell
+    disagreeing with itself is a broken generator; a *variant* disagreeing with
+    the rest is the case that actually matters, because it means a mod changed
+    worldgen and the frametimes being compared came from different terrain. Both
+    are caught by comparing every run of a scenario against the fingerprint most
+    of them share.
+
+    Runs with no fingerprint are left alone. Absence of evidence is not evidence
+    of mismatch, and flagging every run on a platform where the world could not
+    be read would make the flag meaningless.
+
+    :returns: scenario id to the differing fingerprints found, for reporting.
+    """
+    by_scenario: dict[str, list[RunOutcome]] = {}
+    for outcome in outcomes:
+        if outcome.metrics is not None and outcome.world_fingerprint:
+            by_scenario.setdefault(outcome.planned.cell.scenario, []).append(outcome)
+
+    mismatches: dict[str, list[str]] = {}
+    for scenario, runs in by_scenario.items():
+        counts: dict[str, int] = {}
+        for outcome in runs:
+            counts[outcome.world_fingerprint] = (
+                counts.get(outcome.world_fingerprint, 0) + 1
+            )
+        if len(counts) < 2:
+            continue
+
+        # The majority world is the reference. Ties break on the fingerprint
+        # string so the choice is deterministic rather than dependent on run
+        # order — an arbitrary but *stable* reference beats a shifting one.
+        reference = max(sorted(counts), key=lambda digest: counts[digest])
+        for outcome in runs:
+            if outcome.world_fingerprint != reference:
+                assert outcome.metrics is not None
+                if RunFlag.WORLD_FINGERPRINT_MISMATCH not in outcome.metrics.flags:
+                    outcome.metrics.flags.append(RunFlag.WORLD_FINGERPRINT_MISMATCH)
+        mismatches[scenario] = sorted(d for d in counts if d != reference)
+
+    return mismatches
+
+
 def outcomes_to_cells(
     outcomes: Sequence[RunOutcome],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -764,7 +894,14 @@ def outcomes_to_cells(
 
     Keeps the execution position on every run so the report can plot order
     effects and an operator can audit whether interleaving actually held.
+
+    World mismatches are flagged here rather than left to the caller, because
+    this is the one funnel every run passes through on its way into an
+    aggregate, and a fairness check that an analysis path can bypass is not a
+    check.
     """
+    flag_world_mismatches(outcomes)
+
     cells: dict[str, list[dict[str, Any]]] = {}
     for outcome in outcomes:
         if outcome.metrics is None:
@@ -774,5 +911,6 @@ def outcomes_to_cells(
             "values": outcome.metrics.values,
             "flags": [f.value for f in outcome.metrics.flags],
             "position": outcome.planned.position,
+            "world": outcome.world_fingerprint,
         })
     return cells

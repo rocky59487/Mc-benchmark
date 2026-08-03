@@ -226,6 +226,31 @@ class TestPreflight:
         # -quit returns before the game does; the harness has to wait for it.
         assert "-quit" not in joined
 
+        # JVM arguments go in the property, never inside the command string.
+        # HeadlessMC splits that string on whitespace and --jvm takes one token,
+        # so a second argument became a stray positional: the game launched at
+        # the title screen with quick-play silently dropped.
+        launch = next(p for p in command if p.startswith("launch "))
+        assert "--jvm" not in launch
+        assert any(p.startswith("-Dhmc.jvmargs=") for p in command)
+
+    def test_jvm_arguments_survive_being_more_than_one(self, tmp_path):
+        launcher = printing_stand_in(
+            tmp_path / "hmc.jar", "launch : Launches the game.\n  --jvm  Jvm args.\n"
+        )
+        h, scenarios = harness(tmp_path / "w", launcher)
+        expected = h.effective_jvm_args(h.suite.variants[0])
+        assert len(expected) > 1, "the fixture needs more than one argument to prove it"
+
+        command = h._launch_command(
+            tmp_path / "inst",
+            scenarios["entity-mobcap-saturation"],
+            h.suite.variants[0],
+        )
+        jvm = next(p for p in command if p.startswith("-Dhmc.jvmargs="))
+        for argument in expected:
+            assert argument in jvm
+
     def test_the_probe_runs_once_per_harness(self, tmp_path):
         launcher = fake_launcher(tmp_path / "hmc", FULL_HELP)
         h, _ = harness(tmp_path / "w", launcher)

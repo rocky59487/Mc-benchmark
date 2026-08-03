@@ -1021,11 +1021,17 @@ class Harness:
             # One command, then exit, rather than an interactive shell on stdin.
             "-Dhmc.exit.on.failed.command=true",
         ]
+        # JVM arguments go in the property rather than in `--jvm` inside the
+        # command string. HeadlessMC splits that string on whitespace and
+        # `--jvm` takes a single token, so a second argument became a stray
+        # positional and the rest of the launch was parsed as something else:
+        # the game started, at the title screen, having ignored quick-play.
+        if jvm_args:
+            properties.append(f"-Dhmc.jvmargs={' '.join(jvm_args)}")
         if game_args := self._game_arguments(scenario):
             properties.append(f"-Dhmc.gameargs={' '.join(game_args)}")
 
-        launch = ["launch", self._headlessmc_version_id(), "--jvm", " ".join(jvm_args)]
-        launch += self.extra_launch_args
+        launch = ["launch", self._headlessmc_version_id(), *self.extra_launch_args]
         return [
             "java", *properties, "-jar", str(self.headlessmc),
             "--command", " ".join(launch),

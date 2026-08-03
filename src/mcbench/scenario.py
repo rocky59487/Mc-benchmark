@@ -232,6 +232,15 @@ class Scenario:
     #: A larger number would have been safer to assert and would have flagged a
     #: configuration measured to work, which is the more expensive mistake: a
     #: check that fires on something known to be fine gets turned off.
+    #:
+    #: It is a floor, not the answer. Re-hashing the flyby's thirteen saved
+    #: worlds at a range of radii: at its own 16 they fall into four distinct
+    #: worlds, at 14 into three, and from 12 — a margin of 8 — all thirteen
+    #: agree, and keep agreeing down to 6. So that scenario wanted 8 while the
+    #: baseline was fine on 6. How much settled terrain a region needs depends
+    #: on how much of the world the run generates around it, which this does
+    #: not model; six is where the evidence starts, and clearing it is not a
+    #: guarantee.
     FINGERPRINT_MARGIN_CHUNKS: ClassVar[int] = 6
 
     def fingerprint_margin_gap(self) -> str:

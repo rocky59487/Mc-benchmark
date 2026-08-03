@@ -100,11 +100,42 @@ mcbench analyse results.json --export-dir report/  # charts + tables + HTML
 ```
 
 On Windows use `gradlew.bat`; every Gradle project here ships both wrappers.
+Building an adapter needs Gradle itself running on JDK 21, because Loom
+decompiles Minecraft during configuration; a `JAVA_HOME` pointing at 17 fails
+with "Minecraft 1.21.1 requires Java 21 but Gradle is using 17".
 
 `--probe-jar` can be omitted when running from a checkout that has already built
 it, since the harness looks in the usual build directory. It is never assumed: a
 missing probe is a preflight blocker naming the build command, because a suite
 that discovers it two hours in has produced nothing.
+
+### Setting up HeadlessMC
+
+mcbench launches the game through HeadlessMC and never handles credentials
+itself. Once, before the first run:
+
+```bash
+java -jar headlessmc-launcher.jar --command login       # device code, in a browser
+java -jar headlessmc-launcher.jar --command "download 1.21.1"
+java -jar headlessmc-launcher.jar --command "fabric 1.21.1"
+java -jar headlessmc-launcher.jar --command versions    # note the loader id
+```
+
+`login` prints a URL and a code; the process must stay running until the browser
+step completes. `versions` lists the modded install under the loader's own id,
+such as `fabric-loader-0.19.3-1.21.1`, and the `0.19.3` there is what belongs in
+the suite's `loader_version`.
+
+HeadlessMC keeps its account beside the directory it is run from, so point
+`--headlessmc` at the jar and `doctor` will find the session:
+
+```bash
+mcbench doctor --headlessmc /path/to/headlessmc-launcher.jar
+```
+
+Every instance log opens with the exact command that produced it, the working
+directory, and the probe environment, so a run that behaved oddly can be
+reproduced by hand.
 
 ### Headless use
 

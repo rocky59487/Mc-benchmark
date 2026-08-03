@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,15 +22,18 @@ from .metrics import METRICS, RunFlag, RunMetrics
 from .planner import Cell
 from .stats import (
     DEFAULT_ROPE,
+    MIN_ADMISSIBLE_RUNS,
     Comparison,
     Estimate,
     OutlierReport,
     Verdict,
+    benjamini_hochberg,
     compare,
     estimate,
     interaction_term,
     reject_outlying_runs,
     runs_needed_for_resolution,
+    sufficient_runs,
 )
 
 __all__ = [
@@ -151,6 +154,7 @@ VERDICT_MARK = {
     Verdict.REGRESSION: "🔴 regression",
     Verdict.EQUIVALENT: "⚪ equivalent",
     Verdict.INCONCLUSIVE: "❔ inconclusive",
+    Verdict.INSUFFICIENT_DATA: "🚫 insufficient data",
 }
 
 
@@ -164,16 +168,52 @@ class CellResult:
     """Retained per-run values per metric, kept so comparisons can resample."""
     outliers: dict[str, OutlierReport] = field(default_factory=dict)
     flags: set[RunFlag] = field(default_factory=set)
+    runs_attempted: int = 0
+    """Runs the plan scheduled for this cell, including ones that never produced
+    metrics. Distinct from ``runs_total``: a cell whose launches failed is not a
+    smaller experiment, it is a broken one, and the two must not look alike."""
     runs_total: int = 0
+    """Runs that produced a metrics document, admissible or not."""
     runs_admissible: int = 0
+    runs_failed: int = 0
+    """Attempts that produced no metrics at all — crashes, timeouts, launch
+    failures. Recorded so failure rate is visible rather than inferred."""
 
     @property
     def unstable(self) -> bool:
         return any(r.unstable for r in self.outliers.values())
 
+    def retained(self, metric: str) -> int:
+        """Values left for ``metric`` after inadmissible runs and outliers."""
+        return len(self.samples.get(metric, ()))
+
     @property
     def trustworthy(self) -> bool:
-        return self.runs_admissible >= 5 and not self.unstable
+        return self.runs_admissible >= MIN_ADMISSIBLE_RUNS and not self.unstable
+
+    def untrustworthy_reason(self, metric: str) -> str:
+        """Why this cell cannot support a decisive verdict for ``metric``.
+
+        Returns an empty string when the cell is fine.
+
+        Checked per metric rather than per cell because outlier rejection runs
+        per metric: a run spoiled by a GC storm loses its pause values and keeps
+        its frametimes, and suppressing every metric because one was affected
+        would discard good measurements.
+        """
+        retained = self.retained(metric)
+        if retained < MIN_ADMISSIBLE_RUNS:
+            return (
+                f"only {retained} of {self.runs_attempted or self.runs_total} "
+                f"run(s) survived for this metric; {MIN_ADMISSIBLE_RUNS} are required"
+            )
+        report = self.outliers.get(metric)
+        if report is not None and report.unstable:
+            return (
+                f"{report.exclusion_rate * 100:.0f}% of runs were excluded as "
+                f"outliers, which is more than a stable cell tolerates"
+            )
+        return ""
 
 
 @dataclass
@@ -185,6 +225,25 @@ class MetricComparison:
     scenario: str
     comparison: Comparison
     additional_runs_needed: int | None = None
+    suppressed_reason: str = ""
+    """Set when a decisive verdict was withheld because a cell could not support
+    one. The underlying comparison is kept intact so the numbers remain
+    auditable; only the verdict is downgraded."""
+    family: str = ""
+    """Which multiplicity family this test belongs to (see :func:`assign_families`)."""
+    q_value: float | None = None
+    """Benjamini-Hochberg adjusted p-value, once the family has been corrected."""
+    fdr_verdict: Verdict | None = None
+    """The verdict after FDR correction. ``None`` until correction has run."""
+
+    @property
+    def verdict(self) -> Verdict:
+        """The verdict a reader should act on: FDR-adjusted where available."""
+        return self.fdr_verdict or self.comparison.verdict
+
+    @property
+    def p_value(self) -> float:
+        return self.comparison.p_value
 
 
 @dataclass
@@ -196,6 +255,11 @@ class SuiteResult:
     cells: dict[Cell, CellResult] = field(default_factory=dict)
     comparisons: list[MetricComparison] = field(default_factory=list)
     interactions: list[dict[str, Any]] = field(default_factory=list)
+    normalised: list[dict[str, Any]] = field(default_factory=list)
+    """Reference-normalised ratios (METHODOLOGY section 8), empty when the suite
+    did not run the reference scenario."""
+    multiplicity: dict[str, Any] = field(default_factory=dict)
+    """What :func:`apply_fdr` did, empty when correction has not been applied."""
     provenance: dict[str, Any] = field(default_factory=dict)
     generated_at: str = ""
 
@@ -225,6 +289,8 @@ def aggregate_cell(
     *,
     metrics: Iterable[str] | None = None,
     seed: int = 0,
+    attempted: int | None = None,
+    failed: int = 0,
 ) -> CellResult:
     """Aggregate a cell's runs into estimates with intervals.
 
@@ -233,8 +299,18 @@ def aggregate_cell(
     a reader can see the cell was affected. Whole-run outlier rejection then
     operates per metric, because a run can be contaminated in one dimension —
     a stray GC storm inflating pause metrics — while remaining valid in others.
+
+    ``attempted`` and ``failed`` describe runs that never reached this function
+    because they produced no metrics at all. They are carried onto the result so
+    that a cell of five values out of five planned and a cell of five values out
+    of twelve planned do not serialise identically.
     """
-    result = CellResult(cell=cell, runs_total=len(runs))
+    result = CellResult(
+        cell=cell,
+        runs_total=len(runs),
+        runs_attempted=len(runs) + failed if attempted is None else attempted,
+        runs_failed=failed,
+    )
 
     admissible = [r for r in runs if r.admissible]
     result.runs_admissible = len(admissible)
@@ -271,8 +347,17 @@ def compare_to_baseline(
     metrics: Iterable[str] | None = None,
     rope: float = DEFAULT_ROPE,
     seed: int = 0,
+    min_runs: int = MIN_ADMISSIBLE_RUNS,
 ) -> list[MetricComparison]:
-    """Compare every shared metric between a baseline cell and a variant cell."""
+    """Compare every shared metric between a baseline cell and a variant cell.
+
+    A decisive verdict is issued only when both cells can support one. Where
+    they cannot — too few surviving runs, or too many excluded as outliers — the
+    verdict is downgraded to ``insufficient_data`` and the reason is recorded on
+    the comparison. This is suppression rather than annotation on purpose: a
+    caveat beside a red "regression" badge is read as a regression, and the
+    whole point of the run floor is that such a cell has not established one.
+    """
     if baseline.cell.scenario != variant.cell.scenario:
         raise ValueError(
             f"cannot compare across scenarios: {baseline.cell.scenario} "
@@ -304,7 +389,23 @@ def compare_to_baseline(
             lower_is_better=definition.lower_is_better,
             rope=rope,
             seed=seed + index * 613,
+            min_runs=min_runs,
         )
+
+        # Both cells must be able to carry a verdict, not just the variant: a
+        # baseline reduced to two runs cannot establish what the variant is
+        # being compared against.
+        reason = baseline.untrustworthy_reason(key)
+        if reason:
+            reason = f"baseline `{baseline.cell.variant}`: {reason}"
+        else:
+            reason = variant.untrustworthy_reason(key)
+            if reason:
+                reason = f"`{variant.cell.variant}`: {reason}"
+
+        if reason and result.verdict.decisive:
+            result = replace(result, verdict=Verdict.INSUFFICIENT_DATA)
+
         out.append(
             MetricComparison(
                 metric=key,
@@ -314,6 +415,7 @@ def compare_to_baseline(
                 additional_runs_needed=runs_needed_for_resolution(
                     result, current_runs=len(var_values)
                 ),
+                suppressed_reason=reason,
             )
         )
     return out
@@ -330,11 +432,18 @@ def build_interaction(
     ab_key: str,
     rope: float = DEFAULT_ROPE,
     seed: int = 0,
+    min_runs: int = MIN_ADMISSIBLE_RUNS,
 ) -> dict[str, Any] | None:
     """Compute the non-additivity term for a declared mod pair.
 
     Returns None when any of the four cells lacks data for the metric, rather
     than reporting a term derived from a partial design.
+
+    The run floor applies to all four arms. An interaction is a difference of
+    differences, so it is the *least* robust quantity in the report: whatever
+    imprecision each arm carries accumulates into it. A four-cell design where
+    one cell survived twice is exactly where a spurious "these mods fight" claim
+    would come from.
     """
     try:
         samples = [cells[k].samples[metric] for k in (none_key, a_key, b_key, ab_key)]
@@ -344,7 +453,10 @@ def build_interaction(
         return None
 
     term = interaction_term(*samples, rope=rope, seed=seed)
-    if term.ci.within(-rope, rope):
+
+    if not sufficient_runs(*samples, min_runs=min_runs):
+        verdict = Verdict.INSUFFICIENT_DATA.value
+    elif term.ci.within(-rope, rope):
         verdict = "additive"
     elif term.ci.low > rope:
         verdict = "costs more together"
@@ -357,10 +469,162 @@ def build_interaction(
         "scenario": scenario,
         "metric": metric,
         "pair": [a_key, b_key],
+        "cells": [none_key, a_key, b_key, ab_key],
         "value": term.value,
         "ci": [term.ci.low, term.ci.high],
+        "n_per_arm": [len(s) for s in samples],
+        "min_runs": min_runs,
         "verdict": verdict,
     }
+
+
+# --------------------------------------------------------------------------
+# Multiplicity control (METHODOLOGY.md section 5)
+# --------------------------------------------------------------------------
+
+#: FDR level the corpus is defined in terms of.
+DEFAULT_FDR = 0.05
+
+
+def family_of(comparison: MetricComparison) -> str:
+    """Which hypothesis family a comparison belongs to.
+
+    METHODOLOGY section 5 defines the family as the set of variants compared
+    against a common baseline. So one family is one (scenario, metric): the
+    tests that share a baseline cell and a metric, and among which a chance
+    extreme would be picked out and reported as a finding.
+
+    Metrics are *not* pooled into one family across the suite. They are
+    strongly dependent — ``frametime_mean_ms`` and ``fps_avg`` are the same
+    measurement twice — and pooling dependent tests would make the correction
+    punitive rather than principled, burying real effects to control a false
+    discovery rate that was never in danger.
+    """
+    return f"{comparison.scenario}::{comparison.metric}"
+
+
+def apply_fdr(
+    comparisons: Sequence[MetricComparison], *, fdr: float = DEFAULT_FDR
+) -> dict[str, Any]:
+    """Correct each family for multiplicity, in place.
+
+    Every comparison gains its family id, its adjusted q-value, and an
+    FDR-adjusted verdict. A decisive verdict that does not survive correction is
+    demoted to ``inconclusive``: the effect was not shown to be distinguishable
+    from the several other tests in its family, which is uncertainty about the
+    effect rather than a shortfall in the experiment.
+
+    Nothing is ever *promoted*. Correction can only remove discoveries, so a
+    comparison the ROPE rule called equivalent or inconclusive keeps that
+    verdict whatever its q-value says.
+
+    :returns: a summary of the families and what correction changed, for the
+        report's method section — a correction nobody can see applied is
+        indistinguishable from one that never ran.
+    """
+    families: dict[str, list[MetricComparison]] = {}
+    for entry in comparisons:
+        entry.family = family_of(entry)
+        families.setdefault(entry.family, []).append(entry)
+
+    summary: list[dict[str, Any]] = []
+    demoted = 0
+    for name, members in sorted(families.items()):
+        p_values = [m.p_value for m in members]
+        accepted = benjamini_hochberg(p_values, fdr=fdr)
+        for member, keep in zip(members, accepted, strict=True):
+            member.q_value = _adjusted_q(p_values, member.p_value)
+            verdict = member.comparison.verdict
+            if verdict.decisive and not keep:
+                member.fdr_verdict = Verdict.INCONCLUSIVE
+                demoted += 1
+            else:
+                member.fdr_verdict = verdict
+        summary.append({
+            "family": name,
+            "tests": len(members),
+            "discoveries": sum(1 for keep in accepted if keep),
+        })
+
+    return {"fdr": fdr, "families": summary, "demoted": demoted}
+
+
+def _adjusted_q(p_values: Sequence[float], p: float) -> float:
+    """Benjamini-Hochberg adjusted p-value for one member of a family.
+
+    The step-up form: ``q_(i) = min over k >= i of (m/k) * p_(k)``, clamped to
+    1. Reported alongside the accept/reject decision because a bare boolean
+    hides how close a test was to the threshold, and a q of 0.051 and one of
+    0.9 are not the same finding.
+    """
+    m = len(p_values)
+    if m == 0:
+        return 1.0
+    ordered = sorted(p_values)
+    running = 1.0
+    adjusted: list[float] = [1.0] * m
+    for k in range(m, 0, -1):
+        running = min(running, (m / k) * ordered[k - 1])
+        adjusted[k - 1] = min(1.0, running)
+    # Ties share a q-value; the first matching rank is the right one to report.
+    for value, q in zip(ordered, adjusted, strict=True):
+        if value == p:
+            return q
+    return 1.0
+
+
+# --------------------------------------------------------------------------
+# Hardware normalisation (METHODOLOGY.md section 8)
+# --------------------------------------------------------------------------
+
+#: The mod-free scenario every suite runs so results can be normalised.
+REFERENCE_SCENARIO = "reference-hardware-baseline"
+
+
+def reference_ratios(
+    cells: dict[Cell, CellResult],
+    *,
+    baseline: str,
+    reference_scenario: str = REFERENCE_SCENARIO,
+) -> list[dict[str, Any]]:
+    """Express every cell's metrics as a ratio to the same-session reference.
+
+    METHODOLOGY section 8: absolute figures do not compose across machines, so
+    the corpus is defined in ratios to a fixed mod-free scenario measured on the
+    same machine in the same session. A ratio cancels most of what differs
+    between two contributors' hardware; an absolute millisecond count cancels
+    nothing.
+
+    Returns an empty list when the suite did not run the reference scenario,
+    which is the honest outcome — there is nothing to normalise against, and
+    inventing a denominator would produce ratios that look comparable and are
+    not.
+    """
+    reference = cells.get(Cell(reference_scenario, baseline))
+    if reference is None or not reference.estimates:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for cell, data in cells.items():
+        if cell.scenario == reference_scenario:
+            continue
+        for key, est in sorted(data.estimates.items()):
+            denominator = reference.estimates.get(key)
+            if denominator is None or denominator.value == 0:
+                continue
+            out.append({
+                "scenario": cell.scenario,
+                "variant": cell.variant,
+                "metric": key,
+                "ratio": est.value / denominator.value,
+                "ci": [
+                    est.ci.low / denominator.value,
+                    est.ci.high / denominator.value,
+                ],
+                "reference_value": denominator.value,
+                "reference_cell": str(Cell(reference_scenario, baseline)),
+            })
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -410,9 +674,24 @@ def render_markdown(result: SuiteResult) -> str:
         "\"1% low\" is the mean of the worst 1% of frametimes, not the 99th "
         "percentile. Intervals are 95% percentile bootstrap. A verdict is "
         "issued only when the interval on the relative change lies wholly "
-        "inside or wholly outside the region of practical equivalence."
+        "inside or wholly outside the region of practical equivalence, and "
+        f"only when at least {MIN_ADMISSIBLE_RUNS} runs survived in both arms."
     )
     add("")
+
+    if result.multiplicity:
+        families = result.multiplicity.get("families", [])
+        tests = sum(f["tests"] for f in families)
+        add(
+            f"Multiple comparisons: Benjamini-Hochberg control at FDR "
+            f"{result.multiplicity.get('fdr', DEFAULT_FDR):g} across "
+            f"{len(families)} famil{'y' if len(families) == 1 else 'ies'} "
+            f"({tests} test{'' if tests == 1 else 's'}); a family is one "
+            f"scenario and metric across the variants sharing a baseline. "
+            f"{result.multiplicity.get('demoted', 0)} decisive verdict(s) did "
+            f"not survive correction and are reported as inconclusive."
+        )
+        add("")
 
     for scenario in result.scenarios:
         add(f"## {scenario}")
@@ -449,28 +728,50 @@ def render_markdown(result: SuiteResult) -> str:
         for variant, entries in by_variant.items():
             add(f"### {variant} vs {result.baseline}")
             add("")
-            add("| Metric | Baseline | Variant | Change | Effect | Verdict |")
-            add("|---|---|---|---|---|---|")
+            add("| Metric | Baseline | Variant | Change | Effect | n | Verdict |")
+            add("|---|---|---|---|---|---|---|")
+            suppressed: list[str] = []
             for entry in entries:
                 definition = METRICS[entry.metric]
                 c = entry.comparison
-                delta = (
-                    f"{_fmt_pct(c.relative_delta.value)} "
-                    f"[{_fmt_pct(c.relative_delta.ci.low)}, "
-                    f"{_fmt_pct(c.relative_delta.ci.high)}]"
-                )
-                verdict = VERDICT_MARK[c.verdict]
-                if c.verdict is Verdict.INCONCLUSIVE and entry.additional_runs_needed:
+                shown = entry.verdict
+                if shown is Verdict.INSUFFICIENT_DATA:
+                    # Deliberately not rendered: an interval computed from one
+                    # or two runs looks tighter the less data produced it, and
+                    # printing it beside a caveat is how it gets quoted anyway.
+                    delta = "—"
+                else:
+                    delta = (
+                        f"{_fmt_pct(c.relative_delta.value)} "
+                        f"[{_fmt_pct(c.relative_delta.ci.low)}, "
+                        f"{_fmt_pct(c.relative_delta.ci.high)}]"
+                    )
+                verdict = VERDICT_MARK[shown]
+                if shown is Verdict.INCONCLUSIVE and entry.additional_runs_needed:
                     verdict += f" (needs ~{entry.additional_runs_needed} runs)"
+                if shown is Verdict.INSUFFICIENT_DATA:
+                    verdict += f" (needs {MIN_ADMISSIBLE_RUNS} runs per arm)"
+                if entry.q_value is not None and c.verdict.decisive:
+                    verdict += f" · q={entry.q_value:.3f}"
+                if entry.suppressed_reason:
+                    suppressed.append(
+                        f"{definition.label}: {entry.suppressed_reason}"
+                    )
                 add(
                     f"| {definition.label} "
                     f"| {_fmt_estimate(c.baseline, definition.unit)} "
                     f"| {_fmt_estimate(c.variant, definition.unit)} "
                     f"| {delta} "
                     f"| {c.effect_magnitude} ({c.cliffs_delta:+.2f}) "
+                    f"| {c.baseline.n} vs {c.variant.n} "
                     f"| {verdict} |"
                 )
             add("")
+            if suppressed:
+                add("> **Verdicts withheld**")
+                for line in suppressed:
+                    add(f"> - {line}")
+                add("")
 
     if result.interactions:
         add("## Interaction effects")
@@ -482,14 +783,42 @@ def render_markdown(result: SuiteResult) -> str:
             "other, or a fast path one forces the other off."
         )
         add("")
-        add("| Scenario | Pair | Metric | Interaction | 95% CI | Verdict |")
-        add("|---|---|---|---|---|---|")
+        add("| Scenario | Pair | Metric | Interaction | 95% CI | n per arm | Verdict |")
+        add("|---|---|---|---|---|---|---|")
         for item in result.interactions:
             pair = " + ".join(item["pair"])
-            ci = f"[{_fmt_pct(item['ci'][0])}, {_fmt_pct(item['ci'][1])}]"
+            insufficient = item["verdict"] == Verdict.INSUFFICIENT_DATA.value
+            ci = (
+                "—"
+                if insufficient
+                else f"[{_fmt_pct(item['ci'][0])}, {_fmt_pct(item['ci'][1])}]"
+            )
+            value = "—" if insufficient else _fmt_pct(item["value"])
+            counts = "/".join(str(n) for n in item.get("n_per_arm", []))
             add(
                 f"| {item['scenario']} | {pair} | {METRICS[item['metric']].label} "
-                f"| {_fmt_pct(item['value'])} | {ci} | {item['verdict']} |"
+                f"| {value} | {ci} | {counts} | {item['verdict']} |"
+            )
+        add("")
+
+    if result.normalised:
+        add("## Reference-normalised ratios")
+        add("")
+        add(
+            f"Each figure divided by the same metric from "
+            f"`{REFERENCE_SCENARIO}/{result.baseline}`, measured on this "
+            f"machine in this session. Ratios are what compose across "
+            f"contributors; absolute figures do not (METHODOLOGY section 8)."
+        )
+        add("")
+        add("| Scenario | Variant | Metric | Ratio to reference | 95% CI |")
+        add("|---|---|---|---|---|")
+        for item in result.normalised:
+            ci = f"[{item['ci'][0]:.3f}, {item['ci'][1]:.3f}]"
+            add(
+                f"| {item['scenario']} | {item['variant']} "
+                f"| {METRICS[item['metric']].label} "
+                f"| {item['ratio']:.3f}× | {ci} |"
             )
         add("")
 
@@ -513,19 +842,27 @@ def render_json(result: SuiteResult) -> str:
         "generated_at": result.generated_at
         or datetime.now(UTC).isoformat(timespec="seconds"),
         "provenance": result.provenance,
+        "policy": {
+            "min_admissible_runs": MIN_ADMISSIBLE_RUNS,
+            "fdr": result.multiplicity.get("fdr") if result.multiplicity else None,
+        },
         "cells": [
             {
                 "scenario": cell.scenario,
                 "variant": cell.variant,
+                "runs_attempted": data.runs_attempted,
                 "runs_total": data.runs_total,
                 "runs_admissible": data.runs_admissible,
+                "runs_failed": data.runs_failed,
                 "flags": sorted(f.value for f in data.flags),
                 "unstable": data.unstable,
+                "trustworthy": data.trustworthy,
                 "metrics": {
                     key: {
                         "value": est.value,
                         "ci": [est.ci.low, est.ci.high],
                         "n": est.n,
+                        "retained": data.retained(key),
                         "excluded_runs": len(data.outliers[key].excluded)
                         if key in data.outliers
                         else 0,
@@ -547,12 +884,25 @@ def render_json(result: SuiteResult) -> str:
                 ],
                 "cliffs_delta": entry.comparison.cliffs_delta,
                 "effect_magnitude": entry.comparison.effect_magnitude,
-                "verdict": entry.comparison.verdict.value,
+                # Both are serialised: the raw ROPE verdict and the one a reader
+                # should act on. A consumer that only ever sees the corrected
+                # value cannot tell whether correction ran at all.
+                "verdict_raw": entry.comparison.verdict.value,
+                "verdict": entry.verdict.value,
+                "p_value": entry.p_value,
+                "q_value": entry.q_value,
+                "family": entry.family,
+                "n_baseline": entry.comparison.baseline.n,
+                "n_variant": entry.comparison.variant.n,
+                "min_runs": entry.comparison.min_runs,
+                "suppressed_reason": entry.suppressed_reason,
                 "rope": entry.comparison.rope,
                 "additional_runs_needed": entry.additional_runs_needed,
             }
             for entry in result.comparisons
         ],
         "interactions": result.interactions,
+        "normalised": result.normalised,
+        "multiplicity": result.multiplicity,
     }
     return json.dumps(payload, indent=2, sort_keys=False) + "\n"

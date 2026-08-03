@@ -22,11 +22,13 @@ from enum import Enum
 from statistics import median
 
 __all__ = [
+    "MIN_ADMISSIBLE_RUNS",
     "Verdict",
     "Interval",
     "Estimate",
     "Comparison",
     "OutlierReport",
+    "sufficient_runs",
     "mean",
     "percentile",
     "mean_of_worst_fraction",
@@ -50,18 +52,50 @@ DEFAULT_ROPE = 0.02  # +/-2% region of practical equivalence
 DEFAULT_MAD_THRESHOLD = 8.0  # deliberately conservative; see reject_outlying_runs
 MAD_TO_SIGMA = 1.4826  # scale factor making MAD consistent for normal data
 
+#: The single minimum-admissible-run policy, shared by every path that issues a
+#: verdict: reporting, interaction terms, and the bisect oracle.
+#:
+#: METHODOLOGY.md section 3 states five independent runs per cell as the floor,
+#: and until this constant existed each consumer enforced it — or failed to —
+#: separately. The failure that motivated centralising it is specific and bad: a
+#: cell planned for seven runs that loses six to launch failures has one value
+#: left, and one value against one value produces the most decisive-looking
+#: output the system can emit (``+100% [+100%, +100%]``) from the least evidence
+#: it can hold. A mostly-failed experiment must not be able to look like the
+#: strongest possible finding.
+MIN_ADMISSIBLE_RUNS = 5
+
 
 class Verdict(str, Enum):
     """Outcome of a baseline-vs-variant comparison (METHODOLOGY.md section 5).
 
     ``INCONCLUSIVE`` is a first-class result, not a failure. A benchmark that
     never declines to answer is guessing.
+
+    ``INSUFFICIENT_DATA`` is distinct from it and the distinction matters:
+    inconclusive means the runs were made and disagreed, insufficient means the
+    runs required to answer were never obtained. The first is a statement about
+    the effect, the second about the experiment, and conflating them lets a
+    failed suite read as a measured null.
     """
 
     IMPROVEMENT = "improvement"
     REGRESSION = "regression"
     EQUIVALENT = "equivalent"
     INCONCLUSIVE = "inconclusive"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+    @property
+    def decisive(self) -> bool:
+        """Whether this verdict asserts a direction of change."""
+        return self in (Verdict.IMPROVEMENT, Verdict.REGRESSION)
+
+
+def sufficient_runs(
+    *samples: Sequence[float], min_runs: int = MIN_ADMISSIBLE_RUNS
+) -> bool:
+    """Whether every arm retained enough values to support a decisive verdict."""
+    return all(len(s) >= min_runs for s in samples)
 
 
 @dataclass(frozen=True)
@@ -134,10 +168,30 @@ class Comparison:
     verdict: Verdict
     rope: float
     lower_is_better: bool
+    min_runs: int = MIN_ADMISSIBLE_RUNS
+    """The run floor this comparison was judged against."""
+    p_value: float = 1.0
+    """Two-sided bootstrap p-value for "the relative change is zero".
+
+    Derived from the same delta replicates the interval comes from, so it needs
+    no additional resampling and no distributional assumption. It exists so that
+    a suite testing many metrics can be corrected for multiplicity
+    (:func:`benjamini_hochberg`); the verdict itself remains a ROPE decision on
+    the interval, not a significance test.
+    """
 
     @property
     def percent(self) -> float:
         return self.relative_delta.value * 100.0
+
+    @property
+    def underpowered(self) -> bool:
+        """True when an arm has fewer retained values than the floor."""
+        return min(self.baseline.n, self.variant.n) < self.min_runs
+
+    @property
+    def decisive(self) -> bool:
+        return self.verdict.decisive
 
     @property
     def effect_magnitude(self) -> str:
@@ -451,6 +505,7 @@ def compare(
     resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
     confidence: float = DEFAULT_CONFIDENCE,
     seed: int = 0,
+    min_runs: int = MIN_ADMISSIBLE_RUNS,
 ) -> Comparison:
     """Compare a variant against a baseline and issue a verdict.
 
@@ -462,6 +517,14 @@ def compare(
     region of practical equivalence before it is called a win or a loss. With
     enough runs a 0.3% difference becomes detectable and is still irrelevant,
     and a standard that reports it as a victory teaches people to game it.
+
+    Before any of that, the run floor applies. With fewer than ``min_runs``
+    retained values in either arm the verdict is ``insufficient_data`` and no
+    direction is asserted, however clean the arithmetic looks. The descriptive
+    numbers are still computed and returned — a reader is entitled to see what
+    little was measured — but they are labelled as what they are rather than
+    presented as a finding. Pass ``min_runs=1`` to opt out deliberately; nothing
+    in mcbench does.
     """
     if not baseline or not variant:
         raise ValueError("compare() requires non-empty samples")
@@ -501,7 +564,10 @@ def compare(
         value=_relative_delta(baseline, variant), ci=delta_ci, n=min(nb, nv)
     )
 
-    verdict = _verdict(delta_ci, rope=rope, lower_is_better=lower_is_better)
+    if sufficient_runs(baseline, variant, min_runs=min_runs):
+        verdict = _verdict(delta_ci, rope=rope, lower_is_better=lower_is_better)
+    else:
+        verdict = Verdict.INSUFFICIENT_DATA
 
     return Comparison(
         baseline=baseline_est,
@@ -511,7 +577,27 @@ def compare(
         verdict=verdict,
         rope=rope,
         lower_is_better=lower_is_better,
+        min_runs=min_runs,
+        p_value=_bootstrap_p_value(replicates),
     )
+
+
+def _bootstrap_p_value(replicates: Sequence[float]) -> float:
+    """Two-sided bootstrap p-value for a delta of zero.
+
+    The standard percentile-bootstrap inversion: the smaller tail mass on either
+    side of zero, doubled. Both tails are counted with a +1 correction so the
+    result can never be exactly zero — an achieved significance level below the
+    resolution of the resampling is not evidence of an infinitely small one, and
+    a literal 0.0 would sail through any multiplicity correction unchallenged.
+    """
+    n = len(replicates)
+    if n == 0:
+        return 1.0
+    below = sum(1 for value in replicates if value <= 0.0)
+    above = sum(1 for value in replicates if value >= 0.0)
+    tail = min(below, above)
+    return min(1.0, 2.0 * (tail + 1) / (n + 1))
 
 
 def _verdict(delta_ci: Interval, *, rope: float, lower_is_better: bool) -> Verdict:
@@ -537,7 +623,13 @@ def runs_needed_for_resolution(
     Returns None when the verdict is already resolved, or when the projection
     exceeds ``max_runs`` and the honest answer is that more runs will not settle
     it — the effect is too close to the boundary to distinguish.
+
+    An ``insufficient_data`` verdict is answered without projecting anything:
+    what it needs is the run floor, and extrapolating an interval width from
+    one or two values would be arithmetic performed on noise.
     """
+    if comparison.verdict is Verdict.INSUFFICIENT_DATA:
+        return comparison.min_runs
     if comparison.verdict is not Verdict.INCONCLUSIVE:
         return None
 

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 from ..diagnose import Outcome
 from ..metrics import METRICS
-from ..stats import DEFAULT_ROPE, Verdict, compare
+from ..stats import MIN_ADMISSIBLE_RUNS, DEFAULT_ROPE, Verdict, compare
 
 __all__ = [
     "MeasureCell",
@@ -53,10 +53,41 @@ class ProbeRecord:
     relative_delta: float = 0.0
     ci: tuple[float, float] = (0.0, 0.0)
     note: str = ""
+    baseline_attempts: int = 0
+    subset_attempts: int = 0
+    """Launches made for each arm, successful or not. Distinct from the length
+    of the value lists, which counts only the ones that produced a number."""
+    min_runs: int = MIN_ADMISSIBLE_RUNS
+
+    @property
+    def attempts(self) -> int:
+        return self.baseline_attempts + self.subset_attempts
 
     @property
     def usable(self) -> bool:
-        return bool(self.baseline_values) and bool(self.subset_values)
+        """Whether this probe retained enough runs to support a verdict.
+
+        The floor applies per arm. Checking only that both lists are non-empty
+        is what let a probe with four failures out of five in each arm report a
+        regression of ``+100% [+100%, +100%]`` from one value against one — the
+        most decisive-looking output the system can produce, from an experiment
+        that almost entirely failed.
+        """
+        return (
+            len(self.baseline_values) >= self.min_runs
+            and len(self.subset_values) >= self.min_runs
+        )
+
+    @property
+    def unlaunchable(self) -> bool:
+        """True when the subset never produced a measurement and the baseline did.
+
+        Same machine, same probe, interleaved order: if every launch of the
+        subset failed while the baseline's succeeded, the difference is the mod
+        set, not the machine. That is a broken configuration rather than a
+        statistical dead end, and the two must not both read as "no regression".
+        """
+        return bool(self.baseline_values) and not self.subset_values
 
 
 class BenchmarkOracle:
@@ -68,12 +99,19 @@ class BenchmarkOracle:
             inventing a value would be fabricating a measurement.
         metric: Which metric decides. Its polarity comes from the registry, so a
             throughput metric is not mistaken for a cost metric.
-        runs_per_probe: Replicates of *each* arm. The default of 5 is the floor
-            from METHODOLOGY section 3; below it there is no variance estimate.
+        runs_per_probe: Replicates of *each* arm. The floor is
+            :data:`~mcbench.stats.MIN_ADMISSIBLE_RUNS` from METHODOLOGY section
+            3, and it is enforced rather than merely documented — the previous
+            minimum of 2 accepted a probe that could not produce an admissible
+            verdict under the project's own rules, so every probe it ran was
+            wasted before it started.
         interleave_baseline: Keep True for anything you intend to act on.
         rope: Region of practical equivalence. A subset must be worse by more
             than this before it is called a culprit — otherwise the search would
             chase differences too small to matter and never converge.
+        allow_underpowered: Escape hatch for tests and dry runs. Probes issued
+            under it can only ever return ``INCONCLUSIVE`` for want of runs, so
+            it buys speed and no answers.
     """
 
     def __init__(
@@ -81,21 +119,28 @@ class BenchmarkOracle:
         measure: MeasureCell,
         *,
         metric: str = "frametime_mean_ms",
-        runs_per_probe: int = 5,
+        runs_per_probe: int = MIN_ADMISSIBLE_RUNS,
         rope: float = DEFAULT_ROPE,
         seed: int = 0,
         interleave_baseline: bool = True,
         baseline_mods: Sequence[str] = (),
+        min_runs: int = MIN_ADMISSIBLE_RUNS,
+        allow_underpowered: bool = False,
     ) -> None:
         if metric not in METRICS:
             raise ValueError(
                 f"unknown metric {metric!r}; see mcbench.metrics.METRICS"
             )
-        if runs_per_probe < 2:
+        if runs_per_probe < min_runs and not allow_underpowered:
             raise ValueError(
-                f"runs_per_probe must be at least 2 to estimate variance, "
-                f"got {runs_per_probe}"
+                f"runs_per_probe must be at least {min_runs} for a probe to be "
+                f"able to reach a verdict, got {runs_per_probe}. Every arm needs "
+                f"that many *surviving* runs, so a probe planned at fewer cannot "
+                f"succeed even when nothing fails. Pass allow_underpowered=True "
+                f"to run anyway and receive inconclusive verdicts."
             )
+        if runs_per_probe < 1:
+            raise ValueError(f"runs_per_probe must be positive, got {runs_per_probe}")
 
         self.measure = measure
         self.metric = metric
@@ -103,19 +148,24 @@ class BenchmarkOracle:
         self.runs_per_probe = runs_per_probe
         self.rope = rope
         self.seed = seed
+        self.min_runs = min_runs
         self.interleave_baseline = interleave_baseline
         self.baseline_mods = tuple(baseline_mods)
         self.records: list[ProbeRecord] = []
         self._cached_baseline: list[float] | None = None
+        self._cached_baseline_attempts = 0
+        #: Every call into ``measure``, successful or not. This is the number
+        #: that bounds a diagnosis in wall-clock terms, because a failed launch
+        #: costs the same minutes as a successful one.
+        self.measurement_calls = 0
 
     # -- measurement -----------------------------------------------------
 
     def _run_arm(self, mods: Sequence[str], replicate: int) -> float | None:
+        self.measurement_calls += 1
         return self.measure(list(mods), replicate)
 
-    def _paired_measure(
-        self, subset: Sequence[str]
-    ) -> tuple[list[float], list[float]]:
+    def _paired_measure(self, subset: Sequence[str]) -> ProbeRecord:
         """Measure baseline and subset, interleaved.
 
         One replicate of each arm per round, with the order shuffled, so neither
@@ -123,67 +173,95 @@ class BenchmarkOracle:
         probe.
         """
         rng = random.Random(self.seed + len(self.records) * 7919)
-        baseline_values: list[float] = []
-        subset_values: list[float] = []
+        record = ProbeRecord(subset=tuple(subset), min_runs=self.min_runs)
 
         for replicate in range(self.runs_per_probe):
             arms = [("baseline", self.baseline_mods), ("subset", tuple(subset))]
             rng.shuffle(arms)
             for name, mods in arms:
                 value = self._run_arm(mods, replicate)
+                if name == "baseline":
+                    record.baseline_attempts += 1
+                else:
+                    record.subset_attempts += 1
                 if value is None:
                     # A failed run is dropped, never substituted. Filling it in
-                    # would be inventing a measurement.
+                    # would be inventing a measurement — but the attempt is still
+                    # counted, because it cost a launch and it is evidence about
+                    # whether this configuration runs at all.
                     continue
-                (baseline_values if name == "baseline" else subset_values).append(value)
+                if name == "baseline":
+                    record.baseline_values.append(value)
+                else:
+                    record.subset_values.append(value)
 
-        return baseline_values, subset_values
+        return record
 
-    def _sequential_measure(
-        self, subset: Sequence[str]
-    ) -> tuple[list[float], list[float]]:
+    def _sequential_measure(self, subset: Sequence[str]) -> ProbeRecord:
         """Cheap path: measure the baseline once and reuse it.
 
         Only for exploratory use. Everything a long search attributes to a mod
         this way may equally be drift between when the baseline ran and when the
         probe did.
         """
+        record = ProbeRecord(subset=tuple(subset), min_runs=self.min_runs)
+
         if self._cached_baseline is None:
             values = []
+            attempts = 0
             for replicate in range(self.runs_per_probe):
+                attempts += 1
                 value = self._run_arm(self.baseline_mods, replicate)
                 if value is not None:
                     values.append(value)
             self._cached_baseline = values
+            self._cached_baseline_attempts = attempts
 
-        subset_values = []
+        record.baseline_values = list(self._cached_baseline)
+        record.baseline_attempts = self._cached_baseline_attempts
+
         for replicate in range(self.runs_per_probe):
+            record.subset_attempts += 1
             value = self._run_arm(subset, replicate)
             if value is not None:
-                subset_values.append(value)
-        return list(self._cached_baseline), subset_values
+                record.subset_values.append(value)
+        return record
 
     # -- verdict ---------------------------------------------------------
 
     def __call__(self, subset: Sequence[str]) -> Outcome:
         if self.interleave_baseline:
-            baseline_values, subset_values = self._paired_measure(subset)
+            record = self._paired_measure(subset)
         else:
-            baseline_values, subset_values = self._sequential_measure(subset)
+            record = self._sequential_measure(subset)
 
-        record = ProbeRecord(
-            subset=tuple(subset),
-            baseline_values=baseline_values,
-            subset_values=subset_values,
-        )
+        baseline_values = record.baseline_values
+        subset_values = record.subset_values
+
+        if record.unlaunchable:
+            # Every launch of this subset failed while the baseline launched in
+            # the same interleaved probe on the same machine. That is a property
+            # of the mod set, and calling it "no regression" would exonerate a
+            # configuration that never ran.
+            record.outcome = Outcome.INVALID
+            record.note = (
+                f"the subset never produced a measurement in "
+                f"{record.subset_attempts} attempt(s) while the baseline "
+                f"produced {len(baseline_values)}; treating it as an "
+                f"unlaunchable configuration, not as a clean result"
+            )
+            self.records.append(record)
+            return record.outcome
 
         if not record.usable:
             # Not enough surviving runs to say anything. Reporting "clean" would
             # quietly exonerate a mod on the strength of a failed measurement.
             record.outcome = Outcome.INCONCLUSIVE
             record.note = (
-                f"insufficient successful runs "
-                f"(baseline {len(baseline_values)}, subset {len(subset_values)})"
+                f"insufficient successful runs: baseline "
+                f"{len(baseline_values)}/{record.baseline_attempts}, subset "
+                f"{len(subset_values)}/{record.subset_attempts}; "
+                f"{self.min_runs} are required in each arm"
             )
             self.records.append(record)
             return record.outcome
@@ -194,6 +272,7 @@ class BenchmarkOracle:
             lower_is_better=self.definition.lower_is_better,
             rope=self.rope,
             seed=self.seed + len(self.records),
+            min_runs=self.min_runs,
         )
         record.relative_delta = result.relative_delta.value
         record.ci = (result.relative_delta.ci.low, result.relative_delta.ci.high)
@@ -217,10 +296,14 @@ class BenchmarkOracle:
 
         ``improvement`` is also CLEAN: a subset that is *faster* plainly is not
         the culprit being hunted.
+
+        ``insufficient_data`` becomes INCONCLUSIVE rather than CLEAN, for the
+        same reason the whole four-state model exists: the runs to answer were
+        never obtained, which is not an answer of "no".
         """
         if verdict is Verdict.REGRESSION:
             return Outcome.REGRESSION
-        if verdict is Verdict.INCONCLUSIVE:
+        if verdict in (Verdict.INCONCLUSIVE, Verdict.INSUFFICIENT_DATA):
             return Outcome.INCONCLUSIVE
         return Outcome.CLEAN
 
@@ -228,10 +311,26 @@ class BenchmarkOracle:
 
     @property
     def total_runs(self) -> int:
-        """Game launches spent, the number that actually bounds a diagnosis."""
+        """Game launches spent, the number that actually bounds a diagnosis.
+
+        Counts every measurement invocation, including the ones that failed. A
+        failed launch costs the same minutes as a successful one, so a cost
+        figure that omitted them would understate the price of a diagnosis
+        exactly when the diagnosis was going badly — ten launches with eight
+        failures previously reported as two.
+        """
+        return self.measurement_calls
+
+    @property
+    def successful_runs(self) -> int:
+        """Launches that produced a usable metric value."""
         return sum(
             len(r.baseline_values) + len(r.subset_values) for r in self.records
         )
+
+    @property
+    def failed_runs(self) -> int:
+        return self.total_runs - self.successful_runs
 
     def audit(self) -> list[dict]:
         """Every probe with its numbers, so a diagnosis can be checked."""
@@ -243,6 +342,9 @@ class BenchmarkOracle:
                 "ci": list(r.ci),
                 "baseline_runs": len(r.baseline_values),
                 "subset_runs": len(r.subset_values),
+                "baseline_attempts": r.baseline_attempts,
+                "subset_attempts": r.subset_attempts,
+                "min_runs": r.min_runs,
                 "note": r.note,
             }
             for r in self.records

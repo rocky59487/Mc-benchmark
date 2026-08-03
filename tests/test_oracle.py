@@ -99,12 +99,12 @@ class TestInterleaving:
             seen.append(len(mods))
             return 16.7
 
-        oracle = BenchmarkOracle(measure, runs_per_probe=4)
+        oracle = BenchmarkOracle(measure, runs_per_probe=5)
         oracle(["a", "b"])
 
-        assert len(seen) == 8, "each replicate must measure both arms"
-        assert seen.count(0) == 4, "baseline arm ran every round"
-        assert seen.count(2) == 4, "subset arm ran every round"
+        assert len(seen) == 10, "each replicate must measure both arms"
+        assert seen.count(0) == 5, "baseline arm ran every round"
+        assert seen.count(2) == 5, "subset arm ran every round"
 
     def test_arm_order_varies_between_rounds(self):
         # A fixed order would give one arm the cooler half of every probe.
@@ -130,11 +130,11 @@ class TestInterleaving:
             calls.append(len(mods))
             return 16.7
 
-        oracle = BenchmarkOracle(measure, runs_per_probe=4, interleave_baseline=False)
+        oracle = BenchmarkOracle(measure, runs_per_probe=5, interleave_baseline=False)
         oracle(["a"])
         oracle(["b"])
-        # 4 baseline runs total, then 4 per subset.
-        assert calls.count(0) == 4
+        # 5 baseline runs total, then 5 per subset.
+        assert calls.count(0) == 5
 
     def test_total_runs_reports_the_real_cost(self):
         oracle = BenchmarkOracle(frametime_model({"x"}), runs_per_probe=5)
@@ -147,11 +147,14 @@ class TestFailureHandling:
         def flaky(mods, replicate):
             return None if replicate == 0 else 16.7
 
-        oracle = BenchmarkOracle(flaky, runs_per_probe=5)
+        oracle = BenchmarkOracle(flaky, runs_per_probe=6)
         oracle(["a"])
         record = oracle.records[0]
-        assert len(record.baseline_values) == 4
-        assert len(record.subset_values) == 4
+        assert len(record.baseline_values) == 5
+        assert len(record.subset_values) == 5
+        # The attempt still happened and still cost a launch.
+        assert record.baseline_attempts == 6
+        assert record.subset_attempts == 6
 
     def test_a_probe_with_no_usable_runs_is_inconclusive(self):
         """Never 'clean'.
@@ -163,13 +166,64 @@ class TestFailureHandling:
         assert oracle(["a"]) is Outcome.INCONCLUSIVE
         assert "insufficient successful runs" in oracle.records[0].note
 
+    def test_a_probe_surviving_one_run_per_arm_is_not_a_verdict(self):
+        """The failure this floor exists to stop.
+
+        Five attempts per arm, four failures per arm, one enormous difference
+        between the survivors. The arithmetic is impeccable and the experiment
+        did not happen.
+        """
+        def mostly_broken(mods, replicate):
+            if replicate != 0:
+                return None
+            return 20.0 if mods else 10.0
+
+        oracle = BenchmarkOracle(mostly_broken, runs_per_probe=5)
+        assert oracle(["a"]) is Outcome.INCONCLUSIVE
+        record = oracle.records[0]
+        assert len(record.baseline_values) == 1
+        assert len(record.subset_values) == 1
+        assert not record.usable
+
+    def test_a_subset_that_never_launches_is_invalid_not_clean(self):
+        """A subset that cannot run has not been exonerated.
+
+        The baseline launches in the same interleaved probe on the same machine,
+        so the difference is the mod set. Calling it clean would let an
+        unlaunchable half of a pack clear the mod it contains.
+        """
+        def only_baseline_launches(mods, replicate):
+            return None if mods else 16.7
+
+        oracle = BenchmarkOracle(only_baseline_launches, runs_per_probe=5)
+        assert oracle(["a"]) is Outcome.INVALID
+        assert "unlaunchable" in oracle.records[0].note
+
+    def test_total_runs_counts_failed_launches(self):
+        """Ten measurement calls, eight failures, cost is ten — not two."""
+        def mostly_broken(mods, replicate):
+            return 16.7 if replicate == 0 else None
+
+        oracle = BenchmarkOracle(mostly_broken, runs_per_probe=5)
+        oracle(["a"])
+        assert oracle.total_runs == 10
+        assert oracle.successful_runs == 2
+        assert oracle.failed_runs == 8
+
     def test_rejects_an_unknown_metric(self):
         with pytest.raises(ValueError, match="unknown metric"):
             BenchmarkOracle(lambda m, r: 1.0, metric="vibes")
 
-    def test_rejects_too_few_runs_to_estimate_variance(self):
-        with pytest.raises(ValueError, match="at least 2"):
-            BenchmarkOracle(lambda m, r: 1.0, runs_per_probe=1)
+    def test_rejects_a_run_count_that_cannot_reach_a_verdict(self):
+        """Planning fewer runs than the floor guarantees a wasted search."""
+        with pytest.raises(ValueError, match="at least 5"):
+            BenchmarkOracle(lambda m, r: 1.0, runs_per_probe=2)
+
+    def test_underpowered_probes_can_only_be_inconclusive(self):
+        oracle = BenchmarkOracle(
+            frametime_model({"bad"}), runs_per_probe=2, allow_underpowered=True
+        )
+        assert oracle(["bad"]) is Outcome.INCONCLUSIVE
 
 
 class TestEndToEndIsolation:
@@ -191,12 +245,33 @@ class TestEndToEndIsolation:
         mods = [f"mod{i}" for i in range(8)]
         oracle = BenchmarkOracle(
             frametime_model({"mod1", "mod6"}, penalty=0.35, noise=0.01),
-            runs_per_probe=5,
+            runs_per_probe=7,
         )
         result = isolate(mods, oracle, max_probes=80)
         assert result.converged
         assert set(result.culprits) == {"mod1", "mod6"}
+        assert result.minimal
+        assert result.revalidated
         assert result.is_interaction
+
+    def test_an_interaction_is_not_claimed_while_minimality_is_unconfirmed(self):
+        """Two mods left standing is not the same as two mods at fault.
+
+        At five runs against this noise level, removing one of the pair comes
+        back inconclusive — so the search cannot rule out that the other is
+        solely responsible. Naming an interaction here would send a bug report
+        to two authors about a conflict that may not exist.
+        """
+        mods = [f"mod{i}" for i in range(8)]
+        oracle = BenchmarkOracle(
+            frametime_model({"mod1", "mod6"}, penalty=0.35, noise=0.01),
+            runs_per_probe=5,
+        )
+        result = isolate(mods, oracle, max_probes=80)
+        assert set(result.culprits) == {"mod1", "mod6"}
+        assert not result.minimal
+        assert not result.is_interaction
+        assert "minimality is unconfirmed" in result.note
 
     def test_audit_records_every_probe_with_its_numbers(self):
         mods = [f"mod{i}" for i in range(4)]

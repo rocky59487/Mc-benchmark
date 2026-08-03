@@ -393,7 +393,7 @@ def _interaction_groups(
 
 
 def _build_interactions(
-    cells: dict[Cell, "object"],
+    cells: dict[Cell, object],
     *,
     groups: Sequence[tuple[str, str, str]],
     baseline: str,
@@ -487,9 +487,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     fastest useful answer about a modpack is the one you get before spending two
     hours benchmarking a pack that was never going to load.
     """
-    from .inspect import InspectionTarget
+    from .inspect import InspectionTarget, inspect_mods, read_jars
     from .inspect import Severity as InspectSeverity
-    from .inspect import inspect_mods, read_jars
 
     paths: list[Path] = []
     missing: list[str] = []

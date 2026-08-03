@@ -15,8 +15,6 @@ import json
 import zipfile
 from pathlib import Path
 
-import pytest
-
 from mcbench.deps import graph_from_metadata
 from mcbench.diagnose import Outcome, isolate, leave_one_out
 from mcbench.inspect import read_jars

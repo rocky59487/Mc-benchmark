@@ -1289,18 +1289,25 @@ class Harness:
         if stream.errors and RunFlag.PROBE_ERROR not in metrics.flags:
             metrics.flags.append(RunFlag.PROBE_ERROR)
 
-        if not stream.tick_source.measures_execution and stream.has_server_data:
-            if RunFlag.TICK_PERIOD_ONLY not in metrics.flags:
-                metrics.flags.append(RunFlag.TICK_PERIOD_ONLY)
+        period_only = (
+            not stream.tick_source.measures_execution
+            and stream.has_server_data
+            and RunFlag.TICK_PERIOD_ONLY not in metrics.flags
+        )
+        if period_only:
+            metrics.flags.append(RunFlag.TICK_PERIOD_ONLY)
 
         if scenario.side.measures_frames and stream.client.frametimes_ns:
             frames_ms = [ns / 1_000_000.0 for ns in stream.client.frametimes_ns]
-            if frame_cap_suspected(frames_ms, CLIENT_FPS_CAP):
-                # The client sat against its own limiter, so what was measured
-                # is the cap. Every variant would score it and the comparison
-                # would confidently report equivalence.
-                if RunFlag.FRAME_CAP_SUSPECTED not in metrics.flags:
-                    metrics.flags.append(RunFlag.FRAME_CAP_SUSPECTED)
+            # The client sitting against its own limiter means what was measured
+            # is the cap. Every variant would score it and the comparison would
+            # confidently report equivalence.
+            capped = (
+                frame_cap_suspected(frames_ms, CLIENT_FPS_CAP)
+                and RunFlag.FRAME_CAP_SUSPECTED not in metrics.flags
+            )
+            if capped:
+                metrics.flags.append(RunFlag.FRAME_CAP_SUSPECTED)
 
         return metrics
 

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 from ..diagnose import Outcome
 from ..metrics import METRICS
-from ..stats import MIN_ADMISSIBLE_RUNS, DEFAULT_ROPE, Verdict, compare
+from ..stats import DEFAULT_ROPE, MIN_ADMISSIBLE_RUNS, Verdict, compare
 
 __all__ = [
     "MeasureCell",

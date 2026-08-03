@@ -19,12 +19,12 @@ from mcbench.diagnose import Outcome
 from mcbench.metrics import RunFlag, RunMetrics
 from mcbench.planner import Cell
 from mcbench.report import (
+    SuiteResult,
     aggregate_cell,
     build_interaction,
     compare_to_baseline,
     render_json,
     render_markdown,
-    SuiteResult,
 )
 from mcbench.runner.oracle import BenchmarkOracle
 from mcbench.stats import MIN_ADMISSIBLE_RUNS, Verdict, compare, sufficient_runs

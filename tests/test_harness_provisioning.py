@@ -20,7 +20,7 @@ from mcbench.metrics import RunFlag, RunMetrics
 from mcbench.planner import Cell, PlannedRun
 from mcbench.report import REFERENCE_SCENARIO
 from mcbench.runner import Harness, Severity
-from mcbench.runner.harness import outcomes_to_cells, run_counts, RunOutcome
+from mcbench.runner.harness import RunOutcome, outcomes_to_cells, run_counts
 from mcbench.scenario import load_scenarios
 
 REPO = Path(__file__).resolve().parents[1]

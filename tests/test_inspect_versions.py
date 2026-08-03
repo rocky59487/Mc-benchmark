@@ -8,23 +8,20 @@ reported as missing.
 
 from __future__ import annotations
 
-import json
 import zipfile
 from pathlib import Path
 
 import pytest
+from test_inspect import annotated_class, class_naming, fabric_jar
 
 from mcbench.inspect import (
     InspectionTarget,
-    Severity,
     annotated_mixin_targets,
     inspect_mods,
     read_jar,
     read_jars,
 )
 from mcbench.versions import Dialect, Satisfaction, satisfies
-
-from test_inspect import annotated_class, class_naming, fabric_jar
 
 
 def codes(result) -> set[str]:

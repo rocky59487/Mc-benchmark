@@ -1,0 +1,231 @@
+"""Launcher capability probing.
+
+Every flag the harness puts on a launch command is an assumption about a tool it
+does not ship. Probing turns a wrong assumption into a preflight message instead
+of a launch that fails minutes in, once per planned run.
+"""
+
+from __future__ import annotations
+
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from mcbench.config import parse_suite
+from mcbench.runner import Harness, Severity
+from mcbench.runner.launcher import probe_launcher
+from mcbench.scenario import Side, load_scenarios
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def fake_launcher(path: Path, help_text: str) -> Path:
+    path.write_text(f"#!/bin/sh\ncat <<'EOF'\n{help_text}\nEOF\n", encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
+FULL_HELP = """
+usage: headlessmc launch <version> [options]
+  --gamedir <dir>              game directory
+  --jvm <args>                 jvm arguments
+  --loader <name>              mod loader
+  --loader-version <version>   loader build
+  --quickPlaySingleplayer <w>  enter a world directly
+  --server                     launch the dedicated server
+"""
+
+MINIMAL_HELP = """
+usage: launcher launch <version>
+  --gamedir <dir>   game directory
+  --jvm <args>      jvm arguments
+"""
+
+
+def harness(tmp_path, launcher, *, scenario="entity-mobcap-saturation", **extra):
+    scenarios = {s.id: s for s in load_scenarios(REPO / "scenarios")}
+    suite = parse_suite({
+        "name": "t", "minecraft_version": "1.21.1", "loader": "fabric",
+        "loader_version": "0.16.5",
+        "scenarios": [scenario],
+        "variants": [{"name": "base", "mods": []}],
+        "baseline": "base",
+    })
+    return Harness(
+        suite, scenarios, work_dir=tmp_path, headlessmc=launcher, **extra
+    ), scenarios
+
+
+class TestProbe:
+    def test_reads_the_flags_a_launcher_names(self, tmp_path):
+        launcher = fake_launcher(tmp_path / "hmc", FULL_HELP)
+        found = probe_launcher(launcher)
+        assert found.probed
+        assert found.accepts("--quickPlaySingleplayer")
+        assert found.accepts("--loader-version")
+        assert not found.unsupported_required
+
+    def test_a_launcher_missing_a_required_flag_is_reported(self, tmp_path):
+        launcher = fake_launcher(
+            tmp_path / "hmc",
+            "usage: launcher launch <version>\n  --loader <name>  mod loader\n",
+        )
+        found = probe_launcher(launcher)
+        assert found.probed
+        assert found.unsupported_required == ("--gamedir", "--jvm")
+
+    def test_help_naming_no_flags_at_all_is_treated_as_unreadable(self, tmp_path):
+        """Indistinguishable from a launcher that would not print help."""
+        launcher = fake_launcher(tmp_path / "hmc", "usage: launcher launch <version>")
+        found = probe_launcher(launcher)
+        assert not found.probed
+        assert found.accepts("--gamedir")
+
+    def test_unreadable_help_assumes_support_rather_than_absence(self, tmp_path):
+        """Refusing to run because --help was unparseable is the worse failure."""
+        launcher = tmp_path / "missing"
+        found = probe_launcher(launcher)
+        assert not found.probed
+        assert found.accepts("--anything")
+
+
+class TestLaunchCommand:
+    def test_unsupported_optional_flags_are_dropped(self, tmp_path):
+        launcher = fake_launcher(tmp_path / "hmc", MINIMAL_HELP)
+        h, scenarios = harness(tmp_path / "w", launcher)
+        command = h._launch_command(
+            tmp_path, scenarios["entity-mobcap-saturation"], h.suite.variants[0]
+        )
+        assert "--loader" not in command
+        assert "--loader-version" not in command
+        # The required ones stay.
+        assert "--gamedir" in command and "--jvm" in command
+
+    def test_supported_flags_are_used(self, tmp_path):
+        launcher = fake_launcher(tmp_path / "hmc", FULL_HELP)
+        h, scenarios = harness(tmp_path / "w", launcher)
+        command = h._launch_command(
+            tmp_path, scenarios["entity-mobcap-saturation"], h.suite.variants[0]
+        )
+        assert "--loader" in command
+        assert "--loader-version" in command
+
+    def test_quick_play_falls_back_to_a_pass_through(self, tmp_path):
+        """It is a vanilla game argument; a launcher may forward past `--`."""
+        launcher = fake_launcher(tmp_path / "hmc", MINIMAL_HELP)
+        scenarios = {s.id: s for s in load_scenarios(REPO / "scenarios")}
+        client = next(s for s in scenarios.values() if s.side is Side.CLIENT)
+        h, _ = harness(tmp_path / "w", launcher, scenario=client.id)
+
+        command = h._launch_command(tmp_path, client, h.suite.variants[0])
+        assert "--" in command
+        assert command.index("--") < command.index("--quickPlaySingleplayer")
+
+    def test_extra_arguments_are_appended_verbatim(self, tmp_path):
+        launcher = fake_launcher(tmp_path / "hmc", FULL_HELP)
+        h, scenarios = harness(
+            tmp_path / "w", launcher, extra_launch_args=["--offline", "-q"]
+        )
+        command = h._launch_command(
+            tmp_path, scenarios["entity-mobcap-saturation"], h.suite.variants[0]
+        )
+        assert command[-2:] == ["--offline", "-q"]
+
+
+class TestPreflight:
+    def test_a_launcher_missing_required_flags_blocks(self, tmp_path):
+        launcher = fake_launcher(
+            tmp_path / "hmc", "usage: launcher\n  --loader <name>  mod loader\n"
+        )
+        h, _ = harness(tmp_path / "w", launcher)
+        result = h.preflight(require_account=False)
+        check = next(c for c in result.checks if c.name == "launcher flags")
+        assert check.severity is Severity.BLOCK
+        assert "--gamedir" in check.detail
+        assert not result.admissible
+
+    def test_dropped_optional_flags_are_reported(self, tmp_path):
+        launcher = fake_launcher(tmp_path / "hmc", MINIMAL_HELP)
+        h, _ = harness(tmp_path / "w", launcher)
+        check = next(
+            c for c in h.preflight(require_account=False).checks
+            if c.name == "launcher flags"
+        )
+        assert check.severity is Severity.INFO
+        assert "--loader" in check.detail
+
+    def test_a_complete_launcher_passes(self, tmp_path):
+        launcher = fake_launcher(tmp_path / "hmc", FULL_HELP)
+        h, _ = harness(tmp_path / "w", launcher)
+        check = next(
+            c for c in h.preflight(require_account=False).checks
+            if c.name == "launcher flags"
+        )
+        assert check.severity is Severity.OK
+
+    @pytest.mark.skipif(os.name == "nt", reason="shell-script launcher stub")
+    def test_the_probe_runs_once_per_harness(self, tmp_path):
+        launcher = fake_launcher(tmp_path / "hmc", FULL_HELP)
+        h, _ = harness(tmp_path / "w", launcher)
+        assert h.launcher_capabilities() is h.launcher_capabilities()
+
+
+class TestAuthoredWorldIsTheOneUsed:
+    """The level.dat the harness writes is a request, not a guarantee.
+
+    A client that rejects it makes its own world with its own seed, and a run
+    over that is a measurement of different terrain that looks perfectly normal.
+    """
+
+    def _client_harness(self, tmp_path):
+        scenarios = {s.id: s for s in load_scenarios(REPO / "scenarios")}
+        client = next(s for s in scenarios.values() if s.side is Side.CLIENT)
+        h, _ = harness(
+            tmp_path / "w",
+            fake_launcher(tmp_path / "hmc", FULL_HELP),
+            scenario=client.id,
+        )
+        return h, client
+
+    def test_the_authored_world_passes(self, tmp_path):
+        from mcbench.world import create_world
+
+        h, client = self._client_harness(tmp_path)
+        instance = tmp_path / "instance"
+        world = create_world(
+            instance / "saves", name=h._client_world_name(client), seed=client.seed
+        )
+        assert h._client_world_mismatch(instance, client, world) == ""
+
+    def test_a_world_the_client_made_itself_is_rejected(self, tmp_path):
+        from mcbench.world import create_world
+
+        h, client = self._client_harness(tmp_path)
+        instance = tmp_path / "instance"
+        create_world(
+            instance / "saves", name=h._client_world_name(client), seed=client.seed
+        )
+        stray = create_world(instance / "saves", name="New World", seed=999)
+        assert "New World" in h._client_world_mismatch(instance, client, stray)
+
+    def test_a_wrong_seed_is_rejected(self, tmp_path):
+        from mcbench.world import create_world
+
+        h, client = self._client_harness(tmp_path)
+        instance = tmp_path / "instance"
+        world = create_world(
+            instance / "saves",
+            name=h._client_world_name(client),
+            seed=client.seed + 1,
+        )
+        assert "seed" in h._client_world_mismatch(instance, client, world)
+
+    def test_an_unreadable_level_dat_is_rejected(self, tmp_path):
+        h, client = self._client_harness(tmp_path)
+        instance = tmp_path / "instance"
+        world = instance / "saves" / h._client_world_name(client)
+        world.mkdir(parents=True)
+        (world / "level.dat").write_bytes(b"not nbt")
+        assert "could not be read" in h._client_world_mismatch(instance, client, world)

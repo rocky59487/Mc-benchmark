@@ -36,6 +36,7 @@ from ..providers import ModrinthClient, ModrinthError, ResolvedMod
 from ..scenario import Scenario, Side
 from ..targets import Target
 from ..world import WorldError, create_world, fingerprint_world
+from .launcher import KNOWN_FLAGS, LauncherCapabilities, probe_launcher
 from .plan import check_target, write_plan
 from .preflight import Check, Preflight, Severity, run_preflight
 from .protocol import (
@@ -405,6 +406,7 @@ class Harness:
         agent_jar: str | Path | None = None,
         probe_jar: str | Path | None = None,
         fabric_api_jar: str | Path | None = None,
+        extra_launch_args: Sequence[str] = (),
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.suite = suite
@@ -424,6 +426,9 @@ class Harness:
             api_jar=Path(fabric_api_jar) if fabric_api_jar else None,
         )
         self._probe_provenance: list[dict[str, str]] = []
+        #: Appended verbatim to every launch, for a launcher this does not know.
+        self.extra_launch_args = list(extra_launch_args)
+        self._capabilities: LauncherCapabilities | None = None
 
     # -- setup -----------------------------------------------------------
 
@@ -535,6 +540,12 @@ class Harness:
             )
         )
 
+        # Flags the harness intends to use, checked against what the launcher
+        # says it accepts. An unrecognised flag otherwise surfaces as a failed
+        # launch minutes in, once per planned run.
+        if self.headlessmc is not None:
+            result.checks.append(self._launcher_check())
+
         # No probe means no measurement on any variant, baseline included.
         # Checked up front so the suite refuses before launching.
         gaps = self.probe.missing()
@@ -555,6 +566,12 @@ class Harness:
             )
         )
         return result
+
+    def launcher_capabilities(self) -> LauncherCapabilities:
+        """What the installed launcher accepts, probed once and cached."""
+        if self._capabilities is None:
+            self._capabilities = probe_launcher(self.headlessmc)
+        return self._capabilities
 
     def resolve_all(self) -> dict[str, ResolvedVariant]:
         """Resolve every variant's mods up front.
@@ -578,6 +595,41 @@ class Harness:
                 "jars": len(self._resolved[variant.name].jars),
             })
         return self._resolved
+
+    def _launcher_check(self) -> Check:
+        capabilities = self.launcher_capabilities()
+        if not capabilities.probed:
+            return Check(
+                "launcher flags", Severity.INFO,
+                f"could not read the launcher's help output ({capabilities.detail}); "
+                f"assuming every flag is accepted",
+                remedy=(
+                    "If launches fail on an unrecognised argument, pass the "
+                    "correct ones with --launch-arg."
+                ),
+            )
+        if capabilities.unsupported_required:
+            missing = ", ".join(capabilities.unsupported_required)
+            return Check(
+                "launcher flags", Severity.BLOCK,
+                f"the launcher does not accept {missing}, without which a run "
+                f"cannot be given its own instance directory or JVM arguments",
+                remedy=(
+                    "Use a HeadlessMC build that supports these, or point "
+                    "--headlessmc at a wrapper script that translates them."
+                ),
+            )
+
+        optional = capabilities.missing(
+            frozenset(KNOWN_FLAGS) - set(capabilities.unsupported_required)
+        )
+        if optional:
+            return Check(
+                "launcher flags", Severity.INFO,
+                "not accepted by this launcher and therefore dropped: "
+                + ", ".join(f"{f} ({KNOWN_FLAGS[f]})" for f in optional if f in KNOWN_FLAGS),
+            )
+        return Check("launcher flags", Severity.OK, capabilities.detail)
 
     def resolve_probe(self) -> ProbeArtifacts:
         """Make sure the probe — and what the probe needs — is on disk.
@@ -898,15 +950,17 @@ class Harness:
         else:
             command = [str(self.headlessmc)]
 
+        capabilities = self.launcher_capabilities()
+        command += ["launch", self.suite.minecraft_version]
+        if capabilities.accepts("--loader"):
+            command += ["--loader", self.suite.loader.value]
         command += [
-            "launch", self.suite.minecraft_version,
-            "--loader", self.suite.loader.value,
             "--gamedir", str(instance),
             "--jvm", " ".join(jvm_args),
         ]
         # A pinned loader version has to be requested, or two runs on different
         # loader builds serialise as the same configuration.
-        if self.suite.loader_version:
+        if self.suite.loader_version and capabilities.accepts("--loader-version"):
             command += ["--loader-version", str(self.suite.loader_version)]
 
         if scenario.side is Side.SERVER:
@@ -915,7 +969,15 @@ class Harness:
             # Quick-play into the scenario's world. Without it the client sits
             # at the title screen, no integrated server starts, and the probe
             # never fires.
-            command += ["--quickPlaySingleplayer", self._client_world_name(scenario)]
+            world = self._client_world_name(scenario)
+            if capabilities.accepts("--quickPlaySingleplayer"):
+                command += ["--quickPlaySingleplayer", world]
+            else:
+                # The flag is a vanilla game argument; a launcher that does not
+                # name it may still forward what follows a bare `--`.
+                command += ["--", "--quickPlaySingleplayer", world]
+
+        command += self.extra_launch_args
         return command
 
     @staticmethod
@@ -1115,6 +1177,48 @@ class Harness:
         worlds = [d for d in sorted(saves.iterdir()) if (d / "region").is_dir()]
         return worlds[0] if len(worlds) == 1 else None
 
+    def _client_world_mismatch(
+        self, instance: Path, scenario: Scenario, world_dir: Path
+    ) -> str:
+        """Why the client's world is not the one authored, or "".
+
+        The ``level.dat`` the harness writes is only a request. A client that
+        rejects it creates its own world with its own seed, and a run over that
+        is a measurement of different terrain that would otherwise look
+        perfectly normal.
+        """
+        saves = instance / "saves"
+        expected = saves / self._client_world_name(scenario)
+        if world_dir != expected:
+            return f"the client used {world_dir.name}, not {expected.name}"
+
+        others = [
+            d for d in sorted(saves.iterdir())
+            if d.is_dir() and d != expected and (d / "level.dat").exists()
+        ] if saves.is_dir() else []
+        if others:
+            return (
+                f"the client created {', '.join(d.name for d in others)} "
+                f"alongside the authored world"
+            )
+
+        try:
+            import gzip
+
+            from ..nbt import parse_nbt
+
+            data = parse_nbt(
+                gzip.decompress((expected / "level.dat").read_bytes())
+            )["Data"]
+        except (OSError, KeyError, ValueError, TypeError):
+            return "the world's level.dat could not be read back"
+
+        settings = data.get("WorldGenSettings")
+        seed = settings.get("seed") if isinstance(settings, dict) else data.get("RandomSeed")
+        if seed is not None and int(seed) != scenario.seed:
+            return f"the world's seed is {seed}, not the scenario's {scenario.seed}"
+        return ""
+
     def _fingerprint_world(
         self, instance: Path, scenario: Scenario, planned: PlannedRun
     ) -> str:
@@ -1134,6 +1238,18 @@ class Harness:
                 "cell": str(planned.cell), "result": "no world directory found",
             })
             return ""
+
+        if scenario.side in (Side.CLIENT, Side.BOTH):
+            mismatch = self._client_world_mismatch(instance, scenario, world_dir)
+            if mismatch:
+                # The client did not enter the world the harness authored. It
+                # created its own, or regenerated ours from a level.dat it
+                # refused — either way the seed and generator are the game's
+                # choice and this is not the scenario that was requested.
+                self.on_event("run.world", {
+                    "cell": str(planned.cell), "result": mismatch,
+                })
+                return ""
         try:
             result = fingerprint_world(world_dir)
         except (WorldError, OSError) as exc:

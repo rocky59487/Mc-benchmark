@@ -789,6 +789,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         agent_jar=args.agent_jar,
         probe_jar=args.probe_jar,
         fabric_api_jar=args.fabric_api_jar,
+        extra_launch_args=args.launch_arg or (),
         on_event=emit,
     )
 
@@ -893,6 +894,7 @@ def cmd_bisect(args: argparse.Namespace) -> int:
         agent_jar=args.agent_jar,
         probe_jar=args.probe_jar,
         fabric_api_jar=args.fabric_api_jar,
+        extra_launch_args=args.launch_arg or (),
     )
 
     preflight = harness.preflight(require_account=not args.no_account_check)
@@ -1197,6 +1199,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fabric-api-jar",
                    help="Fabric API, which the Fabric probe hard-depends on. "
                         "Resolved from Modrinth when not given")
+    p.add_argument("--launch-arg", action="append",
+                   help="extra argument appended to every launch command "
+                        "(repeatable), for a launcher whose flags differ")
     p.add_argument("--timeout", type=float, help="per-run timeout in seconds")
     p.add_argument("--stop-on-failure", action="store_true")
     p.add_argument("--no-account-check", action="store_true")
@@ -1226,6 +1231,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent-jar")
     p.add_argument("--probe-jar")
     p.add_argument("--fabric-api-jar")
+    p.add_argument("--launch-arg", action="append")
     p.add_argument("--timeout", type=float)
     p.add_argument("--no-account-check", action="store_true")
     p.add_argument("--force", action="store_true")

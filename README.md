@@ -16,8 +16,9 @@ a verdict.
 > Methodology, statistics, scenarios, planner, mod resolution, headless run loop,
 > preflight gating, chart/table export, the scenario-to-command compiler, the
 > probe timing core, and adapters for Fabric and Paper are implemented and
-> tested — 295 tests across Python and Java, including conformance fixtures in
-> both directions of the harness/probe seam. What remains is more platforms and
+> tested — 326 tests across Python and Java, including conformance fixtures in
+> both directions of the harness/probe seam, and a target layer that compiles one
+> scenario for any platform and version. What remains is more platforms and
 > real hardware. See [Roadmap](#roadmap).
 
 ## What makes it different

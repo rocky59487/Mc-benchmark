@@ -17,6 +17,26 @@ from mcbench.planner import (
 )
 
 
+def _slot_spread(runs) -> float:
+    """Difference between the highest and lowest mean slot within a round.
+
+    Slot rather than global position: position also counts whole rounds, which
+    every variant gets equally, and the difference that matters is where inside
+    a round a variant tends to land. A machine warms through a round.
+    """
+    by_round: dict[int, list[str]] = {}
+    for run in runs:
+        by_round.setdefault(run.round_index, []).append(run.cell.variant)
+
+    slots: dict[str, list[int]] = {}
+    for names in by_round.values():
+        for slot, name in enumerate(names):
+            slots.setdefault(name, []).append(slot)
+
+    means = [sum(v) / len(v) for v in slots.values()]
+    return max(means) - min(means)
+
+
 class TestPlanShape:
     def test_produces_one_run_per_cell_per_replicate(self):
         plan = plan_runs(["s1", "s2"], ["a", "b", "c"], runs_per_cell=5)
@@ -67,6 +87,44 @@ class TestInterleaving:
         spread = max(means) - min(means)
         # With a shuffled round-robin the spread is a small fraction of the run.
         assert spread < len(plan) * 0.10
+
+    def test_the_bound_holds_at_the_run_counts_suites_use(self):
+        """Twenty-one rounds is not what anyone runs.
+
+        The test above passes on independent shuffling too, because at that
+        many rounds the averaging does the work. A suite runs five. This is the
+        same property at a size someone will actually use, and it fails on the
+        implementation this replaced.
+        """
+        for count in (5, 6, 7, 8):
+            for names in (["a", "b", "c"], list("abcdef"), list("abcdefgh")):
+                bound = (len(names) - 1) / count if count % 2 else 0.0
+                for seed in range(60):
+                    spread = _slot_spread(
+                        plan_runs(["s1"], names, runs_per_cell=count, seed=seed)
+                    )
+                    assert spread <= bound + 1e-9, (
+                        f"{len(names)} variants, {count} rounds, seed {seed}: "
+                        f"{spread} > {bound}"
+                    )
+
+    def test_an_even_round_count_balances_exactly(self):
+        # Worth stating on its own: it is the reason to prefer an even
+        # runs_per_cell, and it costs one run per cell over the odd number
+        # below it.
+        for seed in range(40):
+            plan = plan_runs(["s1"], list("abcdef"), runs_per_cell=6, seed=seed)
+            assert _slot_spread(plan) == 0.0
+
+    def test_balance_holds_within_each_scenario(self):
+        # Scenarios run end to end, so each is its own stretch of wall clock
+        # and needs balancing on its own. A schedule balanced only over the
+        # concatenation could be skewed one way in the first and the other way
+        # in the second, and cancel on paper.
+        plan = plan_runs(["s1", "s2"], list("abcdef"), runs_per_cell=6, seed=11)
+        for scenario in ("s1", "s2"):
+            runs = [r for r in plan if r.cell.scenario == scenario]
+            assert _slot_spread(runs) == 0.0
 
     def test_blocked_ordering_shows_the_bias_interleaving_removes(self):
         """Demonstrates why blocked ordering is not admissible.

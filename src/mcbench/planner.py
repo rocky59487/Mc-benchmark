@@ -96,6 +96,49 @@ class RunPlan:
         return out
 
 
+def _balanced_rounds(
+    variants: Sequence[str], rounds: int, rng: random.Random
+) -> list[list[str]]:
+    """Variant orders for each round, balanced on position.
+
+    Each round, the variant carrying the largest total of slot indices so far
+    goes first and the smallest goes last. Ties are broken at random, so the
+    schedule is not a fixed order an operator could arrange a result around.
+
+    The effect is that consecutive rounds pair up into reversals of each other,
+    which is the ABBA arrangement used to cancel drift in any experiment where
+    the apparatus changes as it runs. A reversed pair contributes the same slot
+    total to every variant, so the spread in mean slot is bounded, whatever the
+    seed, by
+
+        (len(variants) - 1) / rounds,  and exactly 0 when rounds is even
+
+    because an even number of rounds leaves no round unpaired. Independent
+    shuffling, which is what this did before, bounds it at nothing: over 400
+    seeds of six variants and five rounds the worst spread was 3 slots.
+
+    An even ``runs_per_cell`` is therefore worth preferring, and costs one
+    extra run per cell over the odd number below it.
+
+    A variant does run twice in a row across a reversal boundary, being last in
+    one round and first in the next. That is inherent to ABBA and is the price
+    of the cancellation. It is also cheap here: every run gets a fresh instance,
+    a restored world and its own warmup, so what carries over is the machine's
+    thermal state, which is the thing being balanced rather than a thing being
+    measured.
+    """
+    totals = dict.fromkeys(variants, 0)
+    schedule: list[list[str]] = []
+    for _ in range(rounds):
+        order = list(variants)
+        rng.shuffle(order)
+        order.sort(key=lambda variant: -totals[variant])
+        for slot, variant in enumerate(order):
+            totals[variant] += slot
+        schedule.append(order)
+    return schedule
+
+
 def plan_runs(
     scenarios: Sequence[str],
     variants: Sequence[str],
@@ -107,11 +150,12 @@ def plan_runs(
     """Build the execution schedule for a suite.
 
     The default interleaved strategy runs one replicate of every variant per
-    round, shuffling the variant order within each round:
+    round, ordering the variants within each round so that no variant collects
+    earlier slots than another across the suite:
 
         round 1:  B  A  C
-        round 2:  A  C  B
-        round 3:  C  B  A
+        round 2:  C  A  B
+        round 3:  A  C  B
 
     rather than the blocked ``AAAAA BBBBB CCCCC`` that every existing Minecraft
     benchmark uses. Blocked execution confounds variant with wall-clock time,
@@ -119,8 +163,16 @@ def plan_runs(
     and ambient temperature drift. On a machine that throttles after ten
     minutes, blocked ordering hands a clean and repeatable win to whichever
     variant ran first, and it reproduces, which is what makes it hard to spot.
-    Interleaving converts that systematic bias into noise the
-    statistics can see and price in.
+
+    Balanced rather than independently shuffled, which is what this did before
+    and is not the same thing. Shuffling each round separately equalises mean
+    position only in expectation, and a suite runs a handful of rounds, not
+    enough for that to bite. Six variants over five rounds, on the seed the
+    repository's own optimisation suite ships with, gave one variant a mean
+    slot of 1.6 and another 3.6: two slots, every round, in the same direction.
+    That is a constant offset between variants, so it survives averaging over
+    replicates and the statistics price it as effect rather than noise. See
+    :func:`_balanced_rounds` for what replaces it and what it guarantees.
 
     Scenarios are held together within a round rather than interleaved with each
     other, because switching scenario means regenerating a world; interleaving
@@ -148,9 +200,12 @@ def plan_runs(
 
     if strategy is OrderStrategy.INTERLEAVED:
         for scenario in scenarios:
-            for round_index in range(runs_per_cell):
-                order = list(variants)
-                rng.shuffle(order)
+            # Balanced per scenario, not once for the suite. Scenarios run
+            # end to end, so each is its own stretch of wall-clock time and
+            # needs its own balance; one shared schedule would leave the
+            # second scenario carrying whatever imbalance the first ended on.
+            schedule = _balanced_rounds(variants, runs_per_cell, rng)
+            for round_index, order in enumerate(schedule):
                 for variant in order:
                     runs.append(
                         PlannedRun(

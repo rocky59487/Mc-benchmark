@@ -59,11 +59,18 @@ public final class McbenchProbeMod implements ModInitializer, ClientModInitializ
         });
 
         if (created.measuresTicks()) {
-            ServerTickEvents.END_SERVER_TICK.register(server -> created.onTick());
+            // Bracketed, not intervalled. START_SERVER_TICK fires before the server does any
+            // of the tick's work and END_SERVER_TICK after it, so the span between them is the
+            // tick's execution time — which is what MSPT means. Timing between consecutive
+            // END events instead measured the tick *period*, and on an unsaturated 20 TPS
+            // server that converges on 50 ms whether the tick cost 5 ms or 30 ms.
+            ServerTickEvents.START_SERVER_TICK.register(server -> created.onTickStart());
+            ServerTickEvents.END_SERVER_TICK.register(server -> created.onTickEnd());
         }
 
-        // pump() runs at the end of the server tick, where issuing commands is safe. Kept out
-        // of the timing hooks so command execution never lands inside a measured interval.
+        // pump() runs at the end of the server tick, where issuing commands is safe. Registered
+        // after the timing hooks so command execution lands outside the bracket rather than
+        // inside the interval being measured.
         ServerTickEvents.END_SERVER_TICK.register(server -> created.pump());
 
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> created.finish());

@@ -90,35 +90,92 @@ public final class ProbeWriter implements AutoCloseable {
 
     /** A batch of frame durations. {@code values[0..count)} are used. */
     public void frames(long[] values, int count) {
-        emitDurations("frame", values, count);
+        emitDurations("frame", values, count, null);
     }
 
-    /** A batch of server tick durations. {@code values[0..count)} are used. */
-    public void ticks(long[] values, int count) {
-        emitDurations("tick", values, count);
+    /**
+     * A batch of server tick durations. {@code values[0..count)} are used.
+     *
+     * <p>The source travels with every batch. Tick period and tick execution time are
+     * different quantities, and the harness publishes them under different metric names —
+     * emitting them indistinguishably is what let the period be reported as MSPT.
+     */
+    public void ticks(long[] values, int count, TickSource source) {
+        emitDurations("tick", values, count, source.wireName());
     }
 
-    public void gcPauses(double[] pausesMs, int count) {
-        if (count <= 0) {
+    /**
+     * Individual garbage collections.
+     *
+     * <p>One event per collection, each with its own duration and its own heap readings, so a
+     * pause percentile is a percentile over pauses. The previous aggregate-per-interval form
+     * merged several short collections into one long apparent pause.
+     */
+    public void gcEvents(java.util.List<RuntimeMonitor.GcEvent> events) {
+        if (events.isEmpty()) {
             return;
         }
-        StringBuilder json = begin("gc");
-        json.append(",\"pauses_ms\":[");
-        for (int i = 0; i < count; i++) {
-            if (i > 0) {
+        StringBuilder json = new StringBuilder(events.size() * 160 + 48);
+        json.append("{\"type\":").append(quote("gc"));
+        json.append(",\"source\":").append(quote("events"));
+        json.append(",\"events\":[");
+        boolean first = true;
+        for (RuntimeMonitor.GcEvent event : events) {
+            if (!first) {
                 json.append(',');
             }
-            json.append(number(pausesMs[i]));
+            first = false;
+            json.append("{\"collector\":").append(quote(event.collector()));
+            json.append(",\"action\":").append(quote(event.action()));
+            json.append(",\"start_ms\":").append(event.startMillis());
+            json.append(",\"duration_ms\":").append(event.durationMs());
+            json.append(",\"heap_before_mb\":").append(number(event.heapBeforeMb()));
+            json.append(",\"heap_after_mb\":").append(number(event.heapAfterMb()));
+            json.append(",\"stop_the_world\":").append(event.stopsTheWorld());
+            json.append('}');
         }
         json.append("]}");
         emit(json);
     }
 
-    public void memory(double heapMb, boolean postGc, long allocatedBytes) {
+    /**
+     * Total collection time since the last sample, when per-event data is unavailable.
+     *
+     * <p>Marked as an aggregate so the harness reports total pause time and declines to
+     * compute a pause percentile from it — a percentile over interval sums describes the
+     * sampling cadence, not the collector.
+     */
+    public void gcAggregate(long totalPauseMs, long collections) {
+        if (totalPauseMs <= 0) {
+            return;
+        }
+        StringBuilder json = begin("gc");
+        json.append(",\"source\":").append(quote("aggregate"));
+        json.append(",\"total_pause_ms\":").append(totalPauseMs);
+        json.append(",\"collections\":").append(collections).append('}');
+        emit(json);
+    }
+
+    /**
+     * A heap sample.
+     *
+     * <p>{@code allocated_bytes} and {@code heap_growth_bytes} are both reported, and
+     * {@code real_allocation} says whether the first came from an allocation counter or is a
+     * copy of the second. Publishing heap growth as an allocation rate made a mod that
+     * allocates heavily and collects promptly look free.
+     */
+    public void memory(
+            double heapMb,
+            boolean postGc,
+            long allocatedBytes,
+            long heapGrowthBytes,
+            boolean realAllocation) {
         StringBuilder json = begin("memory");
         json.append(",\"heap_mb\":").append(number(heapMb));
         json.append(",\"post_gc\":").append(postGc);
-        json.append(",\"allocated_bytes\":").append(allocatedBytes).append('}');
+        json.append(",\"allocated_bytes\":").append(allocatedBytes);
+        json.append(",\"heap_growth_bytes\":").append(heapGrowthBytes);
+        json.append(",\"real_allocation\":").append(realAllocation).append('}');
         emit(json);
     }
 
@@ -148,26 +205,68 @@ public final class ProbeWriter implements AutoCloseable {
     }
 
     /**
+     * How the run reached measurement, and what it could and could not measure.
+     *
+     * @param setupDuration      time spent running scenario setup, in the phase's own unit
+     * @param warmupDuration     time spent in warmup, likewise
+     * @param gateReason         why warmup ended, in words
+     * @param converged          whether the gate opened or the ceiling was hit
+     * @param compilationGate    whether the JVM could report compilation time at all
+     * @param tickSource         what tick samples measured
+     * @param failedSetup        setup commands the game rejected
+     * @param failedWorkload     workload commands the game rejected
+     * @param realAllocation     whether allocation came from a counter or from heap growth
+     * @param gcEvents           whether individual collections were captured
+     */
+    public record RunSummary(
+            double setupDuration,
+            double warmupDuration,
+            String gateReason,
+            boolean converged,
+            boolean compilationGate,
+            TickSource tickSource,
+            int failedSetup,
+            int failedWorkload,
+            boolean realAllocation,
+            boolean gcEvents) {}
+
+    /**
      * Final event. Its absence is how the harness knows a run did not finish, so it is written
      * and flushed before anything else is torn down.
      */
-    public void bye(double measurementDurationSeconds, boolean saturated) {
+    public void bye(double measurementDurationSeconds, boolean saturated, RunSummary summary) {
         StringBuilder json = begin("bye");
         json.append(",\"measurement_duration_s\":").append(number(measurementDurationSeconds));
-        json.append(",\"saturated\":").append(saturated).append('}');
+        json.append(",\"saturated\":").append(saturated);
+        if (summary != null) {
+            json.append(",\"setup_duration\":").append(number(summary.setupDuration()));
+            json.append(",\"warmup_duration\":").append(number(summary.warmupDuration()));
+            json.append(",\"warmup_gate\":").append(quote(summary.gateReason()));
+            json.append(",\"warmup_converged\":").append(summary.converged());
+            json.append(",\"compilation_gate\":").append(summary.compilationGate());
+            json.append(",\"tick_source\":").append(quote(summary.tickSource().wireName()));
+            json.append(",\"failed_setup_commands\":").append(summary.failedSetup());
+            json.append(",\"failed_workload_commands\":").append(summary.failedWorkload());
+            json.append(",\"real_allocation\":").append(summary.realAllocation());
+            json.append(",\"gc_events\":").append(summary.gcEvents());
+        }
+        json.append('}');
         emit(json);
     }
 
     // -- internals -------------------------------------------------------
 
-    private void emitDurations(String type, long[] values, int count) {
+    private void emitDurations(String type, long[] values, int count, String source) {
         if (count <= 0) {
             return;
         }
         // Sized up front: a 65k-sample batch would otherwise trigger repeated array copies
         // inside StringBuilder while the game is running.
-        StringBuilder json = new StringBuilder(count * 9 + 48);
+        StringBuilder json = new StringBuilder(count * 9 + 64);
         json.append("{\"type\":").append(quote(type));
+        if (source != null) {
+            json.append(",\"source\":").append(quote(source));
+        }
         json.append(",\"durations_ns\":[");
         for (int i = 0; i < count; i++) {
             if (i > 0) {

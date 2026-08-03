@@ -1,5 +1,6 @@
 package dev.mcbench.probe.fabric;
 
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import dev.mcbench.probe.core.ProbeAdapter;
 import dev.mcbench.probe.core.ProbeSession;
 import java.util.Map;
@@ -43,17 +44,28 @@ public final class FabricProbeAdapter extends ProbeAdapter {
     }
 
     @Override
-    protected void executeCommand(String command) {
+    protected boolean executeCommand(String command) {
         MinecraftServer current = server;
         if (current == null) {
             session.reportError("no server attached; dropped command: " + command);
-            return;
+            return false;
         }
         ServerCommandSource source = current.getCommandSource();
         // Commands rather than direct API calls: /summon, /fill, /setblock and /gamerule have
         // been compatible for a decade, while the Java methods behind them have been renamed
         // repeatedly. That stability is what makes one scenario file work across versions.
-        current.getCommandManager().executeWithPrefix(source, command);
+        //
+        // Dispatched directly rather than through executeWithPrefix, which swallows the
+        // result: a rejected command logged a chat message and returned normally, so a
+        // scenario built on a typo reported no failure and measured an empty world.
+        try {
+            current.getCommandManager().getDispatcher()
+                    .execute(command.startsWith("/") ? command.substring(1) : command, source);
+            return true;
+        } catch (CommandSyntaxException e) {
+            session.reportError("command rejected: " + command + ": " + e.getMessage());
+            return false;
+        }
     }
 
     @Override

@@ -13,11 +13,15 @@ import org.bukkit.scheduler.BukkitTask;
  * <p>Inert unless {@code MCBENCH_PROBE_CONFIG} is set, so it is harmless left installed on a
  * normal server.
  *
- * <p><b>Tick timing.</b> Bukkit exposes no tick event, but a repeating task scheduled at a
- * one-tick period runs exactly once per server tick on the main thread. Measuring the interval
- * between consecutive invocations gives the same quantity as a tick event would, using an API
- * that has been stable since Bukkit's earliest versions — considerably longer than any internal
- * hook would have survived.
+ * <p><b>Tick timing.</b> Bukkit exposes no tick event, and a repeating task cannot bracket a
+ * tick: it runs <em>inside</em> one, so two tasks a tick apart measure the gap between two
+ * points within it. The interval between consecutive invocations is the tick <em>period</em>,
+ * which on a server under its budget is a constant 50 ms whatever the tick actually cost —
+ * publishing that as MSPT made the primary server metrics a measurement of the scheduler.
+ *
+ * <p>Paper exposes the real figure through {@code Server#getTickTimes()}, and the adapter reads
+ * it where it exists. On Spigot, which does not, the period is recorded instead and published
+ * under {@code tick_period_*} rather than as MSPT.
  *
  * <p>Two scheduled tasks rather than one, matching the Fabric adapter: timing must not include
  * the cost of the commands the workload issues, so {@code pump()} runs in a separate task that
@@ -57,9 +61,10 @@ public final class McbenchProbePlugin extends JavaPlugin {
                 "bukkit_version", Bukkit.getBukkitVersion());
         adapter.begin(metadata);
 
-        // Period 1 = every tick. Runs on the main thread, so the interval it measures is real
-        // server tick time.
-        timingTask = Bukkit.getScheduler().runTaskTimer(this, adapter::onTick, 0L, 1L);
+        // Period 1 = every tick, on the main thread. sampleTick() reads Paper's own duration
+        // for the tick that just finished, and only falls back to the interval where the
+        // server cannot supply one.
+        timingTask = Bukkit.getScheduler().runTaskTimer(this, adapter::sampleTick, 0L, 1L);
         pumpTask = Bukkit.getScheduler().runTaskTimer(this, adapter::pump, 1L, 1L);
 
         // The harness treats a missing 'bye' as a crash, so an unclean exit that skipped

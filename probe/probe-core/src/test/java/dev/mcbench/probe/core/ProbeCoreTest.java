@@ -147,8 +147,15 @@ class ProbeCoreTest {
     @Nested
     class PhaseControllerTest {
 
+        /**
+         * A controller whose compilation half never blocks, so these tests
+         * exercise the timing half alone. The compilation gate has its own
+         * tests below; mixing the two would make every phase assertion here
+         * depend on what the test JVM's JIT happened to be doing.
+         */
         private PhaseController controller(double min, double multiple, double duration) {
-            return new PhaseController(min, multiple, duration, 4, 0.05);
+            return new PhaseController(
+                    min, multiple, duration, 4, 0.05, CompilationMonitor.alwaysSettled());
         }
 
         @Test
@@ -344,7 +351,7 @@ class ProbeCoreTest {
                 writer.hello("0.1.0", Map.of("loader", "fabric"));
                 writer.phase(Phase.MEASUREMENT);
                 writer.frames(new long[] {1, 2, 3}, 3);
-                writer.bye(1.5, false);
+                writer.bye(1.5, false, null);
             }
             String[] lines = out.toString().strip().split("\n");
             assertEquals(4, lines.length);
@@ -376,7 +383,7 @@ class ProbeCoreTest {
             StringWriter out = new StringWriter();
             try (ProbeWriter writer = new ProbeWriter(out)) {
                 writer.frames(new long[] {1}, 0);
-                writer.ticks(new long[] {1}, 0);
+                writer.ticks(new long[] {1}, 0, TickSource.BRACKET);
             }
             assertEquals("", out.toString());
         }
@@ -400,8 +407,8 @@ class ProbeCoreTest {
             // JSON has no NaN or Infinity; emitting one would make the whole run unparseable.
             StringWriter out = new StringWriter();
             try (ProbeWriter writer = new ProbeWriter(out)) {
-                writer.memory(Double.NaN, false, 0);
-                writer.bye(Double.POSITIVE_INFINITY, false);
+                writer.memory(Double.NaN, false, 0, 0, false);
+                writer.bye(Double.POSITIVE_INFINITY, false, null);
             }
             String text = out.toString();
             assertFalse(text.contains("NaN"));
@@ -494,6 +501,74 @@ class ProbeCoreTest {
             RuntimeMonitor.Sample sample = monitor.sample();
             assertTrue(sample.heapMb() > 0);
             assertTrue(sample.allocatedBytes() >= 0);
+        }
+
+        @Test
+        void separatesRealAllocationFromHeapGrowth() {
+            // The two are different numbers, and only one of them is an
+            // allocation rate. Publishing heap growth under the allocation name
+            // made a mod that allocates heavily and collects promptly measure as
+            // allocating nothing at all.
+            RuntimeMonitor monitor = new RuntimeMonitor();
+            monitor.resetBaseline();
+            RuntimeMonitor.Sample sample = monitor.sample();
+            assertEquals(monitor.hasAllocationCounter(), sample.realAllocation());
+            if (!sample.realAllocation()) {
+                assertEquals(
+                        sample.heapGrowthBytes(), sample.allocatedBytes(),
+                        "without a counter the two must be the same number, and the "
+                                + "consumer must be told which it is");
+            }
+        }
+
+        @Test
+        void allocationCounterSeesWorkThatNeverGrowsTheHeap() {
+            // Allocate a great deal and let all of it die immediately. Heap
+            // growth cannot see this; a real counter can. On a JVM without the
+            // counter the assertion degrades to "no false allocation invented".
+            RuntimeMonitor monitor = new RuntimeMonitor();
+            monitor.resetBaseline();
+            long sink = 0;
+            for (int i = 0; i < 200_000; i++) {
+                byte[] garbage = new byte[128];
+                sink += garbage.length;
+            }
+            assertTrue(sink > 0);
+            RuntimeMonitor.Sample sample = monitor.sample();
+            if (monitor.hasAllocationCounter()) {
+                assertTrue(
+                        sample.allocatedBytes() > 1_000_000,
+                        "an allocation counter must see short-lived allocation; got "
+                                + sample.allocatedBytes());
+            }
+        }
+
+        @Test
+        void gcEventsAreIndividualCollectionsWhenAvailable() {
+            RuntimeMonitor monitor = new RuntimeMonitor();
+            monitor.startListening();
+            try {
+                monitor.beginCollecting();
+                // Provoke collections. Not asserted to happen — a test JVM with a
+                // huge heap may not collect at all — but if any arrive they must
+                // arrive one per collection with their own duration.
+                for (int i = 0; i < 50; i++) {
+                    byte[][] hold = new byte[256][];
+                    for (int j = 0; j < hold.length; j++) {
+                        hold[j] = new byte[8192];
+                    }
+                }
+                System.gc();
+                for (RuntimeMonitor.GcEvent event : monitor.drainEvents()) {
+                    assertTrue(event.durationMs() >= 0);
+                    assertTrue(event.collector() != null && !event.collector().isEmpty());
+                    assertTrue(
+                            event.heapAfterMb() <= event.heapBeforeMb() + 1.0,
+                            "a collection cannot end with more heap than it began with");
+                }
+            } finally {
+                monitor.stopListening();
+            }
         }
 
         @Test

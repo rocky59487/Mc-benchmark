@@ -26,6 +26,7 @@ from .stats import (
 __all__ = [
     "COMMON_REFRESH_HZ",
     "vsync_suspected",
+    "frame_cap_suspected",
     "Direction",
     "MetricDef",
     "METRICS",
@@ -109,18 +110,46 @@ METRICS: dict[str, MetricDef] = {
            "99th percentile tick cost. Where tick spikes live."),
         _m("tick_headroom", "Tick headroom", "fraction", HIGHER,
            "1 - mspt_mean/50. Fraction of the tick budget left unused."),
+        # --- server, when the platform can only report tick period ---
+        #
+        # Separately named because they are a different measurement. The period
+        # between end-of-tick callbacks includes whatever the server loop waits
+        # out, so on an unsaturated server it sits at the 50 ms budget however
+        # cheap the tick was. Published under mspt_* it made a 5 ms tick and a
+        # 30 ms tick indistinguishable while claiming to tell them apart.
+        _m("tick_period_mean_ms", "Mean tick period", "ms", LOWER,
+           "Mean interval between ticks. NOT MSPT: on an unsaturated server it "
+           "measures the tick budget, not the work inside the tick."),
+        _m("tick_period_p95_ms", "p95 tick period", "ms", LOWER,
+           "95th percentile interval between ticks."),
+        _m("tick_period_p99_ms", "p99 tick period", "ms", LOWER,
+           "99th percentile interval between ticks. Only informative once the "
+           "server is over budget, where the period does track tick cost."),
         _m("warp_throughput", "Warp throughput", "ticks/s", HIGHER,
            "Ticks per wall-clock second under tick warp, with the 20 TPS clamp removed."),
         _m("tps_effective", "Effective TPS", "tps", HIGHER,
            "Only meaningful for saturated scenarios; uninformative below budget."),
         # --- memory and GC ---
         _m("alloc_rate_mb_s", "Allocation rate", "MB/s", LOWER,
-           "Heap allocation per second. Independent of measured pause time."),
+           "Bytes allocated per second, from the JVM's allocation counter. "
+           "Reported only where that counter exists; heap growth is published "
+           "under its own name instead."),
+        _m("heap_growth_rate_mb_s", "Heap growth rate", "MB/s", LOWER,
+           "Net heap growth per second. A floor on allocation, not a measure of "
+           "it: objects allocated and collected between two samples never "
+           "appear, which is most of what a busy tick allocates."),
         _m("gc_pause_total_ms", "Total GC pause", "ms", LOWER,
            "Sum of stop-the-world pauses during the measurement window."),
-        _m("gc_pause_p99_ms", "p99 GC pause", "ms", LOWER, "Worst-case pause length."),
+        _m("gc_pause_p99_ms", "p99 GC pause", "ms", LOWER,
+           "99th percentile of individual pause durations. Reported only when "
+           "the JVM supplied per-collection events; a percentile over "
+           "per-interval totals would describe the sampling cadence."),
+        _m("gc_pause_max_ms", "Longest GC pause", "ms", LOWER,
+           "The single worst stop-the-world pause in the window."),
+        _m("gc_count", "Collections", "count", LOWER,
+           "Stop-the-world collections during the measurement window."),
         _m("heap_steady_mb", "Steady-state heap", "MB", LOWER,
-           "Post-collection live-set size."),
+           "Live set, measured immediately after a collection."),
         _m("heap_peak_mb", "Peak heap", "MB", LOWER, "Maximum observed heap usage."),
         # --- world ---
         _m("chunkgen_rate", "Chunk generation rate", "chunks/s", HIGHER,
@@ -141,10 +170,27 @@ class RunFlag(str, Enum):
     WARMUP_NOT_CONVERGED = "warmup_not_converged"
     VSYNC_SUSPECTED = "vsync_suspected"
     """Frametimes pinned to a refresh interval: the display was measured."""
+    FRAME_CAP_SUSPECTED = "frame_cap_suspected"
+    """Frametimes pinned to the configured cap: the limiter was measured."""
     TOO_FEW_SAMPLES = "too_few_samples"
     ENVIRONMENT_NOISY = "environment_noisy"
     WORLD_FINGERPRINT_MISMATCH = "world_fingerprint_mismatch"
     CRASHED = "crashed"
+    SETUP_FAILED = "setup_failed"
+    """A scenario setup command was rejected, so the world the run measured is
+    not the world the scenario describes. Inadmissible: the numbers are real and
+    they describe a different experiment."""
+    WORKLOAD_FAILED = "workload_failed"
+    """A workload command was rejected, so the load was not sustained for the
+    whole window. Inadmissible for the same reason."""
+    PROBE_ERROR = "probe_error"
+    """The probe reported an error during the run. Retained in the stream and
+    previously ignored by the reducer, which meant a run could report its own
+    failure and still be pooled."""
+    TICK_PERIOD_ONLY = "tick_period_only"
+    """The platform could not measure tick execution time, so tick figures are
+    periods. Not inadmissible — the metrics are named accordingly — but it means
+    this run carries no MSPT and cannot be compared against one that does."""
 
 
 @dataclass
@@ -158,7 +204,16 @@ class ClientSamples:
 
     frametimes_ns: list[int] = field(default_factory=list)
     gc_pauses_ms: list[float] = field(default_factory=list)
+    """Individual stop-the-world pause durations. Empty when the JVM could only
+    report totals — see ``gc_total_pause_ms``."""
+    gc_total_pause_ms: float = 0.0
+    """Aggregate collection time, when individual events were unavailable. Kept
+    apart from the pause list so no percentile is ever computed from sums."""
     alloc_bytes: int = 0
+    heap_growth_bytes: int = 0
+    real_allocation: bool = False
+    """Whether ``alloc_bytes`` came from an allocation counter. When False it is
+    a copy of heap growth and must not be published as an allocation rate."""
     duration_s: float = 0.0
     heap_samples_mb: list[float] = field(default_factory=list)
     heap_post_gc_mb: list[float] = field(default_factory=list)
@@ -169,9 +224,16 @@ class ServerSamples:
     """Raw server-side sample stream from one run."""
 
     tick_durations_ns: list[int] = field(default_factory=list)
+    measures_execution: bool = True
+    """False when ``tick_durations_ns`` holds tick *periods* rather than tick
+    execution times, in which case they are published under ``tick_period_*``
+    and never as MSPT."""
     wall_clock_s: float = 0.0
     gc_pauses_ms: list[float] = field(default_factory=list)
+    gc_total_pause_ms: float = 0.0
     alloc_bytes: int = 0
+    heap_growth_bytes: int = 0
+    real_allocation: bool = False
     heap_samples_mb: list[float] = field(default_factory=list)
     heap_post_gc_mb: list[float] = field(default_factory=list)
     chunks_generated: int = 0
@@ -189,14 +251,23 @@ class RunMetrics:
     flags: list[RunFlag] = field(default_factory=list)
     sample_count: int = 0
 
+    #: Flags that make a run unusable. A run carrying any of these produced real
+    #: numbers describing something other than the experiment that was asked
+    #: for, which is precisely why it must not be pooled: the values look
+    #: perfectly ordinary and nothing downstream would notice.
+    INADMISSIBLE_FLAGS = frozenset({
+        RunFlag.CRASHED,
+        RunFlag.TOO_FEW_SAMPLES,
+        RunFlag.WORLD_FINGERPRINT_MISMATCH,
+        RunFlag.SETUP_FAILED,
+        RunFlag.WORKLOAD_FAILED,
+        RunFlag.PROBE_ERROR,
+    })
+
     @property
     def admissible(self) -> bool:
         """Whether this run may contribute to a published comparison."""
-        return not any(
-            f in (RunFlag.CRASHED, RunFlag.TOO_FEW_SAMPLES,
-                  RunFlag.WORLD_FINGERPRINT_MISMATCH)
-            for f in self.flags
-        )
+        return not any(f in self.INADMISSIBLE_FLAGS for f in self.flags)
 
 
 def _stutter_rate(frametimes_ms: Sequence[float], *, window: int = 120) -> float:
@@ -225,25 +296,56 @@ def _stutter_rate(frametimes_ms: Sequence[float], *, window: int = 120) -> float
     return (stutters / counted) * 1000.0 if counted else 0.0
 
 
-def _memory_metrics(
-    gc_pauses_ms: Sequence[float],
-    alloc_bytes: int,
-    duration_s: float,
-    heap_samples_mb: Sequence[float],
-    heap_post_gc_mb: Sequence[float],
-) -> dict[str, float]:
+def _memory_metrics(samples: ClientSamples | ServerSamples) -> dict[str, float]:
+    """Reduce the memory signals, naming each for what it actually measures.
+
+    Three decisions here, each undoing a case where a number was published under
+    a name it did not have:
+
+    * Pause percentiles are computed only from *individual* pauses. Where the
+      JVM could report nothing but per-interval totals, the total is reported
+      and the percentile is omitted — a percentile over interval sums is a
+      description of the sampling cadence.
+    * Allocation is reported as ``alloc_rate_mb_s`` only when it came from an
+      allocation counter, and as ``heap_growth_rate_mb_s`` otherwise. The two
+      differ by everything allocated and collected between samples, which on a
+      busy tick is most of it.
+    * The live set comes from post-collection heap readings taken at the
+      collection, so it is the occupancy an operator would have to size a heap
+      against.
+    """
+    duration_s = (
+        samples.duration_s
+        if isinstance(samples, ClientSamples)
+        else samples.wall_clock_s
+    )
     out: dict[str, float] = {}
-    if gc_pauses_ms:
-        out["gc_pause_total_ms"] = float(sum(gc_pauses_ms))
-        out["gc_pause_p99_ms"] = percentile(gc_pauses_ms, 99.0)
-    if duration_s > 0 and alloc_bytes > 0:
-        out["alloc_rate_mb_s"] = (alloc_bytes / (1024 * 1024)) / duration_s
-    if heap_samples_mb:
-        out["heap_peak_mb"] = max(heap_samples_mb)
-    if heap_post_gc_mb:
+
+    if samples.gc_pauses_ms:
+        out["gc_pause_total_ms"] = float(sum(samples.gc_pauses_ms))
+        out["gc_pause_p99_ms"] = percentile(samples.gc_pauses_ms, 99.0)
+        out["gc_pause_max_ms"] = max(samples.gc_pauses_ms)
+        out["gc_count"] = float(len(samples.gc_pauses_ms))
+    elif samples.gc_total_pause_ms > 0:
+        out["gc_pause_total_ms"] = samples.gc_total_pause_ms
+
+    if duration_s > 0:
+        if samples.real_allocation and samples.alloc_bytes > 0:
+            out["alloc_rate_mb_s"] = (
+                samples.alloc_bytes / (1024 * 1024)
+            ) / duration_s
+        growth = samples.heap_growth_bytes or (
+            samples.alloc_bytes if not samples.real_allocation else 0
+        )
+        if growth > 0:
+            out["heap_growth_rate_mb_s"] = (growth / (1024 * 1024)) / duration_s
+
+    if samples.heap_samples_mb:
+        out["heap_peak_mb"] = max(samples.heap_samples_mb)
+    if samples.heap_post_gc_mb:
         # Live set, not peak: post-collection occupancy is what actually
         # constrains an operator running a smaller heap.
-        out["heap_steady_mb"] = mean(heap_post_gc_mb)
+        out["heap_steady_mb"] = mean(samples.heap_post_gc_mb)
     return out
 
 
@@ -283,15 +385,7 @@ def reduce_client_run(
         flags.append(RunFlag.VSYNC_SUSPECTED)
         values["suspected_refresh_hz"] = hz
 
-    values.update(
-        _memory_metrics(
-            samples.gc_pauses_ms,
-            samples.alloc_bytes,
-            samples.duration_s,
-            samples.heap_samples_mb,
-            samples.heap_post_gc_mb,
-        )
-    )
+    values.update(_memory_metrics(samples))
 
     return RunMetrics(values=values, flags=flags, sample_count=len(frames_ms))
 
@@ -308,17 +402,32 @@ def reduce_server_run(
     if not ticks_ms:
         return RunMetrics(values={}, flags=flags, sample_count=0)
 
-    mspt_mean = mean(ticks_ms)
-    values: dict[str, float] = {
-        "mspt_mean": mspt_mean,
-        "mspt_p95": percentile(ticks_ms, 95.0),
-        "mspt_p99": percentile(ticks_ms, 99.0),
-        # Headroom is the metric TPS should have been. Below budget every
-        # configuration reports 20 TPS, so TPS cannot tell 5 ms/tick from
-        # 30 ms/tick; headroom separates them cleanly. Clamped at zero so a
-        # saturated server reads "no headroom" rather than a negative figure.
-        "tick_headroom": max(0.0, 1.0 - mspt_mean / TICK_BUDGET_MS),
-    }
+    tick_mean = mean(ticks_ms)
+    if samples.measures_execution:
+        values: dict[str, float] = {
+            "mspt_mean": tick_mean,
+            "mspt_p95": percentile(ticks_ms, 95.0),
+            "mspt_p99": percentile(ticks_ms, 99.0),
+            # Headroom is the metric TPS should have been. Below budget every
+            # configuration reports 20 TPS, so TPS cannot tell 5 ms/tick from
+            # 30 ms/tick; headroom separates them cleanly. Clamped at zero so a
+            # saturated server reads "no headroom" rather than a negative figure.
+            #
+            # It is only computed from bracketed or platform-supplied durations.
+            # Derived from the tick *period* it would read as near-zero headroom
+            # on an idle server — the interval is the whole 50 ms budget — which
+            # is the precise opposite of the truth.
+            "tick_headroom": max(0.0, 1.0 - tick_mean / TICK_BUDGET_MS),
+        }
+    else:
+        # The platform could not expose tick execution time. Published under its
+        # own names rather than as MSPT: an honest measurement of something else
+        # beats a mislabelled measurement of the scheduler.
+        values = {
+            "tick_period_mean_ms": tick_mean,
+            "tick_period_p95_ms": percentile(ticks_ms, 95.0),
+            "tick_period_p99_ms": percentile(ticks_ms, 99.0),
+        }
 
     if samples.wall_clock_s > 0:
         values["warp_throughput"] = len(ticks_ms) / samples.wall_clock_s
@@ -334,15 +443,7 @@ def reduce_server_run(
         if samples.chunks_loaded:
             values["chunkload_rate"] = samples.chunks_loaded / samples.wall_clock_s
 
-    values.update(
-        _memory_metrics(
-            samples.gc_pauses_ms,
-            samples.alloc_bytes,
-            samples.wall_clock_s,
-            samples.heap_samples_mb,
-            samples.heap_post_gc_mb,
-        )
-    )
+    values.update(_memory_metrics(samples))
 
     return RunMetrics(values=values, flags=flags, sample_count=len(ticks_ms))
 
@@ -382,6 +483,34 @@ def vsync_suspected(
         if near / len(frametimes_ms) >= share:
             return hz
     return None
+
+
+def frame_cap_suspected(
+    frametimes_ms: Sequence[float], cap_fps: float, *, share: float = 0.50
+) -> bool:
+    """Whether the client spent most of the run against its frame limiter.
+
+    The same failure mode as vsync and a separate cause. The harness writes a
+    ``maxFps`` value into ``options.txt`` and previously described the result as
+    "uncapped"; on a fast machine and a light scenario the client can genuinely
+    reach that value, and then every variant scores the cap, the intervals are
+    tight, and the benchmark reports equivalence between mods it never compared.
+
+    The threshold is a bare majority rather than the 80% vsync uses, because a
+    frame limiter produces a floor rather than a lock — frames faster than the
+    cap are delayed to it while slower frames pass through untouched, so a run
+    can be badly cap-bound while a large minority of frames sit above it.
+
+    Never blocks a run. It is a flag, and a reader who sees it knows to lower the
+    settings or raise the cap.
+    """
+    if cap_fps <= 0 or len(frametimes_ms) < 200:
+        return False
+    interval = 1000.0 / cap_fps
+    # Anything at or below the cap interval is a frame the limiter could have
+    # been holding back; a small tolerance covers timer granularity.
+    at_cap = sum(1 for value in frametimes_ms if value <= interval * 1.02)
+    return at_cap / len(frametimes_ms) >= share
 
 
 def find_steady_state(

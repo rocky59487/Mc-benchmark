@@ -59,13 +59,17 @@ public final class McbenchProbeMod {
         });
 
         if (created.measuresTicks()) {
+            // Bracketed across the tick rather than intervalled between consecutive Post
+            // events: the interval measures the tick period, which on an unsaturated server is
+            // the 50 ms budget rather than the cost of the work inside it.
             MinecraftForge.EVENT_BUS.addListener(
-                    (TickEvent.ServerTickEvent.Post event) -> created.onTick());
+                    (TickEvent.ServerTickEvent.Pre event) -> created.onTickStart());
+            MinecraftForge.EVENT_BUS.addListener(
+                    (TickEvent.ServerTickEvent.Post event) -> created.onTickEnd());
         }
 
         // pump() runs at the end of the server tick, where issuing commands is safe, and is
-        // deliberately kept out of the timing hook so command execution never lands inside a
-        // measured interval.
+        // registered after the timing hooks so command execution lands outside the bracket.
         MinecraftForge.EVENT_BUS.addListener(
                 (TickEvent.ServerTickEvent.Post event) -> created.pump());
 

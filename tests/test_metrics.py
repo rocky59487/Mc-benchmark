@@ -101,15 +101,47 @@ class TestClientReduction:
             frametimes_ns=frametimes([10.0] * 2000),
             gc_pauses_ms=[1.0, 2.0, 30.0],
             alloc_bytes=1024 * 1024 * 500,
+            real_allocation=True,
             duration_s=10.0,
             heap_samples_mb=[512.0, 900.0, 700.0],
             heap_post_gc_mb=[400.0, 420.0],
         )
         result = reduce_client_run(samples)
         assert result.values["gc_pause_total_ms"] == pytest.approx(33.0)
+        assert result.values["gc_pause_max_ms"] == pytest.approx(30.0)
+        assert result.values["gc_count"] == 3
         assert result.values["alloc_rate_mb_s"] == pytest.approx(50.0)
         assert result.values["heap_peak_mb"] == 900.0
         assert result.values["heap_steady_mb"] == pytest.approx(410.0)
+
+    def test_heap_growth_is_not_published_as_allocation(self):
+        """The two are different numbers and only one is an allocation rate.
+
+        Without an allocation counter, everything allocated and collected
+        between two samples is invisible — which on a busy tick is most of it.
+        Publishing that figure as `alloc_rate_mb_s` made a mod that allocates
+        heavily and collects promptly measure as allocating nothing.
+        """
+        samples = ClientSamples(
+            frametimes_ns=frametimes([10.0] * 2000),
+            heap_growth_bytes=1024 * 1024 * 500,
+            real_allocation=False,
+            duration_s=10.0,
+        )
+        result = reduce_client_run(samples)
+        assert "alloc_rate_mb_s" not in result.values
+        assert result.values["heap_growth_rate_mb_s"] == pytest.approx(50.0)
+
+    def test_an_aggregate_pause_total_yields_no_percentile(self):
+        """A percentile over per-interval sums describes the sampling cadence."""
+        samples = ClientSamples(
+            frametimes_ns=frametimes([10.0] * 2000),
+            gc_total_pause_ms=33.0,
+            duration_s=10.0,
+        )
+        result = reduce_client_run(samples)
+        assert result.values["gc_pause_total_ms"] == pytest.approx(33.0)
+        assert "gc_pause_p99_ms" not in result.values
 
     def test_stutter_rate_is_zero_for_a_perfectly_even_run(self):
         result = reduce_client_run(

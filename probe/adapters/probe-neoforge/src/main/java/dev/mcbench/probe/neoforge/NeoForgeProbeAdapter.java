@@ -1,5 +1,6 @@
 package dev.mcbench.probe.neoforge;
 
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import dev.mcbench.probe.core.ProbeAdapter;
 import dev.mcbench.probe.core.ProbeSession;
 import net.minecraft.commands.CommandSourceStack;
@@ -41,16 +42,27 @@ public final class NeoForgeProbeAdapter extends ProbeAdapter {
     }
 
     @Override
-    protected void executeCommand(String command) {
+    protected boolean executeCommand(String command) {
         MinecraftServer current = server;
         if (current == null) {
             session.reportError("no server attached; dropped command: " + command);
-            return;
+            return false;
         }
         CommandSourceStack source = current.createCommandSourceStack();
         // Commands rather than direct API calls, for the same reason as on every other
         // platform: /fill and /summon outlive the Java methods behind them.
-        current.getCommands().performPrefixedCommand(source, command);
+        //
+        // Dispatched directly so a rejection is visible. performPrefixedCommand reports the
+        // failure into chat and returns normally, which let a mistyped setup command build
+        // none of the world and still be measured as though it had.
+        try {
+            current.getCommands().getDispatcher()
+                    .execute(command.startsWith("/") ? command.substring(1) : command, source);
+            return true;
+        } catch (CommandSyntaxException e) {
+            session.reportError("command rejected: " + command + ": " + e.getMessage());
+            return false;
+        }
     }
 
     @Override

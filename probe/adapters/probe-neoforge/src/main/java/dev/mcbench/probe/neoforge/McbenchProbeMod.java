@@ -53,12 +53,16 @@ public final class McbenchProbeMod {
         });
 
         if (created.measuresTicks()) {
-            gameBus.addListener(ServerTickEvent.Post.class, event -> created.onTick());
+            // Bracketed across the tick rather than intervalled between consecutive Post
+            // events. The interval is the tick *period*, which on an unsaturated 20 TPS server
+            // sits at 50 ms whether the tick cost 5 ms or 30 ms — so publishing it as MSPT
+            // made the primary server metrics describe the scheduler.
+            gameBus.addListener(ServerTickEvent.Pre.class, event -> created.onTickStart());
+            gameBus.addListener(ServerTickEvent.Post.class, event -> created.onTickEnd());
         }
 
         // pump() runs at the end of the server tick, where issuing commands is safe, and is
-        // kept out of the timing hook so command execution never lands inside a measured
-        // interval.
+        // registered after the timing hooks so command execution lands outside the bracket.
         gameBus.addListener(ServerTickEvent.Post.class, event -> created.pump());
 
         gameBus.addListener(ServerStoppingEvent.class, event -> created.finish());

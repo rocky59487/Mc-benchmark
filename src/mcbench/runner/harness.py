@@ -24,7 +24,13 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Platform, SuiteConfig, Variant
-from ..metrics import RunFlag, RunMetrics, reduce_client_run, reduce_server_run
+from ..metrics import (
+    RunFlag,
+    RunMetrics,
+    frame_cap_suspected,
+    reduce_client_run,
+    reduce_server_run,
+)
 from ..planner import Cell, PlannedRun, RunPlan, plan_runs
 from ..providers import ModrinthClient, ModrinthError, ResolvedMod
 from ..scenario import Scenario, Side
@@ -1238,8 +1244,18 @@ class Harness:
 
     @staticmethod
     def _reduce(stream: ProbeStream, scenario: Scenario) -> RunMetrics:
-        """Reduce a probe stream to metrics, merging client and server samples."""
+        """Reduce a probe stream to metrics, merging client and server samples.
+
+        A stream that reported errors is reduced and then marked inadmissible.
+        Reducing it anyway is deliberate — the numbers are worth seeing while
+        diagnosing why the run failed — but they must not be pooled: a probe
+        that said "setup command failed" produced values describing a world the
+        scenario never built, and those values look entirely ordinary.
+        """
         stream.server.saturated = stream.server.saturated or scenario.saturated
+        stream.server.measures_execution = stream.tick_source.measures_execution
+        stream.client.real_allocation = stream.real_allocation
+        stream.server.real_allocation = stream.real_allocation
 
         if scenario.side is Side.SERVER:
             metrics = reduce_server_run(stream.server)
@@ -1259,6 +1275,27 @@ class Harness:
         for flag in stream.flags:
             if flag not in metrics.flags:
                 metrics.flags.append(flag)
+
+        # The probe's own error reports were parsed, retained, and then ignored,
+        # so a run that announced its own failure was pooled with the healthy
+        # ones. A stream carrying errors is not a measurement of the scenario
+        # that was requested.
+        if stream.errors and RunFlag.PROBE_ERROR not in metrics.flags:
+            metrics.flags.append(RunFlag.PROBE_ERROR)
+
+        if not stream.tick_source.measures_execution and stream.has_server_data:
+            if RunFlag.TICK_PERIOD_ONLY not in metrics.flags:
+                metrics.flags.append(RunFlag.TICK_PERIOD_ONLY)
+
+        if scenario.side.measures_frames and stream.client.frametimes_ns:
+            frames_ms = [ns / 1_000_000.0 for ns in stream.client.frametimes_ns]
+            if frame_cap_suspected(frames_ms, CLIENT_FPS_CAP):
+                # The client sat against its own limiter, so what was measured
+                # is the cap. Every variant would score it and the comparison
+                # would confidently report equivalence.
+                if RunFlag.FRAME_CAP_SUSPECTED not in metrics.flags:
+                    metrics.flags.append(RunFlag.FRAME_CAP_SUSPECTED)
+
         return metrics
 
     def run_suite(

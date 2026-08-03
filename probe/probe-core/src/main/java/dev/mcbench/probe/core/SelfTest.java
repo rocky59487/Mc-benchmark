@@ -89,11 +89,11 @@ public final class SelfTest {
             double tickMs = 40.0;
             for (int i = 0; i < 4000 && !session.isComplete(); i++) {
                 tickMs = 12.0 + (tickMs - 12.0) * 0.99;
-                session.recordTick(jitter(random, tickMs, 0.05));
+                session.recordTick(jitter(random, tickMs, 0.05), TickSource.BRACKET);
             }
             for (int i = 0; i < 20_000 && !session.isComplete(); i++) {
                 double ms = (i % 500 == 499) ? 34.0 : 12.0;
-                session.recordTick(jitter(random, ms, 0.04));
+                session.recordTick(jitter(random, ms, 0.04), TickSource.BRACKET);
             }
             session.addChunksGenerated(1280);
             session.recordFingerprint("selftest-synthetic-world");

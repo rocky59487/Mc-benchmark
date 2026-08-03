@@ -71,8 +71,29 @@ class EventType(str, Enum):
 
 class Phase(str, Enum):
     PROVISION = "provision"
+    SETUP = "setup"
+    """Scenario setup commands are running. Untimed, and never pooled with warmup:
+    setup used to run *inside* warmup and spend its budget."""
     WARMUP = "warmup"
     MEASUREMENT = "measurement"
+
+
+class TickSource(str, Enum):
+    """What a batch of tick durations measures.
+
+    The distinction is load-bearing. ``PERIOD`` is the interval between
+    end-of-tick callbacks, which on an unsaturated 20 TPS server sits at 50 ms
+    whether the tick cost 5 ms or 30 ms — so it cannot be published as MSPT, and
+    the harness gives it its own metric names instead.
+    """
+
+    BRACKET = "bracket"
+    PERIOD = "period"
+    PLATFORM = "platform"
+
+    @property
+    def measures_execution(self) -> bool:
+        return self is not TickSource.PERIOD
 
 
 class ProbeError(RuntimeError):
@@ -95,6 +116,19 @@ class ProbeStream:
     errors: list[str] = field(default_factory=list)
     completed: bool = False
 
+    tick_source: TickSource = TickSource.BRACKET
+    """What the tick durations measure. Defaults to the honest reading for a
+    stream that does not say — an old probe, or one whose ticks never arrived."""
+    #: What the run reported about how it reached measurement, from ``bye``.
+    summary: dict[str, Any] = field(default_factory=dict)
+    #: Individual collections, when the JVM could report them.
+    gc_events: list[dict[str, Any]] = field(default_factory=list)
+    #: True when GC time arrived only as per-interval totals, which cannot
+    #: support a pause percentile.
+    gc_aggregate_only: bool = False
+    #: True when allocation came from a real counter rather than heap growth.
+    real_allocation: bool = False
+
     #: Frames and ticks are retained per phase so warmup can be verified after
     #: the fact rather than trusted.
     warmup_frames_ns: list[int] = field(default_factory=list)
@@ -107,6 +141,57 @@ class ProbeStream:
     @property
     def has_server_data(self) -> bool:
         return bool(self.server.tick_durations_ns)
+
+
+def _read_gc(stream: ProbeStream, event: dict[str, Any]) -> None:
+    """Read one GC event, in whichever of the three shapes it arrived.
+
+    ``events`` is the good case: individual collections, each with its own
+    duration and its own before/after heap, from which a pause percentile is a
+    percentile over pauses. ``aggregate`` is the fallback on a JVM with no
+    notification support, and is retained as a total only — computing a
+    percentile from per-interval sums would describe the sampling cadence rather
+    than the collector. ``pauses_ms`` is the old shape, kept so streams recorded
+    before this distinction existed still parse.
+    """
+    source = event.get("source")
+
+    if source == "events" or "events" in event:
+        for raw in event.get("events", []):
+            if not isinstance(raw, dict):
+                continue
+            entry = {
+                "collector": str(raw.get("collector", "")),
+                "action": str(raw.get("action", "")),
+                "duration_ms": float(raw.get("duration_ms", 0.0)),
+                "heap_before_mb": float(raw.get("heap_before_mb", 0.0)),
+                "heap_after_mb": float(raw.get("heap_after_mb", 0.0)),
+                "stop_the_world": bool(raw.get("stop_the_world", True)),
+            }
+            stream.gc_events.append(entry)
+            if entry["stop_the_world"] and entry["duration_ms"] > 0:
+                stream.client.gc_pauses_ms.append(entry["duration_ms"])
+                stream.server.gc_pauses_ms.append(entry["duration_ms"])
+            if entry["heap_after_mb"] > 0:
+                # The live set, read at the collection rather than at whatever
+                # point the next sampling interval happened to fall.
+                stream.client.heap_post_gc_mb.append(entry["heap_after_mb"])
+                stream.server.heap_post_gc_mb.append(entry["heap_after_mb"])
+        return
+
+    if source == "aggregate":
+        stream.gc_aggregate_only = True
+        total = float(event.get("total_pause_ms", 0.0))
+        stream.client.gc_total_pause_ms += total
+        stream.server.gc_total_pause_ms += total
+        return
+
+    # Legacy shape: a list of per-interval totals presented as pauses.
+    pauses = [float(v) for v in event.get("pauses_ms", [])]
+    if pauses:
+        stream.gc_aggregate_only = True
+        stream.client.gc_total_pause_ms += sum(pauses)
+        stream.server.gc_total_pause_ms += sum(pauses)
 
 
 def _iter_lines(text: str) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -173,6 +258,16 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
 
         elif kind == EventType.TICK.value:
             durations = [int(v) for v in event.get("durations_ns", [])]
+            source = event.get("source")
+            if source is not None:
+                try:
+                    stream.tick_source = TickSource(source)
+                except ValueError:
+                    raise ProbeError(
+                        f"{source}:{number}: unknown tick source {source!r}. "
+                        f"Refusing to guess whether these are tick durations or "
+                        f"tick periods — the two are different measurements."
+                    ) from None
             if phase is Phase.MEASUREMENT:
                 stream.server.tick_durations_ns.extend(durations)
             elif phase is Phase.WARMUP:
@@ -180,9 +275,7 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
 
         elif kind == EventType.GC.value:
             if phase is Phase.MEASUREMENT:
-                pauses = [float(v) for v in event.get("pauses_ms", [])]
-                stream.client.gc_pauses_ms.extend(pauses)
-                stream.server.gc_pauses_ms.extend(pauses)
+                _read_gc(stream, event)
 
         elif kind == EventType.MEMORY.value:
             if phase is Phase.MEASUREMENT:
@@ -192,9 +285,14 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
                 if event.get("post_gc"):
                     stream.client.heap_post_gc_mb.append(heap_mb)
                     stream.server.heap_post_gc_mb.append(heap_mb)
+                if event.get("real_allocation"):
+                    stream.real_allocation = True
                 if (allocated := event.get("allocated_bytes")) is not None:
                     stream.client.alloc_bytes = int(allocated)
                     stream.server.alloc_bytes = int(allocated)
+                if (growth := event.get("heap_growth_bytes")) is not None:
+                    stream.client.heap_growth_bytes = int(growth)
+                    stream.server.heap_growth_bytes = int(growth)
 
         elif kind == EventType.CHUNK.value:
             if phase is Phase.MEASUREMENT:
@@ -222,6 +320,25 @@ def parse_probe_stream(source: str | Path, *, text: str | None = None) -> ProbeS
                 stream.client.duration_s = float(duration)
                 stream.server.wall_clock_s = float(duration)
             stream.server.saturated = bool(event.get("saturated", False))
+            stream.summary = {
+                key: event[key]
+                for key in (
+                    "setup_duration", "warmup_duration", "warmup_gate",
+                    "warmup_converged", "compilation_gate", "tick_source",
+                    "failed_setup_commands", "failed_workload_commands",
+                    "real_allocation", "gc_events",
+                )
+                if key in event
+            }
+            if "tick_source" in event:
+                try:
+                    stream.tick_source = TickSource(event["tick_source"])
+                except ValueError:
+                    stream.errors.append(
+                        f"unknown tick source {event['tick_source']!r} in bye"
+                    )
+            if event.get("real_allocation"):
+                stream.real_allocation = True
 
     if not saw_hello:
         raise ProbeError(

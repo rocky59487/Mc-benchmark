@@ -1,5 +1,6 @@
 package dev.mcbench.probe.forge;
 
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import dev.mcbench.probe.core.ProbeAdapter;
 import dev.mcbench.probe.core.ProbeSession;
 import net.minecraft.commands.CommandSourceStack;
@@ -48,17 +49,26 @@ public final class ForgeProbeAdapter extends ProbeAdapter {
     }
 
     @Override
-    protected void executeCommand(String command) {
+    protected boolean executeCommand(String command) {
         MinecraftServer current = server;
         if (current == null) {
             session.reportError("no server attached; dropped command: " + command);
-            return;
+            return false;
         }
         CommandSourceStack source = current.createCommandSourceStack();
         // Commands rather than direct API calls, for the same reason as on every other
         // platform: /fill, /summon and /gamerule outlive the Java methods behind them, and that
         // stability is what lets one scenario file run across versions.
-        current.getCommands().performPrefixedCommand(source, command);
+        //
+        // Dispatched directly so a rejection is visible rather than logged and discarded.
+        try {
+            current.getCommands().getDispatcher()
+                    .execute(command.startsWith("/") ? command.substring(1) : command, source);
+            return true;
+        } catch (CommandSyntaxException e) {
+            session.reportError("command rejected: " + command + ": " + e.getMessage());
+            return false;
+        }
     }
 
     @Override

@@ -75,9 +75,16 @@ class TestProbeProtocol:
             {"type": "frame", "durations_ns": [20_000_000] * 10},
             {"type": "phase", "phase": "measurement"},
             {"type": "frame", "durations_ns": [16_000_000] * 100},
-            {"type": "gc", "pauses_ms": [1.5, 2.0]},
+            {"type": "gc", "source": "events", "events": [
+                {"collector": "G1 Young Generation", "action": "end of minor GC",
+                 "duration_ms": 1.5, "heap_before_mb": 900.0,
+                 "heap_after_mb": 400.0, "stop_the_world": True},
+                {"collector": "G1 Young Generation", "action": "end of minor GC",
+                 "duration_ms": 2.0, "heap_before_mb": 880.0,
+                 "heap_after_mb": 410.0, "stop_the_world": True},
+            ]},
             {"type": "memory", "heap_mb": 800.0, "post_gc": True,
-             "allocated_bytes": 1024 * 1024 * 100},
+             "allocated_bytes": 1024 * 1024 * 100, "real_allocation": True},
             {"type": "bye", "measurement_duration_s": 60.0},
         )
         stream = parse_probe_stream("test", text=text)
@@ -85,6 +92,30 @@ class TestProbeProtocol:
         assert len(stream.client.frametimes_ns) == 100
         assert stream.client.gc_pauses_ms == [1.5, 2.0]
         assert stream.client.duration_s == 60.0
+        # The live set comes from the collection itself, not from whatever the
+        # next sampling interval happened to catch.
+        assert 400.0 in stream.client.heap_post_gc_mb
+        assert stream.real_allocation
+
+    def test_legacy_aggregate_pauses_are_not_treated_as_individual_ones(self):
+        """The old `pauses_ms` shape held per-interval totals, not pauses.
+
+        Three short collections inside one sampling interval arrived as a single
+        number, so a percentile over those numbers described the flush cadence.
+        Streams in that shape still parse; their totals are kept and no
+        percentile is derived from them.
+        """
+        text = _stream(
+            _hello(),
+            {"type": "phase", "phase": "measurement"},
+            {"type": "frame", "durations_ns": [16_000_000] * 100},
+            {"type": "gc", "pauses_ms": [1.5, 2.0]},
+            {"type": "bye", "measurement_duration_s": 60.0},
+        )
+        stream = parse_probe_stream("test", text=text)
+        assert stream.gc_aggregate_only
+        assert stream.client.gc_pauses_ms == []
+        assert stream.client.gc_total_pause_ms == pytest.approx(3.5)
 
     def test_warmup_samples_are_kept_separate_from_measurement(self):
         """Warmup must never reach the measurement statistics."""

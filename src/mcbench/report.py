@@ -234,10 +234,7 @@ class CellResult:
             )
         report = self.outliers.get(metric)
         if report is not None and report.unstable:
-            return (
-                f"{report.exclusion_rate * 100:.0f}% of runs were excluded as "
-                f"outliers, which is more than a stable cell tolerates"
-            )
+            return report.instability
         return ""
 
 
@@ -715,13 +712,25 @@ def render_markdown(result: SuiteResult) -> str:
             for name, cell in scenario_cells.items()
             if cell.flags
         ]
-        unstable = [name for name, cell in scenario_cells.items() if cell.unstable]
+        # The reason is read off the report that set the flag rather than
+        # assumed. Two different conditions raise it, and stating the wrong one
+        # tells a reader their runs were discarded when none of them were.
+        unstable = [
+            (name, reason)
+            for name, cell in scenario_cells.items()
+            if cell.unstable
+            for reason in (
+                next(
+                    (r.instability for r in cell.outliers.values() if r.unstable), ""
+                ),
+            )
+        ]
         if warnings or unstable:
             add("> **Caveats**")
             for warning in warnings:
                 add(f"> - {warning}")
-            for name in unstable:
-                add(f"> - `{name}`: unstable, over 20% of runs excluded as outliers")
+            for name, reason in unstable:
+                add(f"> - `{name}`: {reason}")
             add("")
 
         comparisons = result.comparisons_for(scenario)

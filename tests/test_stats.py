@@ -175,6 +175,40 @@ class TestOutlierRejection:
         assert report.unstable
 
 
+class TestWhyACellIsUnstable:
+    """The flag has two causes and they need different sentences.
+
+    The report used to state one of them unconditionally: "over 20% of runs
+    excluded as outliers". On four real cells from this repository's own suite
+    that was false — nothing had been excluded, and the reader was told their
+    runs had been thrown away.
+    """
+
+    def test_a_stable_cell_says_nothing(self):
+        report = reject_outlying_runs([10.0, 10.1, 9.9, 10.2, 9.8, 10.0])
+        assert not report.unstable
+        assert report.instability == ""
+
+    def test_too_many_excluded_says_the_share(self):
+        values = [10.0] * 5 + [10.05, 10.02] + [900.0, 901.0, 902.0]
+        report = reject_outlying_runs(values)
+        assert report.excluded
+        assert "%" in report.instability
+        assert "excluded" in report.instability
+
+    def test_an_outlier_that_could_not_be_dropped_says_so(self):
+        # Four runs, one far out. Excluding it leaves three, below the minimum
+        # the estimator needs, so every run is kept and the cell is flagged
+        # instead. Nothing was excluded, and the sentence must not claim it was.
+        report = reject_outlying_runs([10.0, 10.1, 9.9, 40.0])
+        assert report.unstable
+        assert report.excluded == []
+        assert report.kept == [10.0, 10.1, 9.9, 40.0]
+        assert "kept" in report.instability
+        assert "%" not in report.instability
+        assert "excluded as outliers" not in report.instability
+
+
 class TestBootstrap:
     def test_is_deterministic_for_a_given_seed(self):
         values = [10.0, 11.0, 9.5, 10.5, 12.0, 9.0, 10.2]

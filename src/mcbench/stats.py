@@ -144,6 +144,29 @@ class OutlierReport:
         total = len(self.kept) + len(self.excluded)
         return len(self.excluded) / total if total else 0.0
 
+    @property
+    def instability(self) -> str:
+        """Why this cell is unstable, empty when it is not.
+
+        Two different things set the flag and they need different sentences. The
+        rule may have excluded more than the tolerated share, or it may have
+        wanted to exclude a run and been unable to without taking the cell below
+        the minimum — in which case every run was kept and nothing was excluded
+        at all. Reporting the first when the second happened tells a reader
+        their data was thrown away when none of it was.
+        """
+        if not self.unstable:
+            return ""
+        if self.excluded:
+            return (
+                f"{self.exclusion_rate * 100:.0f}% of runs were excluded as "
+                f"outliers, which is more than a stable cell tolerates"
+            )
+        return (
+            f"a run was far enough out to exclude, and excluding it would have "
+            f"left too few to estimate from, so all {len(self.kept)} were kept"
+        )
+
 
 @dataclass(frozen=True)
 class Comparison:

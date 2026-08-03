@@ -677,13 +677,30 @@ def compile_plan(
     # Every emitted line is checked, not just the pass-through command op:
     # structure templates, dialect spellings and interpolated coordinates all
     # reach the same file, and a single unchecked path defeats the check.
+    warmup = scenario.measurement["warmup"]
+    if scenario.uses_tick_warp:
+        # Last, after the world is built. The setup above contains waits counted
+        # in ticks, and running those compressed would give the world less real
+        # time to settle than the scenario asked for.
+        #
+        # Long enough to cover everything that follows. Warmup may take up to
+        # its maximum before the gate opens and the measurement window follows
+        # it; a warp that ran out partway would drop the server back to 20 TPS
+        # mid-measurement, which is precisely the silent failure the whole
+        # mechanism exists to avoid. Overshooting costs nothing: the run ends by
+        # exiting the game.
+        span = int(
+            warmup["min"] * warmup.get("max_multiple", 3)
+            + scenario.duration(preset)
+        )
+        setup_lines.append(dialect.tick_warp(span * 2))
+
     plan.setup = [
         _check_command(line, "setup") for line in gamerules + setup_lines
     ]
     plan.workload = [_check_command(line, "workload") for line in workload_lines]
     plan.instance_settings = {**setup_settings, **workload_settings}
 
-    warmup = scenario.measurement["warmup"]
     plan.properties = {
         "scenario.id": scenario.id,
         "scenario.version": scenario.version,

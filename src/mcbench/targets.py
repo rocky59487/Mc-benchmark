@@ -290,13 +290,14 @@ class Dialect:
         return f"replaceitem block {x} {y} {z} {slot} {item} {count}"
 
     def tick_warp(self, ticks: int) -> str:
-        """Run ``ticks`` ticks as fast as the CPU allows."""
-        if self.version.at_least("1.20.3"):
-            return f"tick warp {ticks}"
-        return f"tick warp {ticks}"  # Carpet uses the same syntax
+        """Run ``ticks`` ticks as fast as the CPU allows.
 
-    def tick_warp_stop(self) -> str:
-        return "tick warp 0" if self.version.at_least("1.20.3") else "tick warp 0"
+        One spelling for both sources. Vanilla took Carpet's syntax when it
+        adopted ``/tick`` in 1.20.3, so the version test that used to be here
+        chose between two identical strings; which of the two is answering is
+        settled by :class:`Capability`, not by how the command is written.
+        """
+        return f"tick warp {ticks}"
 
     def weather(self, kind: str) -> str:
         return f"weather {kind}"

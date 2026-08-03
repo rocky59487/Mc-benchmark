@@ -304,6 +304,63 @@ class TestCommandsNameSomethingThatExists:
                 assert "@s" not in line, f"{scenario.id}: {line}"
 
 
+class TestTickWarp:
+    """A scenario asking for tick warp has to actually be warped.
+
+    Every other piece of this was already built: the schema field, the
+    server-side-only validation, the Carpet requirement, the capability gate
+    with its own refusal messages, the property handed to the probe, and the
+    probe's parser for it. Nothing issued the command. Seven of the eight
+    server scenarios declare `tick_warp`, and one of them says in its own
+    description that without it "TPS reports 20 for every configuration and
+    reveals nothing" — which is what they were all doing.
+    """
+
+    def warped(self, scenario_id: str):
+        scenario = next(
+            s for s in load_scenarios(REPO / "scenarios") if s.id == scenario_id
+        )
+        return scenario, compile_plan(scenario)
+
+    def test_the_command_is_issued(self):
+        _scenario, plan = self.warped("entity-mobcap-saturation")
+        warps = [line for line in plan.setup if line.startswith("tick warp ")]
+        assert len(warps) == 1, plan.setup
+
+    def test_it_comes_after_the_world_is_built(self):
+        # The setup above it contains waits counted in ticks. Compressed, they
+        # would give the world less real time to settle than it asked for.
+        _scenario, plan = self.warped("entity-mobcap-saturation")
+        assert plan.setup[-1].startswith("tick warp ")
+
+    def test_it_outlasts_warmup_and_measurement(self):
+        # A warp that ran out partway would drop the server to 20 TPS in the
+        # middle of the measurement, which is the failure the whole mechanism
+        # exists to avoid, and it would leave no trace.
+        scenario, plan = self.warped("entity-mobcap-saturation")
+        warmup = scenario.measurement["warmup"]
+        needed = (
+            warmup["min"] * warmup.get("max_multiple", 3)
+            + scenario.duration(Preset.FULL)
+        )
+        ticks = int(plan.setup[-1].removeprefix("tick warp "))
+        assert ticks > needed
+
+    def test_a_scenario_that_declined_it_is_not_warped(self):
+        # tick-stability-saturated sets tick_warp false on purpose: it asks what
+        # happens when real ticks overrun, and compressing them removes the
+        # question.
+        scenario, plan = self.warped("tick-stability-saturated")
+        assert not scenario.uses_tick_warp
+        assert not [line for line in plan.setup if line.startswith("tick warp")]
+
+    def test_every_scenario_that_asks_for_it_gets_it(self):
+        for scenario in load_scenarios(REPO / "scenarios"):
+            plan = compile_plan(scenario)
+            warps = [line for line in plan.setup if line.startswith("tick warp ")]
+            assert len(warps) == (1 if scenario.uses_tick_warp else 0), scenario.id
+
+
 class TestStructures:
     def test_expands_a_known_template(self):
         lines = compile_one({

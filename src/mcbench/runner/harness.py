@@ -516,8 +516,10 @@ class Harness:
         fabric_api_jar: str | Path | None = None,
         extra_launch_args: Sequence[str] = (),
         fresh_world: bool = False,
+        accept_eula: bool = False,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
+        self.accept_eula = accept_eula
         self.suite = suite
         self.scenarios = scenarios
         self.work_dir = Path(work_dir)
@@ -836,6 +838,9 @@ class Harness:
             "heap_mb": self.suite.heap_mb,
             "java": _java_version(),
             "launcher": str(self.headlessmc) if self.headlessmc else "",
+            # Recorded because a published server result rests on it, and the
+            # operator who accepted is not always the reader of the document.
+            "eula_accepted": self.accept_eula,
             "client_max_fps": CLIENT_FPS_CAP,
             # One string when every variant renders at the same size, which is
             # the normal case; a per-variant map only when a suite overrode it,
@@ -1098,9 +1103,25 @@ class Harness:
             (instance / "server.properties").write_text(
                 "\n".join(lines) + "\n", encoding="utf-8"
             )
+            # eula.txt is the artefact Mojang uses to record that the operator
+            # accepted the EULA, so mcbench must not decide it has been. This
+            # used to be written unconditionally, with a comment asserting that
+            # running the tool constituted acceptance; running a benchmark and
+            # agreeing to a licence are not the same act, and the file said the
+            # operator had performed one when they had only performed the other.
+            if not self.accept_eula:
+                raise HarnessError(
+                    f"{scenario.id} is a server scenario and the Minecraft EULA "
+                    f"has not been accepted. Read it at "
+                    f"https://aka.ms/MinecraftEULA and, if you accept, re-run "
+                    f"with --accept-eula (or set accept_eula = true in the suite "
+                    f"manifest). mcbench records who accepted in the results "
+                    f"provenance and will not accept on your behalf."
+                )
             (instance / "eula.txt").write_text(
-                "# The operator accepts the Minecraft EULA by running mcbench with a\n"
-                "# licensed account; see docs/LICENSING.md.\neula=true\n",
+                "# Written by mcbench because the operator passed --accept-eula.\n"
+                "# See https://aka.ms/MinecraftEULA and docs/LICENSING.md.\n"
+                "eula=true\n",
                 encoding="utf-8",
             )
             # A server got a seed and generated its own world every run, while

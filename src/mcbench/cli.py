@@ -845,6 +845,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         fabric_api_jar=args.fabric_api_jar,
         extra_launch_args=args.launch_arg or (),
         fresh_world=getattr(args, "fresh_world", False),
+        accept_eula=getattr(args, "accept_eula", False) or suite.accept_eula,
         on_event=emit,
     )
 
@@ -1261,6 +1262,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="extra argument appended to every launch command "
                         "(repeatable), for a launcher whose flags differ")
     p.add_argument("--timeout", type=float, help="per-run timeout in seconds")
+    p.add_argument("--accept-eula", action="store_true",
+                   help="record that you accept the Minecraft EULA "
+                        "(https://aka.ms/MinecraftEULA). Required for server "
+                        "scenarios, which cannot start without it. mcbench "
+                        "writes eula.txt only when you pass this and notes the "
+                        "acceptance in the results provenance")
     p.add_argument("--fresh-world", action="store_true",
                    help="generate a world per run instead of sharing one per "
                         "scenario. Minecraft's worldgen is not reproducible "

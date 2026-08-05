@@ -147,6 +147,10 @@ class SuiteConfig:
     records the resulting command line per variant in provenance."""
     game_settings: dict[str, Any] = field(default_factory=dict)
     """Game settings applied to every variant, overridden per variant."""
+    accept_eula: bool = False
+    """Whether the operator has accepted the Minecraft EULA. Server scenarios
+    refuse to start without it, here or on the command line; mcbench never
+    decides it on their behalf."""
     source_path: Path | None = None
 
     @property
@@ -241,6 +245,7 @@ SUITE_KEYS = frozenset({
     "name", "minecraft_version", "loader", "loader_version", "variants",
     "baseline", "scenarios", "runs_per_cell", "preset", "order", "rope",
     "seed", "heap_mb", "interactions", "jvm_args", "game_settings",
+    "accept_eula",
 })
 VARIANT_KEYS = frozenset({"name", "mods", "jvm_args", "game_settings"})
 MOD_KEYS = frozenset({"project", "version", "platform", "loader"})
@@ -407,6 +412,7 @@ def parse_suite(data: dict[str, Any], *, source: Path | None = None) -> SuiteCon
         heap_mb=int(data.get("heap_mb", 4096)),
         jvm_args=tuple(data.get("jvm_args", ()) or ()),
         game_settings=dict(data.get("game_settings", {}) or {}),
+        accept_eula=bool(data.get("accept_eula", False)),
         source_path=source,
     )
 

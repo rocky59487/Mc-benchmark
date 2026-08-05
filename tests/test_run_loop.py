@@ -172,10 +172,99 @@ def build(tmp_path, scenario_id: str, fixture: str, **suite_overrides):
         suite, scenarios, work_dir=tmp_path / "work",
         headlessmc=stand_in(tmp_path / "stand-in", FIXTURES / fixture),
         probe_jar=probe_jar(tmp_path / "mcbench-probe.jar"),
+        # These stand in for an operator who has accepted. The refusal itself
+        # is tested in TestAcceptingTheEula, which builds without it.
+        accept_eula=True,
     )
     for variant in suite.variants:
         harness._resolved[variant.name] = ResolvedVariant(variant=variant)
     return harness, harness.build_plan().runs[0], scenarios[scenario_id]
+
+
+class TestAcceptingTheEula:
+    """eula.txt is what Mojang reads to decide the operator agreed. mcbench
+    wrote it unconditionally, with a comment asserting that running the tool
+    was the acceptance, so a server run recorded an agreement nobody had
+    made."""
+
+    def unaccepted(self, tmp_path):
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness.accept_eula = False
+        return harness, planned
+
+    def test_a_server_run_refuses_without_it(self, tmp_path):
+        harness, planned = self.unaccepted(tmp_path)
+        outcome = harness.execute_run(planned)
+
+        assert not outcome.succeeded
+        assert "EULA" in outcome.error
+        # The refusal has to say where to read it and how to say yes, or it is
+        # just an obstacle.
+        assert "aka.ms/MinecraftEULA" in outcome.error
+        assert "--accept-eula" in outcome.error
+
+    def test_nothing_is_written_when_it_is_refused(self, tmp_path):
+        harness, planned = self.unaccepted(tmp_path)
+        harness.execute_run(planned)
+
+        written = list((tmp_path / "work" / "instances").rglob("eula.txt"))
+        assert written == []
+
+    def test_accepting_writes_it_and_says_who(self, tmp_path):
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness.execute_run(planned)
+
+        written = list((tmp_path / "work" / "instances").rglob("eula.txt"))
+        assert len(written) == 1
+        text = written[0].read_text(encoding="utf-8")
+        assert "eula=true" in text
+        assert "--accept-eula" in text
+
+    def test_a_client_run_needs_nothing(self, tmp_path):
+        # The client is launched through a launcher that handles its own
+        # licensing, and no eula.txt is involved.
+        harness, planned, _ = build(
+            tmp_path, "reference-hardware-baseline", "probe-client-reference.jsonl"
+        )
+        harness.accept_eula = False
+        outcome = harness.execute_run(planned)
+
+        # Not "the run succeeded": a client run against a stand-in has its own
+        # reasons not to, and asserting the whole path here would make this test
+        # fail for things it is not about. The claim is only that the licence
+        # was never the obstacle and nothing was signed.
+        assert "EULA" not in outcome.error
+        assert list((tmp_path / "work" / "instances").rglob("eula.txt")) == []
+
+    def test_the_manifest_can_carry_it(self):
+        suite = parse_suite({
+            "name": "s", "minecraft_version": "1.21.1", "loader": "fabric",
+            "scenarios": ["tick-stability-saturated"],
+            "variants": [{"name": "base", "mods": []}],
+            "baseline": "base", "accept_eula": True,
+        })
+        assert suite.accept_eula is True
+
+    def test_the_manifest_defaults_to_not_accepted(self):
+        suite = parse_suite({
+            "name": "s", "minecraft_version": "1.21.1", "loader": "fabric",
+            "scenarios": ["tick-stability-saturated"],
+            "variants": [{"name": "base", "mods": []}],
+            "baseline": "base",
+        })
+        assert suite.accept_eula is False
+
+    def test_provenance_records_the_answer(self, tmp_path):
+        harness, _, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        assert harness.provenance()["eula_accepted"] is True
+        harness.accept_eula = False
+        assert harness.provenance()["eula_accepted"] is False
 
 
 class TestOneServerRun:

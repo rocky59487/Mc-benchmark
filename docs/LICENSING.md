@@ -41,6 +41,13 @@ exploitation without permission.
   endpoints, driven by HeadlessMC, using the operator's own licensed account.
 - Offline/headless accounts are used only for automated runs, which is the
   documented and permitted use of HeadlessMC in CI.
+- A dedicated server will not start until the operator has accepted the EULA,
+  and mcbench does not accept it for them. `eula.txt` is what Mojang reads to
+  decide the operator agreed, so the tool writes it only after `--accept-eula`
+  (or `accept_eula = true` in the suite manifest), and records the answer in
+  the results provenance as `eula_accepted`. It used to write the file on every
+  server run, with a comment claiming that running mcbench was itself the
+  acceptance.
 - Published mcbench results contain measurements and metadata only. They never
   embed game content.
 - The project takes no payment for access to the game or to game content.

@@ -44,6 +44,9 @@ def harness(tmp_path, *, loader="fabric", scenario="entity-mobcap-saturation", *
         "baseline": "base",
         **extra.pop("suite", {}),
     })
+    # Provisioning is what these test, and the default scenario is a server
+    # one; the acceptance itself is tested in TestAcceptingTheEula.
+    extra.setdefault("accept_eula", True)
     return Harness(suite, scenarios(), work_dir=tmp_path, **extra)
 
 

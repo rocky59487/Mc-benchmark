@@ -126,6 +126,20 @@ def _sha256(path: Path | None) -> str:
         return ""
 
 
+def _portable_path(path: Path) -> str:
+    """A path a results document can carry without naming the author's disk.
+
+    Anchored at the work directory when it is under one, since that is the
+    tree a reader would have been given; otherwise the bare filename, which
+    still identifies the artefact without its location.
+    """
+    parts = path.resolve().parts
+    for anchor in ("work", "instances"):
+        if anchor in parts:
+            return "/".join(parts[parts.index(anchor):])
+    return path.name
+
+
 def _java_version(java: str = "java") -> str:
     """The JVM that will run the game, as it reports itself."""
     try:
@@ -274,7 +288,12 @@ class RunOutcome:
         if self.exit_code is not None:
             record["exit_code"] = self.exit_code
         if self.log_path is not None:
-            record["log"] = str(self.log_path)
+            # Relative to the work directory. A results document is meant to be
+            # published, and an absolute path publishes the author's machine
+            # layout while telling a reader on any other machine nothing: the
+            # log is inside the work tree they were given or it is not there
+            # at all.
+            record["log"] = _portable_path(self.log_path)
         if self.stream is not None and self.stream.summary:
             # Setup and warmup durations, which half of the warmup gate opened,
             # and the tick and allocation sources.
@@ -906,7 +925,9 @@ class Harness:
             "preset": self.suite.preset.value,
             "heap_mb": self.suite.heap_mb,
             "java": _java_version(self.java),
-            "launcher": str(self.headlessmc) if self.headlessmc else "",
+            # The launcher's identity, not its location: which build was used
+            # is provenance, where it sits on one disk is not.
+            "launcher": self.headlessmc.name if self.headlessmc else "",
             # Recorded because a published server result rests on it, and the
             # operator who accepted is not always the reader of the document.
             "eula_accepted": self.accept_eula,

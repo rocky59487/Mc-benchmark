@@ -439,8 +439,13 @@ def _check_account(launcher: Path | None = None) -> Check:
     for candidate in _account_stores(launcher):
         try:
             if candidate.stat().st_size > 2:
+                # Enough of the path to say which store was found, not enough
+                # to say where the operator keeps it. This check is serialised
+                # into every results document, and the answer a reader needs is
+                # "the launcher had credentials", not a route to them.
+                tail = "/".join(candidate.parts[-3:])
                 return Check(
-                    "account", Severity.OK, f"credentials present ({candidate})"
+                    "account", Severity.OK, f"credentials present ({tail})"
                 )
         except OSError:
             continue

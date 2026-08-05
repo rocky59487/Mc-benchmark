@@ -1022,6 +1022,28 @@ class TestAWholeSuite:
         assert flagged == {"base", "candidate"}
         assert not any(o.metrics.admissible for o in outcomes if o.metrics)
 
+    def test_the_document_does_not_name_the_authors_disk(self, tmp_path, monkeypatch):
+        """A results document is meant to be published.
+
+        Every run carried an absolute log path and the provenance carried the
+        launcher's, so publishing 60 runs published the author's directory
+        layout sixty-one times — and told a reader on any other machine
+        nothing, since the path does not exist for them.
+        """
+        harness = self.suite(tmp_path, monkeypatch)
+        outcomes = harness.run_suite()
+        cells = outcomes_to_cells(outcomes, harness.scenarios)
+
+        logs = [run["log"] for runs in cells.values() for run in runs if "log" in run]
+        assert logs, "no run recorded a log path, so this proves nothing"
+        for log in logs:
+            assert not Path(log).is_absolute(), log
+            assert str(tmp_path) not in log
+            # Still useful: it names the instance the run happened in.
+            assert "instances" in log
+
+        assert str(tmp_path) not in json.dumps(harness.provenance())
+
     def test_the_summary_counts_what_the_records_count(self, tmp_path, monkeypatch):
         """The headline block used to disagree with the runs beneath it.
 

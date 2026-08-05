@@ -517,9 +517,11 @@ class Harness:
         extra_launch_args: Sequence[str] = (),
         fresh_world: bool = False,
         accept_eula: bool = False,
+        server_jar: str | Path | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.accept_eula = accept_eula
+        self.server_jar = Path(server_jar) if server_jar else None
         self.suite = suite
         self.scenarios = scenarios
         self.work_dir = Path(work_dir)
@@ -663,12 +665,18 @@ class Harness:
         # harness was constructed. Detecting it up front matters: without it a
         # suite launches, fails identically on every single run, and buries the
         # one real cause under dozens of duplicate errors.
+        sides = {self.scenarios[name].side for name in self.suite.scenarios
+                 if name in self.scenarios}
+        needs_launcher = any(side is not Side.SERVER for side in sides)
         result.checks.append(
             Check("headlessmc", Severity.OK, f"found at {self.headlessmc}")
             if self.headlessmc is not None
             else Check(
-                "headlessmc", Severity.BLOCK,
-                "HeadlessMC not found; no instance can be launched",
+                "headlessmc",
+                Severity.BLOCK if needs_launcher else Severity.INFO,
+                "HeadlessMC not found; no client instance can be launched"
+                + ("" if needs_launcher else ", and this suite has no client "
+                   "scenarios that would need one"),
                 remedy=(
                     "Install HeadlessMC and put it on PATH, or pass --headlessmc "
                     "with the path to its jar. mcbench delegates game "
@@ -677,6 +685,13 @@ class Harness:
                 ),
             )
         )
+
+        # A server needs a jar and the operator's agreement, and neither can be
+        # supplied mid-suite. Both otherwise fail identically on every planned
+        # run and bury the cause under duplicates.
+        if Side.SERVER in sides:
+            result.checks.append(self._server_jar_check())
+            result.checks.append(self._eula_check())
 
         # Flags the harness intends to use, checked against what the launcher
         # says it accepts. An unrecognised flag otherwise surfaces as a failed
@@ -733,6 +748,55 @@ class Harness:
                 "jars": len(self._resolved[variant.name].jars),
             })
         return self._resolved
+
+    def _server_jar_check(self) -> Check:
+        if self.server_jar is None:
+            # Only ask a launcher that exists. An unprobed one reports every
+            # flag as supported, which is the right default for deciding
+            # whether to drop an argument and the wrong one for deciding
+            # whether a server can start at all.
+            if self.headlessmc is not None and self.launcher_capabilities().accepts(
+                "--server"
+            ):
+                return Check(
+                    "server jar", Severity.OK,
+                    "no --server-jar, but the launcher accepts --server",
+                )
+            return Check(
+                "server jar", Severity.BLOCK,
+                "server scenarios are planned and there is no way to start a "
+                "server: HeadlessMC has no server command, and no --server-jar "
+                "was given",
+                remedy=(
+                    "Install a server (a Fabric or Paper installer produces a "
+                    "runnable jar) and pass --server-jar. mcbench never "
+                    "downloads or builds one."
+                ),
+            )
+        if not self.server_jar.is_file():
+            return Check(
+                "server jar", Severity.BLOCK,
+                f"--server-jar does not name a file: {self.server_jar}",
+                remedy="Point it at the jar a server installer produced.",
+            )
+        return Check("server jar", Severity.OK, f"found at {self.server_jar}")
+
+    def _eula_check(self) -> Check:
+        if self.accept_eula:
+            return Check(
+                "minecraft eula", Severity.OK,
+                "accepted by the operator; recorded in provenance",
+            )
+        return Check(
+            "minecraft eula", Severity.BLOCK,
+            "server scenarios are planned and the Minecraft EULA has not been "
+            "accepted",
+            remedy=(
+                "Read https://aka.ms/MinecraftEULA and, if you accept, pass "
+                "--accept-eula or set accept_eula = true in the suite manifest. "
+                "mcbench will not accept it for you."
+            ),
+        )
 
     def _launcher_check(self) -> Check:
         capabilities = self.launcher_capabilities()
@@ -1199,15 +1263,27 @@ class Harness:
         scenario: Scenario,
         variant: Variant | None = None,
     ) -> list[str]:
+        jvm_args = self.effective_jvm_args(variant)
+
+        # A dedicated server is a jar and a working directory, with no account
+        # and no asset download, so it needs no launcher at all. HeadlessMC has
+        # no way to drive one, which left every server scenario unrunnable in
+        # practice: half the scenarios and eleven of the metrics.
+        if scenario.side is Side.SERVER and self.server_jar is not None:
+            return self._server_launch_command(jvm_args)
+
         if self.headlessmc is None:
             raise HarnessError(
                 "HeadlessMC was not found. Install it and pass --headlessmc, or "
                 "put 'headlessmc' on PATH. mcbench delegates game provisioning "
                 "and Mojang authentication to HeadlessMC and never handles "
                 "credentials or redistributes game files itself."
+                + (
+                    " A server scenario can run without it: pass --server-jar "
+                    "pointing at a server you have already installed."
+                    if scenario.side is Side.SERVER else ""
+                )
             )
-
-        jvm_args = self.effective_jvm_args(variant)
 
         if self.agent_jar is not None and scenario.side.measures_frames:
             # Attached for rendering scenarios only. On a server run the agent
@@ -1234,6 +1310,27 @@ class Harness:
                 instance, scenario, variant, jvm_args, capabilities
             )
         return self._headlessmc_launch_command(instance, scenario, variant, jvm_args)
+
+    def _server_launch_command(self, jvm_args: list[str]) -> list[str]:
+        """Run a server the operator installed, from the instance directory.
+
+        mcbench does not fetch or build the jar. It cannot redistribute the
+        game, and a Fabric or Paper server is something the operator already
+        has; naming it is cheaper than reimplementing an installer, and keeps
+        the boundary in docs/LICENSING.md where it is.
+
+        `nogui` because the Mojang server otherwise opens a Swing window, which
+        on a headless machine fails and on a desktop one steals focus mid-run.
+        """
+        assert self.server_jar is not None
+        jar = self.server_jar.resolve()
+        if not jar.is_file():
+            raise HarnessError(
+                f"--server-jar does not name a file: {jar}. Point it at a "
+                f"server jar you have installed, such as the one a Fabric or "
+                f"Paper installer produced."
+            )
+        return ["java", *jvm_args, "-jar", str(jar), "nogui"]
 
     def _flag_launch_command(
         self,
@@ -1337,7 +1434,7 @@ class Harness:
             "--command", " ".join(launch),
         ]
 
-    def _launch_cwd(self, instance: Path) -> Path:
+    def _launch_cwd(self, instance: Path, scenario: Scenario | None = None) -> Path:
         """Where to run the launcher from.
 
         HeadlessMC finds its own state, including the account it logged in
@@ -1347,6 +1444,10 @@ class Harness:
         machine that was logged in. The instance is named by hmc.gamedir, so
         the working directory is free to be the launcher's own.
         """
+        if scenario is not None and scenario.side is Side.SERVER and self.server_jar:
+            # No launcher in the command at all: the server writes its world,
+            # its logs and its eula.txt relative to here.
+            return instance
         if self.headlessmc is not None and not self.launcher_capabilities().speaks_flags:
             launcher = self.headlessmc
             return launcher.parent if launcher.is_file() else launcher
@@ -1528,7 +1629,7 @@ class Harness:
         # which has happened once already on this seam.
         environment["MCBENCH_AGENT_OUTPUT"] = str(agent_path)
 
-        launch_cwd = self._launch_cwd(instance)
+        launch_cwd = self._launch_cwd(instance, scenario)
         # Sampled with our own game not yet started, and again once it has
         # exited, so what is found is somebody else's. See _competing_during().
         competitors = self._competing_now()

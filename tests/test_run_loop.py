@@ -22,6 +22,7 @@ from mcbench.config import parse_suite
 from mcbench.metrics import RunFlag
 from mcbench.runner import Harness
 from mcbench.runner.harness import (
+    HarnessError,
     ResolvedVariant,
     _java_release,
     flag_world_mismatches,
@@ -179,6 +180,83 @@ def build(tmp_path, scenario_id: str, fixture: str, **suite_overrides):
     for variant in suite.variants:
         harness._resolved[variant.name] = ResolvedVariant(variant=variant)
     return harness, harness.build_plan().runs[0], scenarios[scenario_id]
+
+
+class TestLaunchingAServerDirectly:
+    """HeadlessMC has no server command, and the harness said so and stopped.
+    That left eight of eleven scenarios and eleven of twenty-eight metrics with
+    no way to run at all, on a tool whose first claim is client *and* server.
+
+    A dedicated server needs a jar and a working directory. No account, no
+    asset download, nothing a launcher is for.
+    """
+
+    def server(self, tmp_path, **extra):
+        harness, planned, scenario = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl",
+            **extra.pop("suite_overrides", {}),
+        )
+        for key, value in extra.items():
+            setattr(harness, key, value)
+        return harness, planned, scenario
+
+    def a_jar(self, tmp_path) -> Path:
+        path = tmp_path / "fabric-server-launch.jar"
+        path.write_bytes(b"PK\x03\x04not-really-a-server")
+        return path
+
+    def test_the_command_is_java_on_the_jar(self, tmp_path):
+        jar = self.a_jar(tmp_path)
+        harness, _, scenario = self.server(tmp_path, server_jar=jar)
+
+        command = harness._launch_command(tmp_path / "instance", scenario)
+
+        assert command[0] == "java"
+        assert command[-2:] == [str(jar.resolve()), "nogui"]
+        # The heap the suite asked for has to reach the server, or every
+        # variant runs at whatever the JVM defaults to.
+        assert any(arg.startswith("-Xmx") for arg in command)
+
+    def test_it_runs_from_the_instance(self, tmp_path):
+        # The server writes its world, its logs and its eula.txt relative to
+        # the working directory. Anywhere else and the run measures a world
+        # nothing prepared.
+        harness, _, scenario = self.server(tmp_path, server_jar=self.a_jar(tmp_path))
+        instance = tmp_path / "instance"
+
+        assert harness._launch_cwd(instance, scenario) == instance
+
+    def test_a_client_still_goes_through_the_launcher(self, tmp_path):
+        harness, _, _ = self.server(tmp_path, server_jar=self.a_jar(tmp_path))
+        client = harness.scenarios["reference-hardware-baseline"]
+
+        command = harness._launch_command(tmp_path / "instance", client)
+
+        assert "nogui" not in command
+        assert str(harness.headlessmc) in " ".join(command)
+
+    def test_a_jar_that_is_not_there_says_so_before_launching(self, tmp_path):
+        harness, _, scenario = self.server(
+            tmp_path, server_jar=tmp_path / "absent.jar"
+        )
+        with pytest.raises(HarnessError, match="does not name a file"):
+            harness._launch_command(tmp_path / "instance", scenario)
+
+    def test_without_a_jar_the_refusal_names_the_way_out(self, tmp_path):
+        harness, _, scenario = self.server(tmp_path, server_jar=None, headlessmc=None)
+        with pytest.raises(HarnessError) as raised:
+            harness._launch_command(tmp_path / "instance", scenario)
+        assert "--server-jar" in str(raised.value)
+
+    def test_a_client_refusal_does_not_mention_it(self, tmp_path):
+        # Suggesting --server-jar to somebody running a client scenario sends
+        # them after a jar that would not be used.
+        harness, _, _ = self.server(tmp_path, headlessmc=None)
+        client = harness.scenarios["reference-hardware-baseline"]
+
+        with pytest.raises(HarnessError) as raised:
+            harness._launch_command(tmp_path / "instance", client)
+        assert "--server-jar" not in str(raised.value)
 
 
 class TestAcceptingTheEula:

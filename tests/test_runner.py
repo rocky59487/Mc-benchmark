@@ -489,7 +489,8 @@ class TestAgentStreamAdoption:
 class TestHarnessPreflight:
     """The harness adds checks that depend on how it was constructed."""
 
-    def _harness(self, tmp_path, headlessmc=None):
+    def _harness(self, tmp_path, headlessmc=None,
+                 scenario="entity-mobcap-saturation", **extra):
         from pathlib import Path
 
         from mcbench.config import parse_suite
@@ -500,12 +501,12 @@ class TestHarnessPreflight:
         scenarios = {s.id: s for s in load_scenarios(repo / "scenarios")}
         suite = parse_suite({
             "name": "t", "minecraft_version": "1.21.1", "loader": "fabric",
-            "scenarios": ["entity-mobcap-saturation"],
+            "scenarios": [scenario],
             "variants": [{"name": "base", "mods": []}],
             "baseline": "base",
         })
         return Harness(suite, scenarios, work_dir=tmp_path,
-                       headlessmc=headlessmc)
+                       headlessmc=headlessmc, **extra)
 
     def test_missing_headlessmc_blocks_before_any_run(self, tmp_path):
         """Without this the suite launches and fails identically N times.
@@ -513,13 +514,65 @@ class TestHarnessPreflight:
         Dozens of duplicate errors bury the single real cause, so the check has
         to happen up front rather than per run.
         """
-        harness = self._harness(tmp_path)
+        harness = self._harness(tmp_path, scenario="reference-hardware-baseline")
         harness.headlessmc = None
         result = harness.preflight(require_account=False)
         check = next(c for c in result.checks if c.name == "headlessmc")
         assert check.severity is Severity.BLOCK
         assert check.remedy
         assert not result.admissible
+
+    def test_a_server_only_suite_does_not_need_the_launcher(self, tmp_path):
+        # HeadlessMC cannot drive a server, so requiring it of a suite that
+        # only has servers demands a tool that would not be used.
+        harness = self._harness(
+            tmp_path, scenario="entity-mobcap-saturation",
+            server_jar=self._jar(tmp_path), accept_eula=True,
+        )
+        harness.headlessmc = None
+        result = harness.preflight(require_account=False)
+
+        assert next(c for c in result.checks
+                    if c.name == "headlessmc").severity is Severity.INFO
+        assert next(c for c in result.checks
+                    if c.name == "server jar").severity is Severity.OK
+
+    def test_a_server_suite_without_a_jar_is_blocked(self, tmp_path):
+        harness = self._harness(
+            tmp_path, scenario="entity-mobcap-saturation", accept_eula=True
+        )
+        harness.headlessmc = None
+        result = harness.preflight(require_account=False)
+
+        check = next(c for c in result.checks if c.name == "server jar")
+        assert check.severity is Severity.BLOCK
+        assert "--server-jar" in check.remedy
+        assert not result.admissible
+
+    def test_a_server_suite_without_the_eula_is_blocked(self, tmp_path):
+        harness = self._harness(
+            tmp_path, scenario="entity-mobcap-saturation",
+            server_jar=self._jar(tmp_path),
+        )
+        result = harness.preflight(require_account=False)
+
+        check = next(c for c in result.checks if c.name == "minecraft eula")
+        assert check.severity is Severity.BLOCK
+        assert "aka.ms/MinecraftEULA" in check.remedy
+        assert not result.admissible
+
+    def test_a_client_suite_is_asked_neither(self, tmp_path):
+        harness = self._harness(tmp_path, scenario="reference-hardware-baseline")
+        names = {c.name for c in harness.preflight(require_account=False).checks}
+
+        assert "server jar" not in names
+        assert "minecraft eula" not in names
+
+    @staticmethod
+    def _jar(tmp_path):
+        path = tmp_path / "server.jar"
+        path.write_bytes(b"PK\x03\x04")
+        return path
 
     def test_present_headlessmc_passes(self, tmp_path):
         stub = tmp_path / "headlessmc-launcher.jar"

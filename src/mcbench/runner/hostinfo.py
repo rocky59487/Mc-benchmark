@@ -75,19 +75,44 @@ def _read(path: str) -> str | None:
         return None
 
 
+def _console_encoding() -> str:
+    """What a console program's output is actually encoded in.
+
+    Windows console tools write in the OEM code page, not the interpreter's
+    preferred encoding, and text=True decodes with the latter. On a machine
+    whose OEM page is not UTF-8 the two disagree and the difference reaches the
+    results document: this recorded the active power scheme as
+    ``power scheme: ???`` on a Traditional Chinese install, and by then the
+    original bytes were gone.
+    """
+    if WINDOWS:
+        try:
+            import ctypes
+
+            return f"cp{ctypes.windll.kernel32.GetOEMCP()}"
+        except Exception:
+            return "utf-8"
+    return "utf-8"
+
+
 def _run(command: list[str], *, timeout: float = 15.0) -> str | None:
     try:
         done = subprocess.run(
             command,
             capture_output=True,
-            text=True,
             timeout=timeout,
             check=False,
             creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return done.stdout
+    for encoding in (_console_encoding(), "utf-8"):
+        try:
+            return done.stdout.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    # Never lose the reading itself to an encoding problem; latin-1 always decodes.
+    return done.stdout.decode("latin-1", "replace")
 
 
 def _powershell(script: str) -> str | None:

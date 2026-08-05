@@ -693,7 +693,7 @@ class Harness:
                  if name in self.scenarios}
         needs_launcher = any(side is not Side.SERVER for side in sides)
         result.checks.append(
-            Check("headlessmc", Severity.OK, f"found at {self.headlessmc}")
+            Check("headlessmc", Severity.OK, f"found: {self.headlessmc.name}")
             if self.headlessmc is not None
             else Check(
                 "headlessmc",
@@ -803,7 +803,7 @@ class Harness:
                 f"--server-jar does not name a file: {self.server_jar}",
                 remedy="Point it at the jar a server installer produced.",
             )
-        return Check("server jar", Severity.OK, f"found at {self.server_jar}")
+        return Check("server jar", Severity.OK, f"found: {self.server_jar.name}")
 
     def _eula_check(self) -> Check:
         if self.accept_eula:

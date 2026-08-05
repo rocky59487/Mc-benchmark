@@ -17,6 +17,35 @@ mcbench measures many mods in one pass under one methodology, and reports
 > and unit-tested but have never been run against a real server. See
 > [Roadmap](#roadmap) and [Limitations](#limitations-of-the-published-run).
 
+### Reproducing the published numbers
+
+The raw data is in the repository, so the analysis can be re-run with no game,
+no account and no GPU:
+
+```bash
+mcbench analyse results-client.json --export-dir report/
+mcbench analyse results-particles.json --export-dir report-particles/
+```
+
+That regenerates every verdict, chart and table in `report/` from the 60 and 12
+recorded runs. `report/runs.csv` is every individual run before aggregation.
+
+Re-running the measurement itself needs the game. The suite that produced
+`results-client.json` is `suites/optimisation-client-1.21.1-fabric.toml` — note
+that this is not the suite the quick-start above uses, which is a smaller
+example with different mod versions and a different seed:
+
+```bash
+mcbench run suites/optimisation-client-1.21.1-fabric.toml -o results-client.json \
+    --headlessmc /path/to/headlessmc-launcher.jar \
+    --probe-jar probe/adapters/probe-fabric/build/libs/mcbench-probe-fabric-0.1.0.jar \
+    --fabric-api-jar cache/probe/fabric-api-0.116.15+1.21.1.jar
+```
+
+Sixty runs at roughly six minutes each: about six hours. The numbers will not
+match ours — they are one machine's — but the verdicts should, and where they
+do not, that is the interesting result.
+
 ### Limitations of the published run
 
 Read these before quoting a number from it.

@@ -18,6 +18,12 @@ dist/
 /cache/
 /results/
 *-results.json
+# Derived from results-*.json by `mcbench analyse`, in seconds, and
+# stale the moment the analysis changes. The raw runs are committed;
+# these are not.
+/report/
+/report-*/
+/work/sensitivity-report/
 # HeadlessMC keeps its own state, including the logged-in session, beside
 # whatever directory it was run from.
 /HeadlessMC/

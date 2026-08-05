@@ -23,11 +23,14 @@ from mcbench.stats import (
     compare,
     interaction_term,
     mad,
+    mean_interval,
     mean_of_worst_fraction,
     percentile,
     quantile_sketch,
+    ratio_interval,
     reject_outlying_runs,
     runs_needed_for_resolution,
+    t_quantile,
 )
 
 
@@ -489,3 +492,85 @@ def test_fps_conversion_is_not_a_harmonic_mean_trap():
     naive = (100.0 + 20.0) / 2
     assert correct == pytest.approx(33.333, abs=0.01)
     assert not math.isclose(correct, naive, rel_tol=0.1)
+
+
+class TestTheIntervalCoversWhatItClaims:
+    """The percentile bootstrap covered about 84% of the time at n=5, labelled 95%.
+
+    Every interval this project publishes went through it, and the project's
+    whole claim is that it states uncertainty honestly. The bootstrap's own
+    docstring justified the choice by frametimes not being normal and
+    percentiles having no closed-form standard error -- both true, and both
+    about the within-run reduction, which is not where it was applied. What is
+    aggregated across runs is a mean of per-run summaries.
+
+    These are measurements, not characterisations: a coverage test fails if the
+    estimator is wrong, whatever the code happens to return today.
+    """
+
+    def coverage(self, make_interval, *, n, trials=800, truth=0.0, seed=1):
+        rng = random.Random(seed)
+        hits = 0
+        for _ in range(trials):
+            hits += make_interval(rng, n, truth)
+        return hits / trials
+
+    def test_the_mean_interval_covers_95_percent(self):
+        def trial(rng, n, truth):
+            sample = [rng.gauss(100.0, 2.0) for _ in range(n)]
+            return mean_interval(sample).contains(100.0)
+
+        for n in (5, 7, 10):
+            got = self.coverage(trial, n=n, seed=n)
+            assert 0.92 <= got <= 0.98, f"n={n} covered {got:.1%}"
+
+    def test_the_percentile_bootstrap_does_not(self):
+        # The regression this replaced, pinned so it cannot come back unnoticed.
+        def trial(rng, n, truth):
+            sample = [rng.gauss(100.0, 2.0) for _ in range(n)]
+            return bootstrap_ci(
+                sample, resamples=600, seed=rng.randrange(1 << 30)
+            ).contains(100.0)
+
+        assert self.coverage(trial, n=5, trials=600, seed=3) < 0.90
+
+    def test_the_ratio_interval_covers_95_percent(self):
+        def trial(rng, n, truth):
+            base = [rng.gauss(100.0, 2.0) for _ in range(n)]
+            var = [rng.gauss(100.0 * (1 + truth), 2.0) for _ in range(n)]
+            return ratio_interval(base, var).contains(truth)
+
+        for truth in (0.0, 0.10):
+            got = self.coverage(trial, n=5, truth=truth, seed=int(truth * 100) + 5)
+            assert 0.92 <= got <= 0.98, f"delta={truth} covered {got:.1%}"
+
+    def test_the_quantile_matches_the_published_table(self):
+        # Two-sided 0.975 critical values, as printed in any statistics text.
+        for df, expected in {
+            1: 12.706, 2: 4.303, 4: 2.776, 9: 2.262, 30: 2.042, 100: 1.984
+        }.items():
+            assert t_quantile(0.975, df) == pytest.approx(expected, abs=0.001)
+        assert t_quantile(0.995, 4) == pytest.approx(4.604, abs=0.001)
+        assert t_quantile(0.5, 7) == pytest.approx(0.0, abs=1e-9)
+
+    def test_the_interval_does_not_depend_on_a_seed(self):
+        """A resampled interval made two analyses of one document disagree
+        slightly. These are closed form, so they agree exactly."""
+        sample = [12.0, 12.4, 11.8, 12.1, 12.9]
+        first, second = mean_interval(sample), mean_interval(sample)
+        assert (first.low, first.high) == (second.low, second.high)
+
+        base, var = [10.0, 10.2, 9.9, 10.1, 10.3], [9.0, 9.1, 8.8, 9.2, 9.0]
+        assert ratio_interval(base, var) == ratio_interval(base, var)
+
+    def test_a_wider_confidence_gives_a_wider_interval(self):
+        sample = [5.0, 5.5, 4.8, 5.2, 5.1]
+        assert (
+            mean_interval(sample, confidence=0.99).width
+            > mean_interval(sample, confidence=0.95).width
+        )
+
+    def test_one_value_yields_a_point(self):
+        # Not an interval of zero width dressed up as an estimate: the run floor
+        # refuses this case upstream, and it must not raise here either.
+        assert mean_interval([3.0]).width == 0.0

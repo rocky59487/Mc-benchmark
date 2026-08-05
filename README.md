@@ -143,6 +143,26 @@ Every instance log opens with the exact command that produced it, the working
 directory, and the probe environment, so a run that behaved oddly can be
 reproduced by hand.
 
+### Running server scenarios
+
+HeadlessMC has no server command, so a server is launched directly from a jar
+you already have. mcbench does not download or build one; a Fabric or Paper
+installer produces a runnable jar, and that is what to name:
+
+```bash
+mcbench run suites/your-server-suite.toml -o results.json \
+    --server-jar /path/to/fabric-server-launch.jar \
+    --accept-eula
+```
+
+`--accept-eula` records that you accept the
+[Minecraft EULA](https://aka.ms/MinecraftEULA). Server scenarios refuse to start
+without it and mcbench will not accept it for you; the answer is written into
+the results document as `eula_accepted`, because a published server result rests
+on it. `accept_eula = true` in the suite manifest does the same thing.
+
+A suite with no client scenarios needs no HeadlessMC at all.
+
 ### Headless use
 
 `mcbench run` is meant to be driven by a developer in one command, or by CI with
@@ -253,6 +273,12 @@ lost to outlier rejection drops the cell below the floor and it reports no
 verdict; an odd count leaves variants differing slightly in mean position. Both
 cost one line in the manifest to avoid, and both are invisible until the hours
 are spent.
+
+That is not hypothetical. In the 60-run set above, three runs were disqualified
+for world-fingerprint mismatch and one was lost to outlier rejection, which was
+enough to leave the largest effect in the whole dataset — Sodium at +61% average
+FPS, +179% 0.1% low — reporting `insufficient_data` instead of a verdict. The
+advisory had said so before the suite started.
 
 ## Mod interactions
 
@@ -491,9 +517,11 @@ the matrix says where it runs and why not elsewhere. See
   fingerprint region drawn close enough to the edge of generation that it
   disqualified the largest effect in the dataset.
 
-**Next** — the same run against a real server, which no server scenario has yet
-had; CurseForge provider (opt-in, no caching); cross-loader and cross-version
-comparison; bot-driven player load; the public results corpus.
+**Next** — the same run against a real server. Nothing has measured one yet;
+`--server-jar` is what it now takes, since HeadlessMC cannot drive a server and
+mcbench will not ship one. Then: CurseForge provider (opt-in, no caching);
+cross-loader and cross-version comparison; bot-driven player load; the public
+results corpus.
 
 ## Contributing
 

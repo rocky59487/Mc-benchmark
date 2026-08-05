@@ -13,11 +13,39 @@ mcbench measures many mods in one pass under one methodology, and reports
 > **Status: the client chain has been run on real hardware; the server chain has
 > not.** Sixty runs on an RTX 5070 Ti Laptop and a Ryzen 9 8940HX under Fabric
 > 1.21.1 — six mod configurations across two client scenarios, five runs each,
-> every one producing a measurement. Sodium came back at +63.2% average FPS
-> [+59.9, +67.0]; EntityCulling and FerriteCore came back `inconclusive` on frame
-> rate, which is what their own documentation predicts. The eight server scenarios
-> are implemented and unit-tested but have never been run against a real server.
-> See [Roadmap](#roadmap).
+> every one producing a measurement. The eight server scenarios are implemented
+> and unit-tested but have never been run against a real server. See
+> [Roadmap](#roadmap) and [Limitations](#limitations-of-the-published-run).
+
+### Limitations of the published run
+
+Read these before quoting a number from it.
+
+**The measured regime is not a player's.** Mean frametime was 0.82 ms on vanilla
+and 0.51 ms with Sodium — 1212 and 1979 FPS. Nobody plays there. What Sodium
+removed is about **0.32 ms of CPU work per frame** (0.3197 ms on one scenario,
+0.3121 ms on the other, which is why the absolute figure is the trustworthy one).
+That same saving is +63% against a 0.82 ms frame and about **+2% against the
+16.7 ms frame of a 60 FPS session** — and only if the CPU is still the
+bottleneck there, which on a real scene it often is not. Quote the milliseconds,
+not the percentage.
+
+**Attrition was not random.** Three runs were disqualified for world-fingerprint
+mismatch, and all three were Sodium-family runs on `visual-biome-flyby`: 30% of
+that group against 0% of the other forty client runs. The fingerprint region was
+drawn close to the edge of chunk generation, and chunk generation is what Sodium
+changes, so admissibility depended on the treatment. The scenario has since moved
+to a radius where all thirty flyby runs agree, but the published numbers predate
+that.
+
+**The baseline's GPU is unrecorded.** The host exposes four display adapters
+(RTX 5070 Ti, Radeon 610M, and two virtual displays). Three of the six variants
+log a renderer — all NVIDIA — and vanilla is not one of them. Nothing in the
+artifacts establishes that baseline and treatment rendered on the same adapter.
+
+**Two synthetic client scenarios, one machine, one session, one version.** The
+entity, redstone, worldgen and lighting scenarios — the ones where EntityCulling
+and FerriteCore do their work — have never been run.
 
 ## What makes it different
 
@@ -275,10 +303,17 @@ cost one line in the manifest to avoid, and both are invisible until the hours
 are spent.
 
 That is not hypothetical. In the 60-run set above, three runs were disqualified
-for world-fingerprint mismatch and one was lost to outlier rejection, which was
-enough to leave the largest effect in the whole dataset — Sodium at +61% average
-FPS, +179% 0.1% low — reporting `insufficient_data` instead of a verdict. The
+for world-fingerprint mismatch, which was enough to leave the largest effect in
+the whole dataset — Sodium on `visual-biome-flyby`, +60.4% average FPS and
++187.3% 0.1% low — reporting `insufficient_data` instead of a verdict. The
 advisory had said so before the suite started.
+
+Per-metric outlier rejection cost more than that, and less visibly: it dropped
+`immediatelyfast` to four runs on the reference scenario, where +4.46%
+[+2.36, +6.70] clears the ±2% ROPE and would otherwise have been an
+`improvement`. `insufficient_data` and `inconclusive` are different words for
+good reason — one means the data was not there, the other that it was and said
+nothing — and a reader who conflates them will mistake attrition for a finding.
 
 ## Mod interactions
 

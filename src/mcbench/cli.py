@@ -878,7 +878,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"✗ {exc}", file=sys.stderr)
         return 1
 
-    counts = run_counts(outcomes)
+    counts = run_counts(outcomes, scenarios)
     payload = {
         "suite": suite.name,
         "baseline": suite.baseline,

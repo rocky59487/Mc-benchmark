@@ -1022,6 +1022,29 @@ class TestAWholeSuite:
         assert flagged == {"base", "candidate"}
         assert not any(o.metrics.admissible for o in outcomes if o.metrics)
 
+    def test_the_summary_counts_what_the_records_count(self, tmp_path, monkeypatch):
+        """The headline block used to disagree with the runs beneath it.
+
+        run_counts ran before outcomes_to_cells applied the world-fingerprint
+        flags, so it reported every run admissible while the per-run records
+        and the analysis both said otherwise: the published document said five
+        where the records said three. A reader checks the summary.
+        """
+        monkeypatch.setenv("MCBENCH_STANDIN_ROGUE", "candidate")
+        harness = self.suite(tmp_path, monkeypatch, fresh_world=True)
+        outcomes = harness.run_suite()
+
+        counts = run_counts(outcomes, harness.scenarios)
+        cells = outcomes_to_cells(outcomes, harness.scenarios)
+
+        for key, entry in counts.items():
+            recorded = sum(
+                1 for run in cells[key] if run.get("status") != "inadmissible"
+            )
+            assert entry["admissible"] == recorded, key
+        # And it is not vacuous: this suite really does hold runs out.
+        assert any(e["admissible"] < e["attempted"] for e in counts.values())
+
     def test_a_minority_world_is_flagged_against_the_majority(
         self, tmp_path, monkeypatch
     ):

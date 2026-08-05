@@ -2255,14 +2255,25 @@ def outcomes_to_cells(
     return cells
 
 
-def run_counts(outcomes: Sequence[RunOutcome]) -> dict[str, dict[str, int]]:
+def run_counts(
+    outcomes: Sequence[RunOutcome],
+    scenarios: Mapping[str, Scenario] | None = None,
+) -> dict[str, dict[str, int]]:
     """Per cell: attempted, completed, admissible, and failed.
 
     The gaps between them are the interesting part: ``attempted`` is what the
     suite cost, ``completed`` what produced numbers, ``admissible`` what may
     enter a comparison. A gap between the first two is an unstable environment;
     between the last two, a methodology violation.
+
+    ``scenarios`` applies the world-fingerprint flags first. Without it this
+    counted a run admissible that the analysis then refused: the summary block
+    said five where the records said three, and the summary is what a reader
+    trusts. outcomes_to_cells says it flags at the one funnel every run passes
+    through on its way into an aggregate; this was a second funnel.
     """
+    if scenarios is not None:
+        flag_world_mismatches(outcomes, scenarios)
     counts: dict[str, dict[str, int]] = {}
     for outcome in outcomes:
         key = str(outcome.planned.cell)

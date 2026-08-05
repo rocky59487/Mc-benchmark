@@ -22,6 +22,7 @@ from mcbench.config import parse_suite
 from mcbench.metrics import RunFlag
 from mcbench.runner import Harness
 from mcbench.runner.harness import (
+    SERVER_LEVEL_NAME,
     HarnessError,
     ResolvedVariant,
     _java_release,
@@ -87,10 +88,15 @@ for name in ("setup.txt", "workload.txt"):
         fail("the plan is missing " + name)
 
 argv = sys.argv[1:]
-gamedir = Path(argv[argv.index("--gamedir") + 1]) if "--gamedir" in argv else None
-if gamedir is None:
+if "--gamedir" in argv:
+    gamedir = Path(argv[argv.index("--gamedir") + 1])
+elif "nogui" in argv:
+    # A dedicated server launched directly takes its directory from the
+    # working directory, the way the real one does. No launcher, no flag.
+    gamedir = Path.cwd()
+else:
     fail("no --gamedir")
-if "--server" in argv:
+if "--server" in argv or "nogui" in argv:
     # The server generates its world on first start; the harness only names it
     # and states the seed.
     server = {{}}
@@ -247,6 +253,40 @@ class TestLaunchingAServerDirectly:
         with pytest.raises(HarnessError) as raised:
             harness._launch_command(tmp_path / "instance", scenario)
         assert "--server-jar" in str(raised.value)
+
+    def test_a_whole_run_goes_through_it(self, tmp_path):
+        """The command being right is not the same as the run working.
+
+        Every defect found on this project tonight lived in a seam that was
+        never executed, and asserting on a list of strings executes nothing.
+        This drives execute_run down the direct path with a stand-in JVM: the
+        instance is prepared, the server takes its directory from the working
+        directory, the probe stream is read back and reduced.
+        """
+        harness, planned, _ = build(
+            tmp_path, "entity-mobcap-saturation", "probe-server-reference.jsonl"
+        )
+        harness.headlessmc = None
+        harness.server_jar = self.a_jar(tmp_path)
+        harness.java = str(stand_in(
+            tmp_path / "java-stand-in", FIXTURES / "probe-server-reference.jsonl"
+        ))
+        harness._java_release = "21.0.10"
+
+        outcome = harness.execute_run(planned)
+
+        assert outcome.error == "", outcome.log_path.read_text(encoding="utf-8")
+        assert outcome.succeeded
+        assert outcome.metrics is not None
+        assert outcome.metrics.values["mspt_mean"] > 0
+        # The world the server made where it was told to, not beside the jar.
+        instance = outcome.log_path.parent.parent
+        assert (instance / SERVER_LEVEL_NAME).is_dir()
+        # And it was this path that ran, not a fallback that happened to work.
+        # Every instance log opens with the command and the directory.
+        log = outcome.log_path.read_text(encoding="utf-8")
+        assert "nogui" in log
+        assert f"# cwd: {instance}" in log
 
     def test_a_client_refusal_does_not_mention_it(self, tmp_path):
         # Suggesting --server-jar to somebody running a client scenario sends

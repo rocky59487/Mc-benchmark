@@ -235,6 +235,34 @@ class TestPreflight:
         assert "--jvm" not in launch
         assert any(p.startswith("-Dhmc.jvmargs=") for p in command)
 
+    def test_a_server_ignores_the_launcher_entirely(self, tmp_path):
+        """One suite can hold both sides: HeadlessMC for the client, a jar for
+        the server. The property dialect runs the launcher from its own
+        directory, because that is where it keeps the account it logged in
+        with. A server launched directly has no launcher and no account, and
+        running it from there would put its world beside the jar instead of in
+        the instance the harness prepared.
+        """
+        launcher = printing_stand_in(
+            tmp_path / "hmc.jar",
+            "launch : Launches the game.\n  --jvm  Jvm args to use.\n",
+        )
+        server = tmp_path / "server.jar"
+        server.write_bytes(b"PK\x03\x04")
+
+        h, scenarios = harness(
+            tmp_path / "w", launcher, scenario="entity-mobcap-saturation",
+            server_jar=server, accept_eula=True,
+        )
+        scenario = scenarios["entity-mobcap-saturation"]
+        instance = tmp_path / "inst"
+
+        assert not h.launcher_capabilities().speaks_flags
+        command = h._launch_command(instance, scenario, h.suite.variants[0])
+        assert str(launcher) not in " ".join(command)
+        assert command[-1] == "nogui"
+        assert h._launch_cwd(instance, scenario) == instance
+
     def test_the_instance_path_is_absolute(self, tmp_path, monkeypatch):
         """The launcher runs from its own directory, not from the instance.
 

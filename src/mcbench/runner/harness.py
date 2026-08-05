@@ -126,11 +126,11 @@ def _sha256(path: Path | None) -> str:
         return ""
 
 
-def _java_version() -> str:
+def _java_version(java: str = "java") -> str:
     """The JVM that will run the game, as it reports itself."""
     try:
         completed = subprocess.run(
-            ["java", "-version"], capture_output=True, text=True, timeout=20,
+            [java, "-version"], capture_output=True, text=True, timeout=20,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -518,10 +518,15 @@ class Harness:
         fresh_world: bool = False,
         accept_eula: bool = False,
         server_jar: str | Path | None = None,
+        java: str | Path = "java",
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.accept_eula = accept_eula
         self.server_jar = Path(server_jar) if server_jar else None
+        #: The JVM the harness spawns. On the direct server path this is the
+        #: one the game runs on, so a machine with several JDKs can name the
+        #: right one instead of reordering PATH.
+        self.java = str(java)
         self.suite = suite
         self.scenarios = scenarios
         self.work_dir = Path(work_dir)
@@ -900,7 +905,7 @@ class Harness:
             "loader_version": self.suite.loader_version or "unpinned",
             "preset": self.suite.preset.value,
             "heap_mb": self.suite.heap_mb,
-            "java": _java_version(),
+            "java": _java_version(self.java),
             "launcher": str(self.headlessmc) if self.headlessmc else "",
             # Recorded because a published server result rests on it, and the
             # operator who accepted is not always the reader of the document.
@@ -1330,7 +1335,7 @@ class Harness:
                 f"server jar you have installed, such as the one a Fabric or "
                 f"Paper installer produced."
             )
-        return ["java", *jvm_args, "-jar", str(jar), "nogui"]
+        return [self.java, *jvm_args, "-jar", str(jar), "nogui"]
 
     def _flag_launch_command(
         self,
@@ -1343,7 +1348,7 @@ class Harness:
         """A launcher that names the instance and the loader on its own flags."""
         assert self.headlessmc is not None
         if str(self.headlessmc).endswith(".jar"):
-            command = ["java", "-jar", str(self.headlessmc)]
+            command = [self.java, "-jar", str(self.headlessmc)]
         else:
             command = [str(self.headlessmc)]
 
@@ -1430,7 +1435,7 @@ class Harness:
 
         launch = ["launch", self._headlessmc_version_id(), *self.extra_launch_args]
         return [
-            "java", *properties, "-jar", str(self.headlessmc),
+            self.java, *properties, "-jar", str(self.headlessmc),
             "--command", " ".join(launch),
         ]
 
@@ -1948,7 +1953,7 @@ class Harness:
     def _java_release_on_path(self) -> str:
         """The release number of the JVM this harness would launch."""
         if self._java_release is None:
-            self._java_release = _java_release(_java_version())
+            self._java_release = _java_release(_java_version(self.java))
         return self._java_release
 
     #: Fields whose disagreement means a different experiment ran, rather than

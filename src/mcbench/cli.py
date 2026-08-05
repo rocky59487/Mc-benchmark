@@ -847,6 +847,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         fresh_world=getattr(args, "fresh_world", False),
         accept_eula=getattr(args, "accept_eula", False) or suite.accept_eula,
         server_jar=getattr(args, "server_jar", None),
+        java=getattr(args, "java", None) or "java",
         on_event=emit,
     )
 
@@ -1263,6 +1264,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="extra argument appended to every launch command "
                         "(repeatable), for a launcher whose flags differ")
     p.add_argument("--timeout", type=float, help="per-run timeout in seconds")
+    p.add_argument("--java",
+                   help="the JVM to spawn, when PATH does not lead to the one "
+                        "you want. On --server-jar runs this is the JVM the "
+                        "game itself runs on; through a launcher it is the "
+                        "launcher's, which may fork another")
     p.add_argument("--server-jar", type=Path,
                    help="a dedicated server you have already installed "
                         "(fabric-server-launch.jar, paper.jar, or the Mojang "

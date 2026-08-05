@@ -10,10 +10,14 @@ whatever ran first keeps running first.
 mcbench measures many mods in one pass under one methodology, and reports
 `inconclusive` when the data does not support a verdict.
 
-> **Status: the full chain is built and tested; it needs a machine that can run
-> Minecraft.** Everything below is implemented across Python and Java, including
-> conformance fixtures in both directions of the harness/probe seam. What remains
-> is real hardware. See [Roadmap](#roadmap).
+> **Status: the client chain has been run on real hardware; the server chain has
+> not.** Sixty runs on an RTX 5070 Ti Laptop and a Ryzen 9 8940HX under Fabric
+> 1.21.1 — six mod configurations across two client scenarios, five runs each,
+> every one producing a measurement. Sodium came back at +63.2% average FPS
+> [+59.9, +67.0]; EntityCulling and FerriteCore came back `inconclusive` on frame
+> rate, which is what their own documentation predicts. The eight server scenarios
+> are implemented and unit-tested but have never been run against a real server.
+> See [Roadmap](#roadmap).
 
 ## What makes it different
 
@@ -481,8 +485,15 @@ the matrix says where it runs and why not elsewhere. See
   asserted; a threat model and security hardening; CI enforcing tests, lint,
   protocol conformance, security regressions and licence compliance.
 
-**Next** — CurseForge provider (opt-in, no caching); cross-loader and
-cross-version comparison; bot-driven player load; the public results corpus.
+- *Validation* — sixty client runs on real hardware, which is what found the
+  defects unit tests could not: a tick warp every server scenario declared and
+  nothing issued, superflat layers six scenarios asked for and never got, and a
+  fingerprint region drawn close enough to the edge of generation that it
+  disqualified the largest effect in the dataset.
+
+**Next** — the same run against a real server, which no server scenario has yet
+had; CurseForge provider (opt-in, no caching); cross-loader and cross-version
+comparison; bot-driven player load; the public results corpus.
 
 ## Contributing
 
